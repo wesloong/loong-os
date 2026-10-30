@@ -494,3 +494,23 @@ fn background_task_added_in_switcher_keeps_view_still() {
     assert_rect_eq(s.card("photos"), sw.slot(1, scroll), 0.1);
     assert!(s.shell.in_switcher() && s.shell.is_idle(s.now));
 }
+
+/// 系统繁忙时触摸事件被批量处理：停顿期间 `update` 一次也没跑，
+/// 只要抬起时手指已静止足够久，仍应进入多任务。
+#[test]
+fn pause_seen_only_at_release_still_enters_switcher() {
+    let mut s = Sim::new();
+    s.open_apps(&["photos", "notes"]);
+    s.shell.touch_down(0, 640.0, 795.0, s.now);
+    for k in 1..=24 {
+        s.now += 0.2 / 24.0;
+        s.shell
+            .touch_motion(0, 640.0, 795.0 - 155.0 * k as f64 / 24.0, s.now);
+    }
+    // 停住 0.3 秒，但期间没有任何 update（模拟事件被积压后一起处理）。
+    s.now += 0.3;
+    s.shell.touch_up(0, s.now);
+    assert!(s.shell.in_switcher(), "抬起前已停住，应进入多任务");
+    s.wait(1.5);
+    assert!(s.shell.in_switcher());
+}

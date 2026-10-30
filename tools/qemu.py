@@ -5,7 +5,7 @@
   tools/qemu.py wait   <正则> [--timeout 秒]        等待串口日志出现某内容
   tools/qemu.py shot   <文件.png>                   截图
   tools/qemu.py tap    <x> <y>                       点按（逻辑坐标 = 屏幕像素）
-  tools/qemu.py swipe  <x1> <y1> <x2> <y2> [毫秒]    滑动
+  tools/qemu.py swipe  <x1> <y1> <x2> <y2> [毫秒] [--hold 毫秒]   滑动（可在终点停留）
   tools/qemu.py stop
 
 运行时文件放在 build/qemu/（QMP socket、串口日志、UEFI 变量）。
@@ -133,6 +133,9 @@ def swipe(args):
         t = i / steps
         q.cmd("input-send-event", events=abs_events(args.x1 + (args.x2 - args.x1) * t, args.y1 + (args.y2 - args.y1) * t))
         time.sleep(args.ms / 1000 / steps)
+    # 停在终点再抬起（例如上滑停顿进入多任务）
+    if args.hold > 0:
+        time.sleep(args.hold / 1000)
     q.cmd("input-send-event", events=[btn(False)])
 
 
@@ -188,6 +191,7 @@ def main():
     for a in ("x1", "y1", "x2", "y2"):
         s.add_argument(a, type=float)
     s.add_argument("ms", type=float, nargs="?", default=200)
+    s.add_argument("--hold", type=float, default=0, help="到达终点后停留的毫秒数")
     s.set_defaults(fn=swipe)
     s = sub.add_parser("stop")
     s.set_defaults(fn=stop)

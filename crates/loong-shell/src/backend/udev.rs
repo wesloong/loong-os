@@ -67,12 +67,18 @@ struct Backend {
     output: Output,
     /// 已提交一帧、等待 vblank。
     frame_pending: bool,
+    /// 画面没有变化但仍需要按帧推进（例如手指按住不动时的停顿检测）时，用定时器代替 vblank。
+    tick_pending: bool,
+    frame_interval: Duration,
+    handle: LoopHandle<'static, Data>,
     /// 需要再画一帧（有新输入/客户端提交/动画）。
     dirty: bool,
     /// 鼠标（QEMU 平板设备）左键按下时当作手指。
     pointer_down: bool,
     pointer_pos: (f64, f64),
     start: Instant,
+    /// `start` 时刻的 CLOCK_MONOTONIC（秒），用于把内核输入事件时间换算到同一时间轴。
+    mono_at_start: f64,
     size: (f64, f64),
 }
 
@@ -88,7 +94,7 @@ struct Data {
 }
 
 pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
-    let mut event_loop: EventLoop<Data> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<'static, Data> = EventLoop::try_new()?;
     let (mut session, session_notifier) =
         LibSeatSession::new().context("无法建立 libseat 会话（seatd 是否在运行？）")?;
 
@@ -232,10 +238,14 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
             assets,
             output,
             frame_pending: false,
+            tick_pending: false,
+            frame_interval: Duration::from_secs_f64(1.0 / f64::from(mode.vrefresh().max(30))),
+            handle: event_loop.handle(),
             dirty: true,
             pointer_down: false,
             pointer_pos: (0.0, 0.0),
             start: Instant::now(),
+            mono_at_start: monotonic_secs(),
             size,
         },
     };
@@ -390,6 +400,21 @@ fn render(d: &mut Data) {
         Err(e) => tracing::error!("渲染失败: {e:?}"),
     }
     b.dirty = !d.state.shell.is_idle(now);
+    // 画面没变（没有提交新帧，也就不会有 vblank），但动画/手势仍在进行：约一帧后再检查一次。
+    if b.dirty && !b.frame_pending && !b.tick_pending {
+        b.tick_pending = true;
+        let scheduled = b.handle.insert_source(
+            Timer::from_duration(b.frame_interval),
+            |_, _, d: &mut Data| {
+                d.backend.tick_pending = false;
+                render(d);
+                TimeoutAction::Drop
+            },
+        );
+        if scheduled.is_err() {
+            b.tick_pending = false;
+        }
+    }
     let output = b.output.clone();
     let time = b.start.elapsed();
     for window in &d.state.windows {
@@ -397,9 +422,26 @@ fn render(d: &mut Data) {
     }
 }
 
+/// CLOCK_MONOTONIC（秒）。libinput 的事件时间使用同一个时钟。
+fn monotonic_secs() -> f64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: 只写入我们提供的 timespec。
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+}
+
 fn process_input(d: &mut Data, event: InputEvent<LibinputInputBackend>) {
     let (w, h) = d.backend.size;
-    d.state.now = d.backend.start.elapsed().as_secs_f64();
+    // 手势时间用事件发生的时间（内核时间戳），而不是处理事件的时间：
+    // 系统繁忙时事件会被批量处理，用处理时间会丢失手指停顿、算错速度。
+    let elapsed = d.backend.start.elapsed().as_secs_f64();
+    d.state.now = elapsed;
+    if let Some(us) = event_time_us(&event) {
+        d.state.now = (us as f64 / 1e6 - d.backend.mono_at_start).clamp(0.0, elapsed);
+    }
     match event {
         InputEvent::TouchDown { event } => {
             let p = event.position_transformed((w as i32, h as i32).into());
@@ -451,6 +493,17 @@ fn process_input(d: &mut Data, event: InputEvent<LibinputInputBackend>) {
     }
 }
 
+fn event_time_us(event: &InputEvent<LibinputInputBackend>) -> Option<u64> {
+    Some(match event {
+        InputEvent::TouchDown { event } => event.time().micros(),
+        InputEvent::TouchMotion { event } => event.time().micros(),
+        InputEvent::TouchUp { event } => event.time().micros(),
+        InputEvent::PointerMotionAbsolute { event } => event.time().micros(),
+        InputEvent::PointerButton { event } => event.time().micros(),
+        _ => return None,
+    })
+}
+
 fn slot_id<E: TouchEvent<LibinputInputBackend>>(event: &E) -> u32 {
     i32::from(event.slot()).max(0) as u32
 }
@@ -466,6 +519,3 @@ fn spawn(cmd: &str, state: &LoongState) {
         tracing::warn!("启动 {cmd} 失败: {e}");
     }
 }
-
-#[allow(dead_code)]
-fn _assert_handle(_: &LoopHandle<'_, Data>) {}

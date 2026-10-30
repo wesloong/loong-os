@@ -304,6 +304,8 @@ pub struct Shell {
     tracker: VelocityTracker<[f64; 2]>,
     /// 当前手势中最后一次的手指位置。
     last_pos: Option<(f64, f64)>,
+    /// 最近一次触点移动的时间。
+    last_move_t: f64,
     pending_spawn: Vec<usize>,
     /// 锁屏。
     lock: LockScreen,
@@ -335,6 +337,7 @@ impl Shell {
             gesture: Gesture::Idle,
             tracker: VelocityTracker::new(),
             last_pos: None,
+            last_move_t: 0.0,
             pending_spawn: Vec::new(),
             lock: LockScreen::new(h, false),
             clock_text: "9:41".into(),
@@ -838,6 +841,7 @@ impl Shell {
     fn track(&mut self, now: f64, x: f64, y: f64) {
         self.tracker.add(now, [x, y]);
         self.last_pos = Some((x, y));
+        self.last_move_t = now;
     }
 
     fn begin_tracking(&mut self, now: f64, x: f64, y: f64) {
@@ -1140,8 +1144,18 @@ impl Shell {
                 }
             }
             Gesture::AppSwipe { slot: s, start, .. } if s == slot => {
-                let v = self.tracker.velocity_at(now);
                 let last = self.last_pos.unwrap_or(start);
+                // 抬起前手指已经停住足够久：等同于停顿进入多任务。系统繁忙时触摸事件可能被
+                // 批量处理，逐帧的停顿检测来不及运行，这里按事件时间补判一次。
+                if now - self.last_move_t >= switcher::PAUSE_DURATION
+                    && start.1 - last.1 >= 0.5 * self.h * 0.25
+                    && let Some(app) = self.tasks.last().map(|t| t.app)
+                {
+                    self.enter_switcher(now);
+                    self.gesture = Gesture::SwitcherEnter { slot, start, app };
+                    return self.touch_up(slot, now);
+                }
+                let v = self.tracker.velocity_at(now);
                 let rect_velocity = map_velocity(|p| self.swipe_rect(start, p).0, last, v);
                 // 判定用参考距离 D = 0.25 × 屏幕高度（见设计规范 9.1），与视觉映射分开。
                 let reference = self.h * 0.25;

@@ -24,6 +24,10 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 |---|---|
 | ![锁屏](docs/images/lock.png) | ![上滑解锁](docs/images/unlocking.png) |
 
+| 多任务（底边上滑后停顿进入，最近的应用在右侧） | 上滑关闭应用（卡片带着手指速度飞出，其余卡片补位） | 主屏翻页（1:1 跟手，首末页橡皮筋） |
+|---|---|---|
+| ![多任务](docs/images/switcher.png) | ![上滑关闭应用](docs/images/switcher-close.png) | ![主屏翻页](docs/images/home-paging.png) |
+
 完整系统在 QEMU 中启动后的画面（UEFI → systemd-boot → UKI → initramfs → 只读 erofs → OpenRC → `loong-shell` 走 DRM/KMS）：
 
 ![QEMU 中的 Loong OS](docs/images/qemu-home.png)
@@ -41,7 +45,7 @@ ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-she
 | `crates/loong-motion`：弹簧、惯性衰减、橡皮筋、速度跟踪、吸附/分页、CSS `linear()` 缓动 | ✅ 已完成（含单元测试） |
 | `system/packages/wpewebkit`：WPE WebKit 2.54.2 APKBUILD 与 CI 工作流 | ✅ 配方完成，正在 chroot 中编译验证 |
 | `crates/loong-ui`：设计令牌、连续圆角、文字（中文）、图标、毛玻璃、壁纸 | ✅ 已完成 |
-| `crates/loong-shell`：headless 后端、主屏、打开应用 / 回主屏手势动画、真实 Wayland 客户端（xdg-shell）、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证） |
+| `crates/loong-shell`：headless 后端、主屏（分页）、打开应用 / 回主屏手势动画、多任务（上滑停顿进入、横向滚动吸附、点按打开、上滑关闭）、真实 Wayland 客户端（xdg-shell）、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证） |
 | QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
 | aarch64：qemu-user binfmt（`tools/setup-binfmt.sh`）、交叉编译（`tools/build-aarch64.sh`）、`qemu-aarch64` 镜像 | ✅ 在 QEMU virt（TCG）中启动到锁屏 |
 | 小米平板 5：`android-abl` 启动后端（boot.img、super 动态分区 A/B、userdata、qbootctl 回滚），见[适配说明](docs/devices/xiaomi-nabu.md) | 🚧 镜像可构建并通过离线自检，尚未上真机 |
@@ -92,6 +96,7 @@ sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build -p loong-shell && \
   build/target-alpine/debug/loong-shell --headless --size 1280x800 \
     --script crates/loong-shell/tests/scripts/open-and-go-home.json --out out/demo'
 #    把某个图标绑定到真实 Wayland 程序：--app browser=foot（再加 --realtime）
+#    其他脚本：switcher.json（多任务）、home-paging.json（主屏翻页）、unlock.json（锁屏）
 
 # 5. 构建 QEMU 系统镜像并启动（在 chroot 内运行 QEMU，TCG 软件模拟，较慢）
 sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build --release -p loong-shell -p loong-sysd && \

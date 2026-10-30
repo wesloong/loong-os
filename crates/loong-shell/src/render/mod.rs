@@ -28,7 +28,12 @@ use smithay::{
 };
 
 use self::element::{LayerElement, RoundedSurface, ShellElement};
-use crate::shell::{Align, DrawItem, Scene, Shell, TexKey, geometry::RectF};
+use crate::shell::{
+    Align, DrawItem, Scene, Shell, TexKey,
+    apps::AppEntry,
+    geometry::RectF,
+    switcher::{self, SwitcherLayout},
+};
 
 /// CPU 端位图资源（物理像素）。
 pub struct Assets {
@@ -69,6 +74,12 @@ impl Assets {
             (30.0 * scale) as f32,
             Color::from_rgba8(255, 255, 255, 46),
         );
+        assets.put(
+            TexKey::SwitcherBackdrop,
+            switcher_backdrop(&wallpaper, scale),
+        );
+        assets.put(TexKey::CardShadow, card_shadow(&shell.switcher, scale));
+        assets.put(TexKey::PageDot, page_dot(scale));
         assets.put(TexKey::Wallpaper, wallpaper);
         assets.put(TexKey::Dock, dock);
 
@@ -90,6 +101,8 @@ impl Assets {
             };
             let label = assets.text.render(&app.name, &label_style);
             assets.put(TexKey::Label(i), label);
+            let card_label = assets.card_label(app);
+            assets.put(TexKey::CardLabel(i), card_label);
         }
         let status_icons = assets.status_icons();
         assets.put(TexKey::StatusIcons, status_icons);
@@ -110,6 +123,54 @@ impl Assets {
     fn put(&mut self, key: TexKey, pixmap: Pixmap) {
         self.version += 1;
         self.pixmaps.insert(key, (pixmap, self.version));
+    }
+
+    /// 多任务卡片上方的标签：24pt 图标 + 8pt 间距 + 名称（`subhead` 15pt 半粗，白色带阴影）。
+    /// 位图高度固定为 [`switcher::LABEL_HEIGHT`]，图标垂直居中，便于 shell 排版。
+    fn card_label(&mut self, app: &AppEntry) -> Pixmap {
+        let s = self.scale;
+        let icon_px = px(switcher::LABEL_ICON, s);
+        let svg = icon::builtin_symbol(&app.symbol)
+            .unwrap_or(icon::builtin_symbol("compass").expect("内置图标"));
+        let style = IconStyle {
+            top: theme::hex(app.colors.0, 1.0),
+            bottom: theme::hex(app.colors.1, 1.0),
+            glyph: Color::WHITE,
+        };
+        let icon = icon::app_icon(icon_px, svg, style);
+        let size = (15.0 * s) as f32;
+        let text = self.text.render(
+            &app.name,
+            &TextStyle {
+                size,
+                weight: 600,
+                color: Color::WHITE,
+                shadow: true,
+            },
+        );
+        // 文字位图四周留有阴影边距（与 TextRenderer::render 一致），这里扣掉，保证视觉间距为 8pt。
+        let pad = (size * 0.25).ceil() as i32;
+        let text_x = icon_px as i32 + (8.0 * s).round() as i32 - pad;
+        let h = px(switcher::LABEL_HEIGHT, s);
+        let w = (text_x + text.width() as i32).max(icon_px as i32) as u32;
+        let mut pm = loong_ui::pixmap(w, h);
+        pm.draw_pixmap(
+            0,
+            (h as i32 - icon_px as i32) / 2,
+            icon.as_ref(),
+            &Default::default(),
+            Default::default(),
+            None,
+        );
+        pm.draw_pixmap(
+            text_x,
+            (h as i32 - text.height() as i32) / 2,
+            text.as_ref(),
+            &Default::default(),
+            Default::default(),
+            None,
+        );
+        pm
     }
 
     fn status_style(&self) -> TextStyle {
@@ -286,6 +347,95 @@ impl Assets {
 
 fn px(v: f64, scale: f64) -> u32 {
     (v * scale).round().max(1.0) as u32
+}
+
+/// 主屏页面指示点：白色圆点（`capsule` 用圆弧，不用连续圆角）。
+fn page_dot(scale: f64) -> Pixmap {
+    use loong_ui::tiny_skia::{FillRule, Paint, PathBuilder, Transform};
+    let d = px(crate::shell::layout::PAGE_DOT, scale);
+    let mut pm = loong_ui::pixmap(d, d);
+    let r = d as f32 / 2.0;
+    let path = PathBuilder::from_circle(r, r, r).expect("圆点尺寸有效");
+    let mut paint = Paint {
+        anti_alias: true,
+        ..Paint::default()
+    };
+    paint.set_color(Color::WHITE);
+    pm.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+    pm
+}
+
+/// 模糊类位图在 CPU 上以 1/4 分辨率生成，GPU 绘制时再放大：模糊后的画面放大看不出差别。
+const BLUR_DOWNSAMPLE: f64 = 4.0;
+
+/// 多任务背景（设计规范 8.6）：主屏壁纸 + `thin` 材质（模糊 σ 24pt，深色叠加色）。
+/// 壁纸是静态的，只在启动时算一次。
+fn switcher_backdrop(wallpaper: &Pixmap, scale: f64) -> Pixmap {
+    use loong_ui::tiny_skia::{FilterQuality, Paint, Pattern, SpreadMode, Transform};
+    let k = (1.0 / BLUR_DOWNSAMPLE) as f32;
+    let w = (wallpaper.width() as f32 * k).ceil() as u32;
+    let h = (wallpaper.height() as f32 * k).ceil() as u32;
+    let mut small = loong_ui::pixmap(w, h);
+    let all = Rect::from_xywh(0.0, 0.0, w as f32, h as f32).expect("尺寸有效");
+    let paint = Paint {
+        shader: Pattern::new(
+            wallpaper.as_ref(),
+            SpreadMode::Pad,
+            FilterQuality::Bilinear,
+            1.0,
+            Transform::from_scale(k, k),
+        ),
+        ..Paint::default()
+    };
+    small.fill_rect(all, &paint, Transform::identity(), None);
+    // 三次盒式模糊的半径约等于高斯 σ。
+    let radius = (24.0 * scale / BLUR_DOWNSAMPLE).round().max(1.0) as usize;
+    loong_ui::material::blur(&mut small, radius);
+    let mut tint = Paint::default();
+    tint.set_color(theme::hex(0x121619, 0.42));
+    small.fill_rect(all, &tint, Transform::identity(), None);
+    small
+}
+
+/// 多任务卡片阴影（`shadowHigh` 深色：模糊 48pt、黑色 60%），按标准卡片尺寸生成，
+/// 四周各留 [`switcher::SHADOW_SPREAD`]；向下的偏移由 shell 排版时加上。
+fn card_shadow(layout: &SwitcherLayout, scale: f64) -> Pixmap {
+    use loong_ui::tiny_skia::{FillRule, Paint, Transform};
+    let k = scale / BLUR_DOWNSAMPLE;
+    let spread = switcher::SHADOW_SPREAD;
+    let mut pm = loong_ui::pixmap(
+        px(layout.card_w + 2.0 * spread, k),
+        px(layout.card_h + 2.0 * spread, k),
+    );
+    let card = Rect::from_xywh(
+        (spread * k) as f32,
+        (spread * k) as f32,
+        (layout.card_w * k) as f32,
+        (layout.card_h * k) as f32,
+    )
+    .expect("卡片尺寸有效");
+    let path = loong_ui::shape::continuous_rect(card, (switcher::CARD_RADIUS * k) as f32);
+    let mut paint = Paint {
+        anti_alias: true,
+        ..Paint::default()
+    };
+    paint.set_color(Color::from_rgba8(0, 0, 0, 153));
+    pm.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+    // CSS 的模糊半径 48pt ≈ 高斯 σ 24pt。
+    loong_ui::material::blur(&mut pm, (24.0 * k).round().max(1.0) as usize);
+    pm
 }
 
 /// 逻辑矩形 → 物理像素矩形（边缘取整，保证相邻元素无缝）。

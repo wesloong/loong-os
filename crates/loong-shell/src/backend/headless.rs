@@ -60,6 +60,11 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
         state.shell.date_text = date.clone();
     }
     state.shell.set_locked(opts.script.locked);
+    if let Some(name) = &opts.script.theme {
+        let theme = loong_ui::theme::Theme::from_name(name)
+            .with_context(|| format!("未知外观 {name}（应为 light 或 dark）"))?;
+        state.shell.set_theme(theme);
+    }
 
     // SAFETY: EGLSurfacelessDisplay 不持有任何原生资源。
     let egl = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }
@@ -185,7 +190,11 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
         renderer.with_context(|gl| unsafe { gl.Finish() })?;
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         timing.push(ms);
-        tracing::debug!("帧 {frame}（{:.0} ms）：渲染 {ms:.1} ms，{} 个元素", now * 1000.0, elements.len());
+        tracing::debug!(
+            "帧 {frame}（{:.0} ms）：渲染 {ms:.1} ms，{} 个元素",
+            now * 1000.0,
+            elements.len()
+        );
 
         let want_shot = shots.contains(&frame);
         let want_record = recorder

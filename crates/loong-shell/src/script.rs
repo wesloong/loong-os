@@ -41,6 +41,9 @@ pub struct Script {
     /// 开始时是否处于锁屏。
     #[serde(default)]
     pub locked: bool,
+    /// 外观（`"light"` / `"dark"`），覆盖设备描述与环境变量，保证截图可复现。
+    #[serde(default)]
+    pub theme: Option<String>,
     #[serde(default)]
     pub events: Vec<Event>,
     #[serde(default)]
@@ -107,6 +110,7 @@ impl Script {
             clock: None,
             date: None,
             locked: false,
+            theme: None,
             events: vec![],
             screenshots: vec![0],
             record: None,

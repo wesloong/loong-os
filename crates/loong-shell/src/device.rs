@@ -1,6 +1,7 @@
 //! 设备描述（`/usr/share/loong/device.toml`）。shell 只依据这里的数据适配机型，
 //! 不写死任何具体设备。
 
+use loong_ui::theme::Theme;
 use serde::Deserialize;
 
 /// 默认设备描述文件路径。
@@ -52,9 +53,30 @@ pub struct DeviceConfig {
     pub size_class: SizeClass,
     /// 屏幕。
     pub screen: Screen,
+    /// 外观：`"light"`（宣纸，默认）或 `"dark"`（夜墨）。环境变量 `LOONG_THEME` 优先。
+    #[serde(default)]
+    pub theme: Option<String>,
+}
+
+/// 外观的选择顺序：环境变量 > 设备描述 > 默认亮色。无法识别的名称会被忽略。
+pub fn resolve_theme(env: Option<&str>, device: Option<&str>) -> Theme {
+    env.and_then(Theme::from_name)
+        .or_else(|| device.and_then(Theme::from_name))
+        .unwrap_or_default()
+}
+
+/// “减少动态效果”（环境变量 `LOONG_REDUCED_MOTION=1`）。
+pub fn reduced_motion() -> bool {
+    std::env::var("LOONG_REDUCED_MOTION").is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes"))
 }
 
 impl DeviceConfig {
+    /// 实际使用的外观（见 [`resolve_theme`]）。
+    pub fn theme(&self) -> Theme {
+        let env = std::env::var("LOONG_THEME").ok();
+        resolve_theme(env.as_deref(), self.theme.as_deref())
+    }
+
     /// 从 TOML 文本解析。
     pub fn parse(text: &str) -> anyhow::Result<Self> {
         Ok(toml::from_str(text)?)
@@ -78,6 +100,7 @@ impl DeviceConfig {
                 refresh_hz: 60,
                 corner_radius: 0.0,
             },
+            theme: None,
         }
     }
 
@@ -124,5 +147,20 @@ mod tests {
         assert_eq!(d.scale(), 2.0);
         assert_eq!(d.logical_size(), (1280.0, 800.0));
         assert_eq!(d.screen.refresh_hz, 120);
+        assert_eq!(d.theme, None);
+    }
+
+    #[test]
+    fn theme_from_file_and_env() {
+        let d = DeviceConfig::parse(
+            "name = \"x\"\ntheme = \"dark\"\n[screen]\nwidth = 1280\nheight = 800\n",
+        )
+        .unwrap();
+        assert_eq!(d.theme.as_deref(), Some("dark"));
+        assert_eq!(resolve_theme(None, d.theme.as_deref()), Theme::Dark);
+        // 环境变量优先；无法识别的值被忽略。
+        assert_eq!(resolve_theme(Some("light"), Some("dark")), Theme::Light);
+        assert_eq!(resolve_theme(Some("sepia"), Some("dark")), Theme::Dark);
+        assert_eq!(resolve_theme(None, None), Theme::Light);
     }
 }

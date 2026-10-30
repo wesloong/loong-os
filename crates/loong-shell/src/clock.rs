@@ -49,7 +49,10 @@ mod tests {
             ("9:41".into(), "九月廿一 · 星期五".into())
         );
         assert_eq!(super::format_tm(23, 5, 2026, 1, 1, 4).0, "23:05");
-        assert_eq!(super::format_tm(8, 0, 2024, 2, 10, 6).1, "正月初一 · 星期六");
+        assert_eq!(
+            super::format_tm(8, 0, 2024, 2, 10, 6).1,
+            "正月初一 · 星期六"
+        );
         assert_eq!(super::format_tm(8, 0, 2200, 3, 1, 6).1, "3月1日 · 星期六");
     }
 }

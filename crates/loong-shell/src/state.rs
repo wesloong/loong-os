@@ -85,6 +85,9 @@ impl LoongState {
         let socket = ListeningSocketSource::new_auto()?;
         let socket_name = socket.socket_name().to_os_string();
         let (w, h) = device.logical_size();
+        let mut shell = Shell::new(w, h, device.screen.corner_radius);
+        shell.set_theme(device.theme());
+        shell.set_reduced_motion(crate::device::reduced_motion());
 
         Ok(LoongState {
             display_handle: dh,
@@ -101,7 +104,7 @@ impl LoongState {
             seat,
             windows: Vec::new(),
             output: None,
-            shell: Shell::new(w, h, device.screen.corner_radius),
+            shell,
             now: 0.0,
         })
     }

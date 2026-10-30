@@ -7,7 +7,8 @@
 //!
 //! 数据来自紫金山天文台历表（与常见的 lunarInfo 表相同），基准为公历 1900-01-31 = 农历 1900 年正月初一。
 
-/// 农历 1900–2100 年数据。
+/// 农历 1900–2100 年数据（每行十年）。
+#[rustfmt::skip]
 const LUNAR_INFO: [u32; 201] = [
     0x04bd8, 0x04ae0, 0x0a570, 0x054d5, 0x0d260, 0x0d950, 0x16554, 0x056a0, 0x09ad0, 0x055d2, // 1900
     0x04ae0, 0x0a5b6, 0x0a4d0, 0x0d250, 0x1d255, 0x0b540, 0x0d6a0, 0x0ada2, 0x095b0, 0x14977, // 1910
@@ -55,7 +56,11 @@ fn leap_month(info: u32) -> u32 {
 
 /// 某月（非闰月）天数。
 fn month_days(info: u32, month: u32) -> u32 {
-    if info & (0x10000 >> month) != 0 { 30 } else { 29 }
+    if info & (0x10000 >> month) != 0 {
+        30
+    } else {
+        29
+    }
 }
 
 /// 闰月天数（无闰月为 0）。
@@ -258,7 +263,13 @@ mod tests {
     #[test]
     fn civil_days() {
         assert_eq!(days_from_civil(1970, 1, 1), 0);
-        assert_eq!(days_from_civil(2000, 3, 1) - days_from_civil(2000, 2, 28), 2);
-        assert_eq!(days_from_civil(1900, 3, 1) - days_from_civil(1900, 2, 28), 1);
+        assert_eq!(
+            days_from_civil(2000, 3, 1) - days_from_civil(2000, 2, 28),
+            2
+        );
+        assert_eq!(
+            days_from_civil(1900, 3, 1) - days_from_civil(1900, 2, 28),
+            1
+        );
     }
 }

@@ -1,0 +1,41 @@
+[package]
+name = "loong-shell"
+description = "Loong OS 系统界面：Wayland 合成器、主屏、手势与物理动画"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.89"
+
+[dependencies]
+loong-motion = { path = "../loong-motion" }
+loong-ui = { path = "../loong-ui" }
+anyhow = "1"
+png = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dependencies.smithay]
+# 固定到经过验证的提交，升级时统一测试。
+git = "https://github.com/Smithay/smithay.git"
+rev = "f581531d479cf2e3307bafb913c5d2bb12860bb3"
+default-features = false
+features = [
+    "backend_egl",
+    "backend_drm",
+    "backend_gbm",
+    "backend_gbm_has_fd_for_plane",
+    "backend_gbm_has_create_with_modifiers2",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+    "renderer_gl",
+    "wayland_frontend",
+    "desktop",
+]
+
+[lints]
+workspace = true

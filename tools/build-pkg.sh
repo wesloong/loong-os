@@ -2,7 +2,8 @@
 # 在开发 chroot 中构建 system/packages/<包名> 下的 APK 包。
 #
 # 用法: tools/build-pkg.sh <包名> [abuild 参数...]
-# 产物: build/packages/<arch>/*.apk（已签名，可作为本地 apk 仓库）
+# 产物: build/packages/packages/<arch>/*.apk（已签名，可作为本地 apk 仓库；
+#       abuild 用 APKBUILD 的上级目录名 packages 作为仓库名）
 # 中间文件: build/abuild/<包名>/（不会弄脏源码目录）
 #
 # 环境变量: JOBS（并行编译数，默认 3）

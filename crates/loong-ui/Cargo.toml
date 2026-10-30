@@ -1,0 +1,16 @@
+[package]
+name = "loong-ui"
+description = "Loong OS 界面绘制：设计令牌、连续圆角、文字、图标、材质（CPU 栅格化为纹理）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tiny-skia = "0.12"
+cosmic-text = { version = "0.19", default-features = false, features = ["std", "swash", "fontconfig"] }
+resvg = { version = "0.49", default-features = false }
+
+[lints]
+workspace = true

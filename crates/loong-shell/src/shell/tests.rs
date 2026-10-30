@@ -475,3 +475,22 @@ fn app_on_second_page_opens_from_and_returns_to_its_icon() {
     let target = [icon.x, icon.y, icon.w, icon.h, s.shell.icon_target(app)[4]];
     assert_rect_eq(s.shell.tasks[0].rect.value(s.now), target, 1e-6);
 }
+
+#[test]
+fn background_task_added_in_switcher_keeps_view_still() {
+    let mut s = Sim::new();
+    s.open_apps(&["photos"]);
+    s.enter_switcher();
+    let before = s.card("photos");
+    let maps = s.app("maps");
+    s.shell
+        .add_background_task(Task::new(maps, None, s.now), s.now);
+    // 加入的瞬间画面不动，之后滚回新的吸附位置：两张卡片并排，新加入的在左侧。
+    assert_rect_eq(s.card("photos"), before, 1e-6);
+    s.wait(1.5);
+    let sw = s.shell.switcher;
+    let scroll = sw.initial_scroll(2);
+    assert_rect_eq(s.card("maps"), sw.slot(0, scroll), 0.1);
+    assert_rect_eq(s.card("photos"), sw.slot(1, scroll), 0.1);
+    assert!(s.shell.in_switcher() && s.shell.is_idle(s.now));
+}

@@ -554,25 +554,46 @@ impl Shell {
             task.content = SpringAnimation::at_rest(Spring::SMOOTH, 0.0, now);
             return;
         }
-        // 没有正在打开的应用：按 app_id 匹配，否则归到第一个应用，并直接打开。
+        // 没有正在打开的应用：按 app_id 匹配，匹配不到归到第一个应用。
         let app = matched.unwrap_or(0);
         match self.task_index(app) {
-            Some(i) if self.tasks[i].window.is_none() => self.tasks[i].window = Some(window),
-            // v1 每个应用只有一个窗口：多出来的窗口请应用关闭。
-            Some(_) => {
-                if let Some(toplevel) = window.toplevel() {
-                    toplevel.send_close();
-                }
-                return;
+            // 已经在启动、但用户已离开的应用（回了主屏或在多任务中）：窗口交给它，
+            // 首帧到达后内容淡入，不打断用户。
+            Some(i) if self.tasks[i].window.is_none() => {
+                let task = &mut self.tasks[i];
+                task.window = Some(window);
+                task.content = SpringAnimation::at_rest(Spring::SMOOTH, 0.0, now);
             }
-            None => self.tasks.push(Task::new(app, Some(window), now)),
+            // 同一应用的另一个窗口：作为单独的任务放到后台（多任务中可见）。
+            Some(_) => self.add_background_task(Task::new(app, Some(window), now), now),
+            // 不是从图标启动的客户端（例如开机自启动）：直接打开。
+            None => {
+                self.tasks.push(Task::new(app, Some(window), now));
+                self.launch(app, now);
+                if self.mode == Mode::App
+                    && let Some(task) = self.tasks.last_mut()
+                    && task.app == app
+                {
+                    task.content = SpringAnimation::at_rest(Spring::SMOOTH, 0.0, now);
+                }
+            }
         }
-        self.launch(app, now);
-        if self.mode == Mode::App
-            && let Some(task) = self.tasks.last_mut()
-            && task.app == app
-        {
-            task.content = SpringAnimation::at_rest(Spring::SMOOTH, 0.0, now);
+    }
+
+    /// 把任务作为最早使用的应用加入列表，不打断当前界面。多任务中新卡片排在最左侧，
+    /// 滚动位置同步右移一格，画面保持不动。
+    fn add_background_task(&mut self, mut task: Task, now: f64) {
+        if self.mode == Mode::Switcher {
+            let stride = self.switcher.stride;
+            let (value, velocity) = (self.scroll.value(now), self.scroll.velocity(now));
+            let target = self.scroll.target();
+            let spring = self.scroll.spring();
+            self.scroll = offset_anim(spring, value + stride, target + stride, velocity, now);
+            task.rect = rect_anim(Spring::SMOOTH, ZERO5, ZERO5, ZERO5, now);
+            self.tasks.insert(0, task);
+            self.clamp_scroll_target(now);
+        } else {
+            self.tasks.insert(0, task);
         }
     }
 
@@ -798,6 +819,11 @@ impl Shell {
             let velocity = task.rect.velocity(now);
             task.rect = rect_anim(Spring::SMOOTH, value, ZERO5, velocity, now);
         }
+        self.clamp_scroll_target(now);
+    }
+
+    /// 卡片数量变化后，滚动目标超出新范围时用 `SMOOTH` 滚回范围内。
+    fn clamp_scroll_target(&mut self, now: f64) {
         let (lo, hi) = self.switcher.scroll_range(self.tasks.len());
         let target = self.scroll.target();
         let clamped = target.clamp(lo, hi);

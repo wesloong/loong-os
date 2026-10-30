@@ -137,6 +137,7 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
     };
 
     let start = Instant::now();
+    let mut timing = FrameTiming::default();
     let mut next_action = 0;
     for frame in 0..=total_frames {
         let now = frame as f64 / fps as f64;
@@ -172,12 +173,19 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
             }
         }
 
+        // 计时：生成画面 + 渲染元素 + GPU 画完（glFinish），不含截图与编码。
+        let t0 = Instant::now();
         let scene = state.shell.scene(now);
         let elements = painter.elements(&mut renderer, &scene, &mut assets, &state.shell)?;
         let mut fb = renderer.bind(&mut buffer)?;
         damage
             .render_output(&mut renderer, &mut fb, 0, &elements, [0.0, 0.0, 0.0, 1.0])
             .map_err(|e| anyhow!("渲染失败: {e:?}"))?;
+        // SAFETY: 只调用 glFinish，不改变任何 GL 状态。
+        renderer.with_context(|gl| unsafe { gl.Finish() })?;
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        timing.push(ms);
+        tracing::debug!("帧 {frame}（{:.0} ms）：渲染 {ms:.1} ms，{} 个元素", now * 1000.0, elements.len());
 
         let want_shot = shots.contains(&frame);
         let want_record = recorder
@@ -214,7 +222,42 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
         rec.finish()?;
         tracing::info!("动画已保存 {}", opts.out_dir.join("anim.png").display());
     }
+    timing.report();
     Ok(())
+}
+
+/// 每帧渲染耗时统计（毫秒）。
+#[derive(Default)]
+struct FrameTiming {
+    samples: Vec<f64>,
+}
+
+impl FrameTiming {
+    fn push(&mut self, ms: f64) {
+        self.samples.push(ms);
+    }
+
+    /// 打印平均值与分位数（第一帧含着色器编译与纹理上传，单独列出）。
+    fn report(&self) {
+        let Some((&first, rest)) = self.samples.split_first() else {
+            return;
+        };
+        if rest.is_empty() {
+            tracing::info!("渲染耗时：首帧 {first:.1} ms");
+            return;
+        }
+        let mut sorted = rest.to_vec();
+        sorted.sort_by(f64::total_cmp);
+        let pct = |p: f64| sorted[((sorted.len() - 1) as f64 * p).round() as usize];
+        let mean = sorted.iter().sum::<f64>() / sorted.len() as f64;
+        tracing::info!(
+            "渲染耗时：首帧 {first:.1} ms；其余 {} 帧 平均 {mean:.1} ms，中位 {:.1} ms，p95 {:.1} ms，最大 {:.1} ms",
+            sorted.len(),
+            pct(0.5),
+            pct(0.95),
+            pct(1.0),
+        );
+    }
 }
 
 fn spawn(cmd: &str, state: &LoongState) {

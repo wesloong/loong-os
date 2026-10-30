@@ -39,7 +39,12 @@ PKGS_SHELL="wayland-dev wayland-protocols libxkbcommon-dev libinput-dev eudev-de
   mesa-dev libdrm-dev pixman-dev mesa-dri-gallium mesa-egl mesa-gles mesa-gbm seatd
   font-inter font-noto-cjk weston weston-clients foot"
 PKGS_IMAGE="erofs-utils e2fsprogs mtools dosfstools sfdisk ukify py3-pefile systemd-boot systemd-efistub
-  busybox-static kmod qemu-system-x86_64 qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci ovmf"
+  busybox-static kmod zstd xz cpio file squashfs-tools qemu-system-x86_64 qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci ovmf"
+# 跨架构（aarch64）：交叉编译用的标准库源码、qemu-user（binfmt，见 tools/setup-binfmt.sh）、
+# aarch64 虚拟机（自带 edk2 固件），以及 Android 启动镜像工具（boot.img、super、sparse、vbmeta）
+PKGS_CROSS="rust-src qemu-aarch64 qemu-system-aarch64
+  android-tools-mkbootimg android-tools-unpack_bootimg android-tools-lpmake android-tools-lpdump
+  android-tools-img2simg android-tools-simg2img android-tools-avbtool"
 
 die() { echo "dev-chroot: $*" >&2; exit 1; }
 
@@ -129,7 +134,7 @@ do_init() {
 		rm -rf "$(dirname "$(dirname "$apk_static")")"
 	fi
 	# shellcheck disable=SC2086
-	chroot_exec apk add --no-progress $PKGS_BASE $PKGS_TOOLCHAIN $PKGS_SHELL $PKGS_IMAGE
+	chroot_exec apk add --no-progress $PKGS_BASE $PKGS_TOOLCHAIN $PKGS_SHELL $PKGS_IMAGE $PKGS_CROSS
 	chroot_exec update-ca-certificates >/dev/null 2>&1 || true
 	echo "完成: $CHROOT ($(cat "$CHROOT/etc/alpine-release"))"
 }

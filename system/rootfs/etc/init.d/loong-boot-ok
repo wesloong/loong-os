@@ -1,10 +1,13 @@
 #!/sbin/openrc-run
-# A/B 启动确认（uefi-sdboot 后端）。
+# A/B 启动确认：系统界面成功启动后，告诉引导程序“这个 slot 是好的”。
+# 启动后端由 mkimage 写入 /etc/conf.d/loong-boot-ok（BOOT_BACKEND=...）。
 #
-# systemd-boot 的启动计数：UKI 文件名带 "+剩余次数-已失败次数"（如 loong-a+3.efi），
-# 每次尝试启动都会递减；次数用完的 slot 会被排到最后，自动回退到另一个 slot。
-# 系统界面成功启动后，本服务去掉文件名里的计数，表示这个 slot 是好的。
-# Alpine 只提供 systemd-boot 的 EFI 程序，没有 systemd-bless-boot，所以自己实现。
+# uefi-sdboot：systemd-boot 的启动计数。UKI 文件名带 "+剩余次数-已失败次数"（如 loong-a+3.efi），
+#   每次尝试启动都会递减；次数用完的 slot 会被排到最后，自动回退到另一个 slot。
+#   本服务去掉文件名里的计数。Alpine 只提供 systemd-boot 的 EFI 程序，没有 systemd-bless-boot，所以自己实现。
+# android-abl：高通 ABL 的 slot 属性（GPT 分区属性里的 successful / retry-count）。
+#   qbootctl -m 把当前 slot 标记为启动成功；未标记时 ABL 每次启动递减重试次数，用完后切换到另一个 slot。
+#   不启用 qbootctl 自带的 OpenRC 服务：它在启动早期就标记成功，起不到保护作用。
 
 description="标记本次启动成功（A/B 回滚保护）"
 
@@ -26,6 +29,19 @@ find_partition() {
 }
 
 start() {
+	case "${BOOT_BACKEND:-uefi-sdboot}" in
+		android-abl) mark_abl ;;
+		*) mark_sdboot ;;
+	esac
+}
+
+mark_abl() {
+	ebegin "标记本次启动成功（slot $(qbootctl -c 2>/dev/null)）"
+	qbootctl -m >/dev/null
+	eend $?
+}
+
+mark_sdboot() {
 	ebegin "标记本次启动成功"
 	modprobe -q efivarfs 2>/dev/null
 	if ! mountpoint -q /sys/firmware/efi/efivars 2>/dev/null; then

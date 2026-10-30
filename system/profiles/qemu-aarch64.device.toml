@@ -1,0 +1,10 @@
+# QEMU aarch64 虚拟平板的设备描述（安装到 /usr/share/loong/device.toml）
+name = "QEMU 虚拟平板"
+size_class = "regular"
+
+[screen]
+width = 1280
+height = 800
+scale = 1.0
+refresh_hz = 60
+corner_radius = 0

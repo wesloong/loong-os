@@ -39,6 +39,8 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 | `crates/loong-ui`：设计令牌、连续圆角、文字（中文）、图标、毛玻璃、壁纸 | ✅ 已完成 |
 | `crates/loong-shell`：headless 后端、主屏、打开应用 / 回主屏手势动画、真实 Wayland 客户端（xdg-shell）、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证） |
 | QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
+| aarch64：qemu-user binfmt（`tools/setup-binfmt.sh`）、交叉编译（`tools/build-aarch64.sh`）、`qemu-aarch64` 镜像 | ✅ 在 QEMU virt（TCG）中启动到锁屏 |
+| 小米平板 5：`android-abl` 启动后端（boot.img、super 动态分区 A/B、userdata、qbootctl 回滚），见[适配说明](docs/devices/xiaomi-nabu.md) | 🚧 镜像可构建并通过离线自检，尚未上真机 |
 
 完整路线图（M0–M7）见[技术规划](docs/技术规划.md#五路线图)。
 
@@ -55,9 +57,11 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 | `system/packages/wpewebkit/` | WPE WebKit 的 APKBUILD | 已有 |
 | `system/packages/loong-*/` | `loong-shell`、`loong-webrt`、`loong-base`、`loong-initramfs`、`loong-device-*` | 计划 |
 | `system/rootfs/` | OpenRC 服务：`loong-session`（系统界面）、`loong-boot-ok`（A/B 启动确认） | 已有 |
-| `system/profiles/` | 机型配置与设备描述：`qemu-x86_64` 已有；`xiaomi-nabu`（M3） | 部分已有 |
-| `system/initramfs/`、`system/mkimage/` | busybox initramfs；镜像构建：apk → rootfs → erofs → initramfs → UKI → GPT 磁盘 | 已有（UKI）；boot.img（M3） |
+| `system/profiles/` | 机型配置与设备描述：`qemu-x86_64`、`qemu-aarch64`、`xiaomi-nabu` | 已有（nabu 未上机） |
+| `system/devices/<机型>/`、`system/keys/` | 机型专属文件（如 nabu 的音频 UCM）；第三方软件源公钥（postmarketOS/Nura） | 已有 |
+| `system/initramfs/`、`system/mkimage/` | busybox initramfs（含动态分区映射 `loong-dynpart`）；镜像构建：apk → rootfs → erofs → initramfs → UKI + GPT 磁盘，或 boot.img + super.img | 已有 |
 | `tools/dev-chroot.sh`、`tools/build-pkg.sh` | 开发 chroot、APK 构建 | 已有 |
+| `tools/setup-binfmt.sh`、`tools/build-aarch64.sh` | 宿主机注册 qemu-user binfmt；交叉编译 aarch64 的 Rust 组件 | 已有 |
 | `tools/qemu.py` | QEMU 启动、QMP 截图、模拟点按/滑动 | 已有 |
 | `.github/workflows/` | `rust.yml`、`wpewebkit.yml` 已有；`image.yml` 计划中 | 部分已有 |
 
@@ -91,6 +95,13 @@ sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build --release -p loong-sh
   python3 tools/qemu.py start build/image/qemu-x86_64/loong-qemu-x86_64.img && \
   python3 tools/qemu.py wait "login:" && python3 tools/qemu.py shot out/qemu.png'
 #    之后可以：python3 tools/qemu.py tap 235 124；swipe 640 795 640 420；stop
+
+# 6. aarch64：先在宿主机注册 qemu-user binfmt（每次开机一次），再交叉编译 loong-shell、构建并启动镜像
+#    （aarch64 在 TCG 下比 x86_64 慢得多，启动到锁屏要几分钟）
+sudo tools/setup-binfmt.sh
+sudo tools/dev-chroot.sh run sh -c 'tools/build-aarch64.sh && system/mkimage/mkimage.sh qemu-aarch64 && \
+  python3 tools/qemu.py start build/image/qemu-aarch64/loong-qemu-aarch64.img --arch aarch64'
+#    小米平板 5：system/mkimage/mkimage.sh xiaomi-nabu，刷机见 docs/devices/xiaomi-nabu.md
 
 # 其他命令
 sudo tools/dev-chroot.sh shell     # 进入 chroot

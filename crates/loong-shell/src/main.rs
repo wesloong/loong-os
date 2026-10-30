@@ -97,6 +97,25 @@ fn ensure_runtime_dir() {
     }
 }
 
+/// 应用启动命令配置文件。
+const APPS_FILE: &str = "/usr/share/loong/apps.toml";
+
+/// 解析 apps.toml：
+///
+/// ```toml
+/// [commands]
+/// browser = "loong-webapp --id browser --name 浏览器 https://example.com"
+/// ```
+fn parse_app_commands(text: &str) -> anyhow::Result<Vec<(String, String)>> {
+    #[derive(serde::Deserialize)]
+    struct AppsFile {
+        #[serde(default)]
+        commands: std::collections::BTreeMap<String, String>,
+    }
+    let file: AppsFile = toml::from_str(text)?;
+    Ok(file.commands.into_iter().collect())
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -104,7 +123,15 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
     ensure_runtime_dir();
-    let args = parse_args()?;
+    let mut args = parse_args()?;
+    // 系统镜像中的应用启动命令（命令行 --app 优先）。
+    let apps_file = std::env::var("LOONG_APPS").unwrap_or_else(|_| APPS_FILE.to_string());
+    if let Ok(text) = std::fs::read_to_string(&apps_file) {
+        let mut from_file =
+            parse_app_commands(&text).with_context(|| format!("解析 {apps_file} 失败"))?;
+        from_file.retain(|(id, _)| !args.app_commands.iter().any(|(a, _)| a == id));
+        args.app_commands.extend(from_file);
+    }
 
     let device = match (&args.device, args.size) {
         (Some(path), _) => DeviceConfig::load(path).with_context(|| format!("读取 {path} 失败"))?,
@@ -142,4 +169,22 @@ fn main() -> anyhow::Result<()> {
         app_commands: args.app_commands,
     };
     headless::run(&device, opts)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn parses_app_commands() {
+        let cmds = super::parse_app_commands(
+            "[commands]\nbrowser = \"loong-webapp --id browser https://example.com\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cmds,
+            vec![(
+                "browser".to_string(),
+                "loong-webapp --id browser https://example.com".to_string()
+            )]
+        );
+    }
 }

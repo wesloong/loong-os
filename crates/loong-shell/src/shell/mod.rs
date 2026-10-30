@@ -320,9 +320,14 @@ impl Shell {
                     .and_then(|d| d.lock().ok().and_then(|d| d.app_id.clone()))
             })
         });
-        let matched = app_id
-            .as_deref()
-            .and_then(|id| self.apps.iter().position(|a| a.id == id));
+        // loong-webapp 的 app_id 形如 loong.webapp.<id>（id 中的 '-' 被替换为 '_'）。
+        let matched = app_id.as_deref().and_then(|raw| {
+            let id = raw
+                .strip_prefix("loong.webapp.")
+                .unwrap_or(raw)
+                .replace('_', "-");
+            self.apps.iter().position(|a| a.id == id)
+        });
         match &mut self.card {
             Some(card) if card.window.is_none() && !card.closing => {
                 card.window = Some(window);

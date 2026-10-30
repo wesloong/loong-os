@@ -1,0 +1,67 @@
+/*
+ * LoongKit：Loong OS Web 应用的设计令牌与基础组件。
+ * 规范见 docs/design/设计规范.md；弹簧缓动见 springs.css（由 loong-motion 生成）。
+ */
+@import url("springs.css");
+
+:root {
+  color-scheme: light dark;
+  --loong-font: "Inter", "Noto Sans CJK SC", system-ui, sans-serif;
+  --loong-accent: #0d9488;
+  --loong-label: #0b1215;
+  --loong-secondary-label: rgba(11, 18, 21, 0.6);
+  --loong-background: #ffffff;
+  --loong-grouped-background: #f2f4f5;
+  --loong-separator: rgba(11, 18, 21, 0.12);
+  --loong-radius-card: 16px;
+  --loong-radius-button: 12px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --loong-accent: #2dd4bf;
+    --loong-label: #f1f5f6;
+    --loong-secondary-label: rgba(241, 245, 246, 0.6);
+    --loong-background: #000000;
+    --loong-grouped-background: #111618;
+    --loong-separator: rgba(241, 245, 246, 0.14);
+  }
+}
+
+html {
+  font-family: var(--loong-font);
+  background: var(--loong-grouped-background);
+  color: var(--loong-label);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.loong-card {
+  background: var(--loong-background);
+  border-radius: var(--loong-radius-card);
+  padding: 20px;
+}
+
+.loong-button {
+  font: 600 17px/1.2 var(--loong-font);
+  color: #fff;
+  background: var(--loong-accent);
+  border: 0;
+  border-radius: var(--loong-radius-button);
+  padding: 12px 22px;
+  transition: transform var(--loong-spring-snappy-duration) var(--loong-spring-snappy-easing);
+}
+
+.loong-button:active {
+  transform: scale(0.94);
+  transition-duration: 120ms;
+  transition-timing-function: ease-out;
+}
+
+/* 系统设置“减少动态效果”时，弹簧动画退化为短暂淡入淡出。 */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+  }
+}

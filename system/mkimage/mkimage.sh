@@ -87,6 +87,16 @@ SHELL_BIN="$SRC/build/target-alpine/release/loong-shell"
 [ -x "$SHELL_BIN" ] || { echo "缺少 $SHELL_BIN，请先运行 cargo build --release -p loong-shell" >&2; exit 1; }
 install -Dm755 "$SHELL_BIN" "$ROOT/usr/bin/loong-shell"
 install -Dm644 "$SRC/system/profiles/$PROFILE.device.toml" "$ROOT/usr/share/loong/device.toml"
+# Web 运行时（WPE WebKit 构建完成后可用：WITH_WPE=1）
+if [ -n "${WITH_WPE:-}" ]; then
+	WEBAPP_BIN="$SRC/build/webrt/loong-webapp"
+	[ -x "$WEBAPP_BIN" ] || { echo "缺少 $WEBAPP_BIN，请先构建 webrt（见 README）" >&2; exit 1; }
+	install -Dm755 "$WEBAPP_BIN" "$ROOT/usr/bin/loong-webapp"
+	mkdir -p "$ROOT/usr/share/loong/web"
+	cp -a "$SRC/webrt/loongkit" "$SRC/webrt/demo" "$ROOT/usr/share/loong/web/"
+	[ -f "$SRC/system/profiles/$PROFILE.apps.toml" ] && \
+		install -Dm644 "$SRC/system/profiles/$PROFILE.apps.toml" "$ROOT/usr/share/loong/apps.toml"
+fi
 cp -a "$SRC/system/rootfs/." "$ROOT/"
 chmod 755 "$ROOT/etc/init.d/loong-session" "$ROOT/etc/init.d/loong-boot-ok"
 if [ -n "${SESSION_ENV:-}" ]; then

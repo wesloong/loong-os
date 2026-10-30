@@ -13,3 +13,7 @@
 
 # Claude Code 的并行 worktree（各自在独立分支上工作，由主分支合并）
 /.claude/worktrees/
+
+# Python 字节码缓存
+__pycache__/
+*.pyc

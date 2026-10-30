@@ -10,6 +10,7 @@ mod clock;
 mod device;
 mod handlers;
 mod input;
+mod lunar;
 mod render;
 mod script;
 mod shell;

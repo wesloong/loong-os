@@ -1,0 +1,48 @@
+name: wpewebkit
+
+# WebKit 编译很慢（4 核约 3–6 小时），只在配方变化或手动触发时构建。
+# 注意：GitHub 托管 runner 单任务最长 6 小时；ARM runner 仅对公开仓库免费。
+# 如果超时，改用自托管 runner，或在开发机上用 tools/build-pkg.sh 构建后上传到 Release。
+on:
+  workflow_dispatch:
+  push:
+    paths: ["system/packages/wpewebkit/**", ".github/workflows/wpewebkit.yml"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: alpine:3.24
+    timeout-minutes: 355
+    steps:
+      - name: Install abuild
+        run: apk add --no-progress alpine-sdk ccache
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ccache
+          key: wpewebkit-ccache-${{ matrix.arch }}-${{ hashFiles('system/packages/wpewebkit/APKBUILD') }}
+          restore-keys: wpewebkit-ccache-${{ matrix.arch }}-
+      - name: Build package
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/ccache
+          CCACHE_MAXSIZE: 4G
+        run: |
+          export PACKAGER="Loong OS CI <ci@loong-os.local>"
+          abuild-keygen -a -n
+          cp ~/.abuild/*.rsa.pub /etc/apk/keys/
+          export JOBS=$(nproc) REPODEST="$PWD/packages" SRCDEST="$PWD/distfiles"
+          export srcdir="$PWD/abuild/src" pkgbasedir="$PWD/abuild/pkg"
+          cd system/packages/wpewebkit
+          abuild -F -r
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wpewebkit-${{ matrix.arch }}
+          path: packages/**/*.apk

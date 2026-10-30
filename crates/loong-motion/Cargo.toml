@@ -1,0 +1,13 @@
+[package]
+name = "loong-motion"
+description = "Loong OS 物理动画引擎：弹簧、惯性衰减、橡皮筋、速度跟踪与手势落点预测"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

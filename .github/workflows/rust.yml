@@ -1,0 +1,31 @@
+name: rust
+
+on:
+  push:
+    paths: ["crates/**", "Cargo.toml", "Cargo.lock", ".github/workflows/rust.yml"]
+  pull_request:
+    paths: ["crates/**", "Cargo.toml", "Cargo.lock", ".github/workflows/rust.yml"]
+
+jobs:
+  check:
+    # 在 Alpine（musl）里构建与测试，与目标系统一致。
+    runs-on: ubuntu-24.04
+    container: alpine:3.24
+    steps:
+      - name: Install toolchain and system libraries
+        run: |
+          apk add --no-progress git rust cargo rustfmt rust-clippy pkgconf clang \
+            wayland-dev wayland-protocols libxkbcommon-dev libinput-dev eudev-dev \
+            libseat-dev mesa-dev libdrm-dev pixman-dev mesa-dri-gallium mesa-egl \
+            mesa-gles mesa-gbm font-inter font-noto-cjk
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: alpine-cargo-${{ hashFiles('Cargo.lock') }}
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace

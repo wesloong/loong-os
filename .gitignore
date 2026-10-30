@@ -1,0 +1,12 @@
+# 构建产物与本地开发环境
+/build/
+/out/
+/target/
+*.img
+*.erofs
+*.efi
+!/system/**/*.efi.in
+
+# abuild 默认的中间目录（tools/build-pkg.sh 已改到 build/ 下）
+/system/packages/*/src/
+/system/packages/*/pkg/

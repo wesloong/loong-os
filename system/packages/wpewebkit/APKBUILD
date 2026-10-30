@@ -1,0 +1,124 @@
+# Loong OS: WPE WebKit（使用 2.54 起默认的 WPEPlatform API，不再依赖 libwpe/Cog）
+# 构建: tools/dev-chroot.sh run sh -c 'cd /src/system/packages/wpewebkit && abuild -F -r'
+pkgname=wpewebkit
+pkgver=2.54.2
+pkgrel=0
+pkgdesc="WPE WebKit web engine for embedded devices (WPEPlatform API)"
+url="https://wpewebkit.org/"
+arch="aarch64 x86_64"
+license="LGPL-2.0-or-later AND BSD-2-Clause"
+depends="bubblewrap xdg-dbus-proxy"
+makedepends="
+	bison
+	clang
+	cmake
+	flex
+	gperf
+	lld
+	perl
+	python3
+	ruby
+	ruby-getoptlong
+	samurai
+	unifdef
+
+	brotli-dev
+	expat-dev
+	fontconfig-dev
+	freetype-dev
+	glib-dev
+	gst-plugins-bad-dev
+	gst-plugins-base-dev
+	gstreamer-dev
+	harfbuzz-dev
+	icu-dev
+	lcms2-dev
+	libavif-dev
+	libdrm-dev
+	libepoxy-dev
+	libgcrypt-dev
+	libjpeg-turbo-dev
+	libjxl-dev
+	libpng-dev
+	libseccomp-dev
+	libsoup3-dev
+	libtasn1-dev
+	libwebp-dev
+	libxkbcommon-dev
+	libxml2-dev
+	libxslt-dev
+	mesa-dev
+	sqlite-dev
+	wayland-dev
+	wayland-protocols
+	woff2-dev
+	zlib-dev
+	"
+subpackages="$pkgname-dev $pkgname-minibrowser"
+source="https://wpewebkit.org/releases/wpewebkit-$pkgver.tar.xz"
+# 上游测试需要完整的测试基础设施（WebKitTestRunner 等），打包时不运行。
+options="!check"
+
+build() {
+	export CC=clang
+	export CXX=clang++
+	# 平板上 JSC 性能更重要，用 -O2 而不是 Alpine 默认的 -Os。
+	# fortify 与 WebKit 的部分代码不兼容（Alpine webkit2gtk 也关闭了它）。
+	export CFLAGS="${CFLAGS/-Os/-O2} -U_FORTIFY_SOURCE"
+	export CXXFLAGS="${CXXFLAGS/-Os/-O2} -U_FORTIFY_SOURCE"
+	export LDFLAGS="$LDFLAGS -fuse-ld=lld"
+
+	local launcher=""
+	command -v ccache >/dev/null && launcher="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+
+	# shellcheck disable=SC2086
+	cmake -B build -G Ninja $launcher \
+		-DPORT=WPE \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DCMAKE_INSTALL_LIBEXECDIR=lib \
+		-DENABLE_WPE_PLATFORM=ON \
+		-DENABLE_WPE_PLATFORM_WAYLAND=ON \
+		-DENABLE_WPE_PLATFORM_HEADLESS=ON \
+		-DENABLE_WPE_PLATFORM_DRM=OFF \
+		-DENABLE_WPE_LEGACY_API=OFF \
+		-DENABLE_WPE_QT_API=OFF \
+		-DENABLE_DOCUMENTATION=OFF \
+		-DENABLE_INTROSPECTION=OFF \
+		-DENABLE_JOURNALD_LOG=OFF \
+		-DENABLE_WEBDRIVER=OFF \
+		-DENABLE_SPELLCHECK=OFF \
+		-DENABLE_GAMEPAD=OFF \
+		-DENABLE_SPEECH_SYNTHESIS=OFF \
+		-DENABLE_SAMPLING_PROFILER=OFF \
+		-DENABLE_BUBBLEWRAP_SANDBOX=ON \
+		-DENABLE_MINIBROWSER=ON \
+		-DENABLE_API_TESTS=OFF \
+		-DENABLE_LAYOUT_TESTS=OFF \
+		-DUSE_ATK=OFF \
+		-DUSE_FLITE=OFF \
+		-DUSE_LIBBACKTRACE=OFF \
+		-DUSE_LIBHYPHEN=OFF \
+		-DUSE_SYSPROF_CAPTURE=OFF \
+		-DUSE_GBM=ON \
+		-DUSE_LIBDRM=ON
+	ninja -C build -j"${JOBS:-3}"
+}
+
+package() {
+	DESTDIR="$pkgdir" cmake --install build
+}
+
+minibrowser() {
+	pkgdesc="$pkgdesc (MiniBrowser for testing)"
+	depends="$pkgname=$pkgver-r$pkgrel"
+	cd "$pkgdir"
+	find . -name '*MiniBrowser*' | while read -r f; do
+		amove "${f#./}"
+	done
+}
+
+sha512sums="
+9af0718a7306c8051a9751802c434c8d66441abc515d839b53b736752f7a9e711f24188f61933ec90bbb486c5fad0f73a35f8c67669c626c4cff6d7f87165cd1  wpewebkit-2.54.2.tar.xz
+"

@@ -39,6 +39,7 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 | `crates/loong-ui`：设计令牌、连续圆角、文字（中文）、图标、毛玻璃、壁纸 | ✅ 已完成 |
 | `crates/loong-shell`：headless 后端、主屏、打开应用 / 回主屏手势动画、真实 Wayland 客户端（xdg-shell）、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证） |
 | QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
+| `crates/loong-ime`：librime 拼音引擎（简体，词库 8MB）、iPad 式屏幕键盘模型（布局、命中测试、触摸状态机） | ✅ 已完成（含真实 librime 测试）；绘制与 text-input-v3 对接待接入 loong-shell（M4） |
 
 完整路线图（M0–M7）见[技术规划](docs/技术规划.md#五路线图)。
 
@@ -50,6 +51,7 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 | `crates/loong-motion/` | 物理动画引擎（纯数学，无第三方依赖） | 已有 |
 | `crates/loong-ui/` | 绘制、设计令牌、连续圆角（超椭圆） | 已有 |
 | `crates/loong-shell/` | Wayland 合成器、系统 UI、手势识别 | 已有（M1 进行中） |
+| `crates/loong-ime/` | 中文拼音输入法：librime 绑定、屏幕键盘模型 | 已有（M4） |
 | `crates/loong-sysd/` | 系统服务（D-Bus）：背光、电源、Wi‑Fi、OTA | 计划（M4） |
 | `webrt/` | C/meson：`webapp/`、`browser/`、`platform/`（`loong` WPEPlatform 后端）、`loongkit/` | 计划（M2） |
 | `system/packages/wpewebkit/` | WPE WebKit 的 APKBUILD | 已有 |
@@ -104,6 +106,7 @@ sudo tools/dev-chroot.sh umount    # 卸载 chroot 的挂载点
 - [技术规划](docs/技术规划.md)：技术选型、系统架构、多机型与手机形态、路线图、资源目标、风险
 - [架构决策记录（ADR）](docs/adr/README.md)：基础发行版、Shell、Web 内核、启动与 OTA
 - [设计规范（Loong HIG）](docs/design/设计规范.md)：颜色、字体、圆角、材质、动效、布局、手势、LoongKit 令牌
+- [loong-ime](docs/api/loong-ime.md)：输入法架构、text-input-v3 对接、词库体积与延迟
 
 ## 许可证
 

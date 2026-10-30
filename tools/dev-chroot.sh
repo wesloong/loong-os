@@ -37,7 +37,8 @@ PKGS_BASE="alpine-base alpine-sdk bash git curl ca-certificates ccache"
 PKGS_TOOLCHAIN="clang lld cmake samurai meson pkgconf rust cargo rustfmt rust-clippy python3 perl ruby ruby-getoptlong"
 PKGS_SHELL="wayland-dev wayland-protocols libxkbcommon-dev libinput-dev eudev-dev libseat-dev
   mesa-dev libdrm-dev pixman-dev mesa-dri-gallium mesa-egl mesa-gles mesa-gbm seatd
-  font-inter font-noto-cjk weston weston-clients foot"
+  font-inter font-noto-cjk weston weston-clients foot
+  librime-dev rime-plum-data"
 PKGS_IMAGE="erofs-utils e2fsprogs mtools dosfstools sfdisk ukify py3-pefile systemd-boot systemd-efistub
   busybox-static kmod qemu-system-x86_64 qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci ovmf"
 

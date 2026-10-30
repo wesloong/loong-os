@@ -1,0 +1,18 @@
+[package]
+name = "loong-ime"
+description = "Loong OS 输入法：librime 中文拼音引擎绑定 + iPad 式屏幕键盘模型（布局、命中测试、按键状态）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+links = "rime"
+
+[dependencies]
+loong-motion = { path = "../loong-motion" }
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[lints]
+workspace = true

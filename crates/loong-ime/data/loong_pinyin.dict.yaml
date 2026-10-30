@@ -1,0 +1,22 @@
+# Rime dictionary
+# encoding: utf-8
+#
+# Loong OS 默认拼音词典：朙月拼音（luna_pinyin）的字表 + 过滤后的八股文（essay）预设词汇。
+#
+# - 词组最长 7 字、词频低于 100 的预设词不收（与地球拼音 terra_pinyin 的取舍相同）；
+# - 编译后 loong_pinyin.table.bin 约 8MB，luna_pinyin.table.bin 约 23MB；
+# - 编译需要 luna_pinyin.dict.yaml 与 essay.txt（Alpine rime-plum-data）。系统镜像中预先
+#   编译好（build/loong_pinyin.*.bin），运行时不再需要这两个源文件。
+#
+# 由 crates/loong-ime 维护（data/loong_pinyin.dict.yaml）。词典数据本身为 LGPL-3.0。
+
+---
+name: loong_pinyin
+version: "2026.10.30"
+sort: by_weight
+use_preset_vocabulary: true
+max_phrase_length: 7
+min_phrase_weight: 100
+import_tables:
+  - luna_pinyin
+...

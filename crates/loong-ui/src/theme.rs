@@ -118,6 +118,26 @@ impl Palette {
     }
 }
 
+/// WCAG 2.x 相对亮度（0xRRGGBB）。
+pub fn relative_luminance(rgb: u32) -> f32 {
+    let lin = |c: u32| {
+        let v = (c & 0xff) as f32 / 255.0;
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(rgb >> 16) + 0.7152 * lin(rgb >> 8) + 0.0722 * lin(rgb)
+}
+
+/// WCAG 对比度（1..21）。正文要求 ≥ 4.5，大字 ≥ 3。
+pub fn contrast_ratio(a: u32, b: u32) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
 /// 中国传统颜料（0xRRGGBB）。
 pub mod pigment {
     /// 朱砂：品牌与重要提示。
@@ -136,4 +156,33 @@ pub mod pigment {
     pub const HUAQING: u32 = 0x3B5878;
     /// 泥金（暗色外观的点缀）。
     pub const NIJIN: u32 = 0xC8A45A;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn contrast_ratio_matches_known_values() {
+        assert!((contrast_ratio(0x000000, 0xFFFFFF) - 21.0).abs() < 0.01);
+        assert!((contrast_ratio(0x777777, 0xFFFFFF) - 4.48).abs() < 0.02);
+        assert_eq!(contrast_ratio(0x123456, 0x123456), 1.0);
+    }
+
+    #[test]
+    fn body_text_is_readable_on_paper_in_both_themes() {
+        for theme in [Theme::Light, Theme::Dark] {
+            let p = theme.palette();
+            for paper in [p.paper, p.paper_raised] {
+                // 焦墨、浓墨、重墨可用于正文与次要文字。
+                for level in [Ink::Jiao, Ink::Nong, Ink::Zhong] {
+                    let c = contrast_ratio(p.ink[level as usize], paper);
+                    assert!(c >= 4.5, "{theme:?} {level:?} 对比度 {c:.2}");
+                }
+                // 淡墨用于大字/说明，至少 3:1。
+                let c = contrast_ratio(p.ink[Ink::Dan as usize], paper);
+                assert!(c >= 3.0, "{theme:?} 淡墨对比度 {c:.2}");
+            }
+        }
+    }
 }

@@ -1,0 +1,38 @@
+# Loong OS: 霞鹜文楷 屏幕阅读版（LXGW WenKai Screen）Regular，「墨韵」设计语言的展示字体
+# 构建: tools/build-pkg.sh font-lxgw-wenkai-screen
+#
+# 上游只在 GitHub Releases 发布 TTF；这里改用 npm 上同一字体的 webfont 包
+# （按 unicode-range 切分的 woff2 子集），由 build-font.py 用 fontTools 拼回一个 TTF：
+# 约 1.4 万个码位（1.2 万个常用汉字 + 拉丁 + 标点），约 7 MB。缺的罕用字由 fontconfig
+# 回退到思源黑体。
+pkgname=font-lxgw-wenkai-screen
+_npmname=lxgw-wenkai-screen-webfont
+pkgver=1.7.0
+pkgrel=0
+pkgdesc="LXGW WenKai Screen, a Chinese kai font for screen reading (Regular)"
+url="https://github.com/lxgw/LxgwWenKai-Screen"
+arch="noarch"
+license="OFL-1.1"
+depends="fontconfig"
+makedepends="python3 py3-fonttools py3-brotli"
+source="$_npmname-$pkgver.tgz::https://registry.npmjs.org/$_npmname/-/$_npmname-$pkgver.tgz
+	build-font.py
+	"
+builddir="$srcdir/package"
+# 纯数据包，没有可运行的测试；构建脚本自己会打印覆盖率。
+options="!check"
+
+build() {
+	python3 -I "$srcdir"/build-font.py "$builddir" "$builddir"/LXGWWenKaiScreen-Regular.ttf
+}
+
+package() {
+	install -Dm644 "$builddir"/LXGWWenKaiScreen-Regular.ttf \
+		"$pkgdir"/usr/share/fonts/lxgw/LXGWWenKaiScreen-Regular.ttf
+	install -Dm644 "$builddir"/OFL.txt "$pkgdir"/usr/share/licenses/$pkgname/OFL.txt
+}
+
+sha512sums="
+c6f7c5e15dba31bdf7e712a0deec658f3f95da7ab81797a4d24bbda66c8a813d03ce8fdddab1e2ed6a67aa0bccf6695701c00a3abc6b70399466222cfd943d6d  lxgw-wenkai-screen-webfont-1.7.0.tgz
+6f5218b7b1f67f6dddb6b60455f18f60384440f6b31200ef9a6be2b0e3a99f5597f649f470d64f1159f6580f372d140a01b3a3f69154d380ce8051082ea37fbb  build-font.py
+"

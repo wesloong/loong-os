@@ -26,6 +26,7 @@ makedepends="
 	expat-dev
 	fontconfig-dev
 	freetype-dev
+	gettext-dev
 	glib-dev
 	gst-plugins-bad-dev
 	gst-plugins-base-dev
@@ -66,7 +67,9 @@ build() {
 	# fortify 与 WebKit 的部分代码不兼容（Alpine webkit2gtk 也关闭了它）。
 	export CFLAGS="${CFLAGS/-Os/-O2} -U_FORTIFY_SOURCE"
 	export CXXFLAGS="${CXXFLAGS/-Os/-O2} -U_FORTIFY_SOURCE"
-	export LDFLAGS="$LDFLAGS -fuse-ld=lld"
+	# glib-dev 依赖 gettext-dev，它的 libintl.h 会把 bindtextdomain 等重定向到 GNU libintl，
+	# 必须显式链接 libintl（否则最后链接 libWPEWebKit 时报 libintl_bindtextdomain 未定义）。
+	export LDFLAGS="$LDFLAGS -fuse-ld=lld -lintl"
 
 	local launcher=""
 	command -v ccache >/dev/null && launcher="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"

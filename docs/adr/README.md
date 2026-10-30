@@ -10,6 +10,7 @@
 | [0002](0002-shell-rust-smithay.md) | Shell 采用 Rust + Smithay 自研 Wayland 合成器 `loong-shell` | 已接受 |
 | [0003](0003-web-内核-wpe-webkit.md) | Web 内核采用 WPE WebKit 2.54（WPEPlatform API），浏览器使用自写的 `loong` WPEPlatform 后端 | 已接受 |
 | [0004](0004-启动与-ota-ab.md) | 只读 erofs + A/B 双分区，自写 initramfs，提供 `uefi-sdboot` / `android-abl` 两种启动后端 | 已接受 |
+| [0005](0005-设计语言-墨韵.md) | 设计语言采用「墨韵」：宣纸 / 夜墨两套外观、墨分五色与传统颜料、文楷展示字体、程序生成的水墨资源，弹簧动效以水墨方式表现 | 已接受 |
 
 ## 编写约定
 

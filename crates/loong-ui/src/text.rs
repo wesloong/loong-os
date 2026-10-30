@@ -126,6 +126,62 @@ impl TextRenderer {
     }
 }
 
+impl TextRenderer {
+    /// 带“留白”光晕的文字：先把字形向外晕开一圈 `halo` 色（如纸色），再画字。
+    /// 用于水墨壁纸上的图标名称等：浓墨山体上的墨字也能读清，又不像黑色投影那样“脏”。
+    /// `radius` 为光晕半径（物理像素）。`style.shadow` 被忽略。
+    pub fn render_halo(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        halo: Color,
+        radius: f32,
+    ) -> Pixmap {
+        let pad = radius.ceil() as i32 + 1;
+        let plain = TextStyle {
+            shadow: false,
+            ..*style
+        };
+        let glyphs = self.render(text, &plain);
+        let (gw, gh) = (glyphs.width() as i32, glyphs.height() as i32);
+        let (w, h) = ((gw + 2 * pad) as usize, (gh + 2 * pad) as usize);
+        let mut coverage = vec![0u8; w * h];
+        for (i, p) in glyphs.pixels().iter().enumerate() {
+            let (x, y) = (i as i32 % gw + pad, i as i32 / gw + pad);
+            coverage[y as usize * w + x as usize] = p.alpha();
+        }
+        // 先膨胀再模糊：光晕贴字形外扩，边缘柔和。
+        let r = (radius * 0.5).round().max(1.0) as i32;
+        let mut grown = vec![0u8; w * h];
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let mut m = 0u8;
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        let (sx, sy) = (x + dx, y + dy);
+                        if sx >= 0 && sy >= 0 && sx < w as i32 && sy < h as i32 {
+                            m = m.max(coverage[sy as usize * w + sx as usize]);
+                        }
+                    }
+                }
+                grown[y as usize * w + x as usize] = m;
+            }
+        }
+        crate::material::blur_alpha(&mut grown, w, h, (radius * 0.4).round().max(1.0) as usize);
+        let mut out = crate::pixmap(w as u32, h as u32);
+        paint_coverage(&mut out, &grown, halo);
+        out.draw_pixmap(
+            pad,
+            pad,
+            glyphs.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            tiny_skia::Transform::identity(),
+            None,
+        );
+        out
+    }
+}
+
 /// 按覆盖度把颜色叠加到位图上（source-over，预乘 alpha）。
 fn paint_coverage(pixmap: &mut Pixmap, coverage: &[u8], color: Color) {
     let data = pixmap.data_mut();
@@ -142,5 +198,70 @@ fn paint_coverage(pixmap: &mut Pixmap, coverage: &[u8], color: Color) {
                 .round()
                 .clamp(0.0, 255.0) as u8;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inked(pm: &Pixmap) -> usize {
+        pm.pixels().iter().filter(|p| p.alpha() > 128).count()
+    }
+
+    fn style(family: FontRole) -> TextStyle {
+        TextStyle {
+            family,
+            size: 32.0,
+            weight: 400,
+            color: Color::BLACK,
+            shadow: false,
+        }
+    }
+
+    /// 没装霞鹜文楷时，展示文字回退到正文字体（思源黑体/Inter），照样画得出来。
+    #[test]
+    fn display_role_falls_back_when_wenkai_is_missing() {
+        let mut db = cosmic_text::fontdb::Database::new();
+        for dir in ["/usr/share/fonts/noto", "/usr/share/fonts/inter"] {
+            db.load_fonts_dir(dir);
+        }
+        if db.is_empty() {
+            return; // 没有系统字体的环境（如裸 CI 容器）跳过。
+        }
+        assert!(!db.faces().any(|f| {
+            f.families
+                .iter()
+                .any(|(n, _)| n == crate::theme::font::DISPLAY_FAMILY)
+        }));
+        let mut t = TextRenderer {
+            fonts: FontSystem::new_with_locale_and_db("zh-CN".into(), db),
+            cache: SwashCache::new(),
+        };
+        let display = t.render("墨韵 9:41", &style(FontRole::Display));
+        let body = t.render("墨韵 9:41", &style(FontRole::Body));
+        assert!(inked(&display) > 200, "回退后没有字形");
+        // 回退到的正是正文字体：宽度与正文一致。
+        assert!((display.width() as i32 - body.width() as i32).abs() <= 2);
+    }
+
+    #[test]
+    fn halo_surrounds_the_text() {
+        let mut t = TextRenderer::new();
+        let s = style(FontRole::Display);
+        let plain = t.render("山水", &s);
+        if inked(&plain) == 0 {
+            return; // 没有任何中文字体的环境。
+        }
+        let halo = t.render_halo("山水", &s, Color::WHITE, 6.0);
+        assert!(halo.width() > plain.width() && halo.height() > plain.height());
+        // 光晕外缘透明，字周围有一圈半透明的白。
+        assert_eq!(halo.pixel(0, 0).unwrap().alpha(), 0);
+        let whiteish = halo
+            .pixels()
+            .iter()
+            .filter(|p| p.alpha() > 40 && p.red() as u16 * 255 >= 200 * p.alpha() as u16)
+            .count();
+        assert!(whiteish > 100);
     }
 }

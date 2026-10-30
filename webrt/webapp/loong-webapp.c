@@ -13,6 +13,7 @@
  */
 
 #include <stdio.h>
+#include <locale.h>
 #include <string.h>
 #include <wpe/webkit.h>
 #include <wpe/wpe-platform.h>
@@ -140,7 +141,6 @@ on_activate(GApplication *app, LoongWebApp *wa)
         "enable-smooth-scrolling", TRUE,
         "enable-webgl", TRUE,
         "enable-media", TRUE,
-        "hardware-acceleration-policy", WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS,
         NULL);
 
     WebKitWebView *view = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
@@ -169,7 +169,7 @@ on_activate(GApplication *app, LoongWebApp *wa)
 }
 
 int
-main(int argc, char **argv)
+main(G_GNUC_UNUSED int argc, char **argv)
 {
     LoongWebApp wa = { 0 };
     g_autofree char *scope = NULL;
@@ -184,7 +184,11 @@ main(int argc, char **argv)
     g_autoptr(GOptionContext) ctx = g_option_context_new("<起始 URL> - Loong OS Web 应用运行时");
     g_option_context_add_main_entries(ctx, entries, NULL);
     g_autoptr(GError) error = NULL;
-    if (!g_option_context_parse(ctx, &argc, &argv, &error)) {
+    /* 参数一律按 UTF-8 解析（应用名常是中文）。g_option_context_parse 会按当前
+     * locale 转码，而系统里不一定设置了 UTF-8 locale（musl 默认 C/ASCII）。 */
+    setlocale(LC_ALL, "");
+    g_auto(GStrv) args = g_strdupv(argv);
+    if (!g_option_context_parse_strv(ctx, &args, &error)) {
         fprintf(stderr, "%s\n", error->message);
         return 2;
     }

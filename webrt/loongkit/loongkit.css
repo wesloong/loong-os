@@ -1,67 +1,832 @@
 /*
- * LoongKit：Loong OS Web 应用的设计令牌与基础组件。
- * 规范见 docs/design/设计规范.md；弹簧缓动见 springs.css（由 loong-motion 生成）。
+ * LoongKit「墨韵」：Loong OS Web 应用的设计令牌与基础组件。
+ *
+ * 规范见 docs/design/设计规范.md；色值与 crates/loong-ui/src/theme.rs 一致。
+ * 弹簧缓动见 springs.css（由 loong-motion 生成，勿手改）；点墨等交互见 loongkit.js。
+ *
+ * 外观：默认跟随系统（prefers-color-scheme），亮色「宣纸」/ 暗色「夜墨」；
+ * 在 <html> 上设 data-theme="light" | "dark" 可强制指定。
  */
 @import url("springs.css");
 
-:root {
-  color-scheme: light dark;
-  --loong-font: "Inter", "Noto Sans CJK SC", system-ui, sans-serif;
-  --loong-accent: #0d9488;
-  --loong-label: #0b1215;
-  --loong-secondary-label: rgba(11, 18, 21, 0.6);
-  --loong-background: #ffffff;
-  --loong-grouped-background: #f2f4f5;
-  --loong-separator: rgba(11, 18, 21, 0.12);
-  --loong-radius-card: 16px;
-  --loong-radius-button: 12px;
+/* 展示字体：霞鹜文楷屏幕版（SIL OFL 1.1，系统自带）。只有一个字重，不要加粗。 */
+@font-face {
+  font-family: "Loong Display";
+  src: local("LXGW WenKai Screen"), local("LXGW WenKai Screen Regular"), local("LXGWWenKaiScreen-Regular"),
+    local("LXGWWenKaiScreen"), local("LXGW WenKai"), local("LXGWWenKai-Regular");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
 }
 
+/* ───────────────────────── 令牌：与外观无关 ───────────────────────── */
+:root {
+  /* 传统颜料（theme.rs pigment） */
+  --loong-color-zhusha: #b83a2b; /* 朱砂：品牌、印章、角标、警示 */
+  --loong-color-yanzhi: #9d2b3c; /* 胭脂 */
+  --loong-color-tenghuang: #d8a21e; /* 藤黄（只用于图形） */
+  --loong-color-zheshi: #a0623a; /* 赭石 */
+  --loong-color-shiqing: #2e5e74; /* 石青 */
+  --loong-color-shilv: #3f7d68; /* 石绿 */
+  --loong-color-huaqing: #3b5878; /* 花青 */
+  --loong-color-nijin: #c8a45a; /* 泥金（暗色点缀） */
+
+  /* 字体 */
+  --loong-font-family: "Inter", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", system-ui, sans-serif;
+  --loong-font-display-family: "Loong Display", "LXGW WenKai Screen", "LXGW WenKai", var(--loong-font-family);
+
+  /* 字号层级（regular）。标题层用文楷，只有 400 一个字重。 */
+  --loong-font-large-title: 400 34px/44px var(--loong-font-display-family);
+  --loong-font-title1: 400 28px/36px var(--loong-font-display-family);
+  --loong-font-title2: 400 22px/30px var(--loong-font-display-family);
+  --loong-font-title3: 400 20px/28px var(--loong-font-display-family);
+  --loong-font-headline: 500 17px/24px var(--loong-font-family);
+  --loong-font-body: 400 17px/26px var(--loong-font-family);
+  --loong-font-callout: 400 16px/24px var(--loong-font-family);
+  --loong-font-subhead: 400 15px/22px var(--loong-font-family);
+  --loong-font-footnote: 400 13px/20px var(--loong-font-family);
+  --loong-font-caption: 400 12px/18px var(--loong-font-family);
+
+  /* 间距（8pt 网格） */
+  --loong-space-2: 2px;
+  --loong-space-4: 4px;
+  --loong-space-8: 8px;
+  --loong-space-12: 12px;
+  --loong-space-16: 16px;
+  --loong-space-20: 20px;
+  --loong-space-24: 24px;
+  --loong-space-32: 32px;
+  --loong-space-40: 40px;
+  --loong-space-48: 48px;
+  --loong-space-64: 64px;
+
+  /* 圆角 */
+  --loong-radius-badge: 4px;
+  --loong-radius-field: 10px;
+  --loong-radius-button: 12px;
+  --loong-radius-card: 16px;
+  --loong-radius-panel: 22px;
+  --loong-radius-sheet: 30px;
+  --loong-radius-capsule: 999px;
+
+  /* 安全区（由运行时注入；页面独立打开时退化为状态栏高度） */
+  --loong-safe-area-top: env(safe-area-inset-top, 24px);
+  --loong-safe-area-bottom: env(safe-area-inset-bottom, 20px);
+
+  /* 程序生成的纹理（内联 SVG，只栅格化一次）。 */
+  /* 印泥：大块实色里零星透出纸白。用作 mask。 */
+  --loong-seal-texture: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><filter id='s' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.7' numOctaves='2' seed='5' stitchTiles='stitch' result='a'/><feColorMatrix in='a' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -30 22.4' result='s0'/><feComponentTransfer in='s0' result='speck'><feFuncA type='linear' slope='.45' intercept='.55'/></feComponentTransfer><feTurbulence type='fractalNoise' baseFrequency='.06' numOctaves='2' seed='9' stitchTiles='stitch' result='b'/><feColorMatrix in='b' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1.6 .25' result='patch'/><feComposite in='speck' in2='patch' operator='arithmetic' k1='1'/></filter><rect width='64' height='64' filter='url(%23s)'/></svg>");
+  /* 一笔横画：起笔圆钝、行笔略有起伏、收笔飞白。用作 mask（拉伸到元素大小）。 */
+  --loong-brush-stroke: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 40' preserveAspectRatio='none'><linearGradient id='p'><stop offset='0' stop-color='%23000'/><stop offset='.84' stop-color='%23000'/><stop offset='1' stop-color='%23f00'/></linearGradient><filter id='b' x='-3%' y='-40%' width='106%' height='180%'><feTurbulence type='fractalNoise' baseFrequency='.0035 .42' numOctaves='3' seed='8' result='n'/><feColorMatrix in='SourceGraphic' values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -1 0 0 1 0' result='wet'/><feComposite in='wet' in2='n' operator='arithmetic' k2='4.2' k3='4.4' k4='-2.75' result='m'/><feComposite in='m' in2='SourceGraphic' operator='in' result='dry'/><feTurbulence type='fractalNoise' baseFrequency='.05 .35' numOctaves='2' seed='3' result='e'/><feDisplacementMap in='dry' in2='e' scale='3.5' xChannelSelector='R' yChannelSelector='G' result='o'/><feColorMatrix in='o' values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 1 0'/></filter><path filter='url(%23b)' fill='url(%23p)' d='M6 20.5C6 9.5 13 5 25 5.2 70 6 200 7 300 8.2c40 .5 70 2 86 4.5 6 1 8 4.2 8 7.8s-2 6.6-8 7.6c-16 2.6-46 4.2-86 4.8C200 34 70 35 25 35.4 13 35.6 6 31 6 20.5Z'/></svg>");
+  /* 点墨：一滴墨在纸上晕开——中心较淡、边缘积墨、外缘被纸纤维扯出毛边。用作 mask。 */
+  --loong-ink-drop: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'><radialGradient id='g'><stop offset='0' stop-color='%23fff' stop-opacity='.66'/><stop offset='.52' stop-color='%23fff' stop-opacity='.52'/><stop offset='.8' stop-color='%23fff' stop-opacity='.86'/><stop offset='.9' stop-color='%23fff' stop-opacity='.3'/><stop offset='1' stop-color='%23fff' stop-opacity='0'/></radialGradient><filter id='f' x='-25%' y='-25%' width='150%' height='150%'><feTurbulence type='fractalNoise' baseFrequency='.018' numOctaves='3' seed='12' result='w'/><feDisplacementMap in='SourceGraphic' in2='w' scale='22' xChannelSelector='R' yChannelSelector='G' result='b'/><feTurbulence type='fractalNoise' baseFrequency='.12' numOctaves='2' seed='4' result='fine'/><feDisplacementMap in='b' in2='fine' scale='6' xChannelSelector='R' yChannelSelector='G'/></filter><circle cx='100' cy='100' r='76' fill='url(%23g)' filter='url(%23f)'/></svg>");
+}
+
+/* ───────────────────────── 令牌：亮色「宣纸」 ───────────────────────── */
+:root {
+  color-scheme: light;
+  --loong-color-paper: #f3eee2; /* 宣纸：页面 */
+  --loong-color-paper-raised: #eae3d3; /* 熟宣：侧栏、凹槽、次级区域 */
+  --loong-color-sheet: #f9f6ee; /* 素笺：卡片、分组列表（宣纸提亮，墨影托起） */
+  --loong-color-ink-jiao: #141310; /* 焦墨：标题、最重要的文字 */
+  --loong-color-ink-nong: #2a2824; /* 浓墨：正文 */
+  --loong-color-ink-zhong: #4a4741; /* 重墨：次要文字 */
+  --loong-color-ink-dan: #7d7970; /* 淡墨：占位、不可用（< 4.5:1，不用于正文） */
+  --loong-color-ink-qing: #b4aea2; /* 清墨：装饰、远景 */
+  --loong-ink-rgb: 42 40 36; /* 浓墨，用于各级墨晕 rgb(var(--loong-ink-rgb) / a) */
+  --loong-paper-rgb: 243 238 226;
+  --loong-shadow-rgb: 74 56 30; /* 墨影：暖褐 */
+
+  --loong-color-label: var(--loong-color-ink-nong);
+  --loong-color-title: var(--loong-color-ink-jiao);
+  --loong-color-secondary-label: var(--loong-color-ink-zhong);
+  --loong-color-tertiary-label: var(--loong-color-ink-dan);
+  --loong-color-quaternary-label: var(--loong-color-ink-qing);
+  --loong-color-separator: rgb(var(--loong-ink-rgb) / 0.13);
+  --loong-color-fill: rgb(var(--loong-ink-rgb) / 0.11);
+  --loong-color-secondary-fill: rgb(var(--loong-ink-rgb) / 0.08);
+  --loong-color-tertiary-fill: rgb(var(--loong-ink-rgb) / 0.06);
+  --loong-color-accent: var(--loong-color-zhusha);
+  --loong-color-on-accent: #faf6ec;
+  --loong-color-accent-text: #b83a2b; /* 朱砂文字 4.9:1 */
+  --loong-color-link: var(--loong-color-huaqing); /* 6.4:1 */
+  --loong-color-success: #346e5a; /* 石绿加深 5.2:1 */
+  --loong-color-warning: var(--loong-color-zheshi);
+  --loong-color-danger: var(--loong-color-zhusha);
+  --loong-color-control: var(--loong-color-ink-nong); /* 开关、滑块的“着墨”部分 */
+  --loong-color-on-control: #fbf8f1;
+  --loong-color-knob: #fbf8f1;
+  --loong-color-chip: #f9f6ee; /* 分段控件选中块 */
+  --loong-color-tile: #fbf8f1; /* 宣纸小笺的纸 */
+  --loong-tile-wash: 60%; /* 小笺上颜料色晕的浓度 */
+  --loong-tile-edge: inset 0 0 0 0.5px rgb(74 56 30 / 0.18), 0 1px 2px rgb(74 56 30 / 0.14);
+  --loong-color-scrim: rgb(30 24 14 / 0.22);
+  --loong-material-silk: rgb(243 238 226 / 0.72); /* 绢：半透明 + 暖色 */
+
+  --loong-shadow-low: 0 0.5px 1px rgb(var(--loong-shadow-rgb) / 0.12), -1px 3px 8px -3px rgb(var(--loong-shadow-rgb) / 0.12),
+    2px 12px 28px -14px rgb(var(--loong-shadow-rgb) / 0.26);
+  --loong-shadow-mid: 0 1px 2px rgb(var(--loong-shadow-rgb) / 0.12), -2px 8px 22px -8px rgb(var(--loong-shadow-rgb) / 0.2),
+    3px 26px 52px -24px rgb(var(--loong-shadow-rgb) / 0.32);
+  --loong-shadow-high: 0 2px 4px rgb(var(--loong-shadow-rgb) / 0.12), -3px 16px 40px -14px rgb(var(--loong-shadow-rgb) / 0.26),
+    4px 44px 80px -30px rgb(var(--loong-shadow-rgb) / 0.36);
+  --loong-shadow-edge: inset 0 0 0 0.5px rgb(var(--loong-shadow-rgb) / 0.1);
+
+  /* 纸面纹理（gen 自 feTurbulence，平铺）：宣纸 = 云絮 + 纤维 + 细颗粒；素笺 = 云絮 + 颗粒；绢 = 经纬交织的细丝。 */
+  --loong-paper-texture: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='c' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.007' numOctaves='3' seed='11' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .36  0 0 0 0 .28  0 0 0 0 .17  3 0 0 0 -1.35'/></filter><filter id='f' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.012 .38' numOctaves='2' seed='4' stitchTiles='stitch' result='s'/><feTurbulence type='fractalNoise' baseFrequency='.01' numOctaves='2' seed='8' stitchTiles='stitch' result='w'/><feDisplacementMap in='s' in2='w' scale='40' xChannelSelector='R' yChannelSelector='G'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 .98  16 0 0 0 -10.6'/></filter><filter id='g' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' seed='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .3  0 0 0 0 .24  0 0 0 0 .14  -2.4 0 0 0 1.35'/></filter><rect width='320' height='320' filter='url(%23c)' opacity='0.07'/><rect width='320' height='320' filter='url(%23f)' opacity='0.24'/><rect width='320' height='320' filter='url(%23g)' opacity='0.04'/></svg>");
+  --loong-sheet-texture: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256'><filter id='c' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.007' numOctaves='3' seed='11' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .36  0 0 0 0 .28  0 0 0 0 .17  3 0 0 0 -1.35'/></filter><filter id='g' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' seed='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .3  0 0 0 0 .24  0 0 0 0 .14  -2.4 0 0 0 1.35'/></filter><rect width='256' height='256' filter='url(%23c)' opacity='0.05'/><rect width='256' height='256' filter='url(%23g)' opacity='0.035'/></svg>");
+  --loong-silk-texture: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='c' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.007' numOctaves='3' seed='11' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .36  0 0 0 0 .28  0 0 0 0 .17  3 0 0 0 -1.35'/></filter><filter id='f' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.012 .38' numOctaves='2' seed='4' stitchTiles='stitch' result='s'/><feTurbulence type='fractalNoise' baseFrequency='.01' numOctaves='2' seed='8' stitchTiles='stitch' result='w'/><feDisplacementMap in='s' in2='w' scale='40' xChannelSelector='R' yChannelSelector='G'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 .98  16 0 0 0 -10.6'/></filter><filter id='h' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.38 .012' numOctaves='2' seed='6' stitchTiles='stitch' result='s'/><feTurbulence type='fractalNoise' baseFrequency='.01' numOctaves='2' seed='3' stitchTiles='stitch' result='w'/><feDisplacementMap in='s' in2='w' scale='40' xChannelSelector='R' yChannelSelector='G'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 .98  16 0 0 0 -10.6'/></filter><filter id='g' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' seed='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .3  0 0 0 0 .24  0 0 0 0 .14  -2.4 0 0 0 1.35'/></filter><rect width='320' height='320' filter='url(%23c)' opacity='0.04'/><rect width='320' height='320' filter='url(%23f)' opacity='0.18'/><rect width='320' height='320' filter='url(%23h)' opacity='0.18'/><rect width='320' height='320' filter='url(%23g)' opacity='0.03'/></svg>");
+}
+
+/* ───────────────────────── 令牌：暗色「夜墨」 ─────────────────────────
+ * 同一组值写两遍：跟随系统（未强制亮色时）与 data-theme="dark"。 */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --loong-accent: #2dd4bf;
-    --loong-label: #f1f5f6;
-    --loong-secondary-label: rgba(241, 245, 246, 0.6);
-    --loong-background: #000000;
-    --loong-grouped-background: #111618;
-    --loong-separator: rgba(241, 245, 246, 0.14);
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --loong-color-paper: #15140f;
+    --loong-color-paper-raised: #1f1d17;
+    --loong-color-sheet: #1f1d17;
+    --loong-color-ink-jiao: #e6e0d2;
+    --loong-color-ink-nong: #cfc8b8;
+    --loong-color-ink-zhong: #a39d90;
+    --loong-color-ink-dan: #7a756a;
+    --loong-color-ink-qing: #5a564c;
+    --loong-ink-rgb: 207 200 184;
+    --loong-paper-rgb: 21 20 15;
+    --loong-shadow-rgb: 0 0 0;
+    --loong-color-separator: rgb(var(--loong-ink-rgb) / 0.12);
+    --loong-color-fill: rgb(var(--loong-ink-rgb) / 0.13);
+    --loong-color-secondary-fill: rgb(var(--loong-ink-rgb) / 0.09);
+    --loong-color-tertiary-fill: rgb(var(--loong-ink-rgb) / 0.06);
+    --loong-color-accent-text: #e06a55;
+    --loong-color-link: #93afcb;
+    --loong-color-success: #7bb59b;
+    --loong-color-warning: var(--loong-color-nijin);
+    --loong-color-danger: #e06a55;
+    --loong-color-control: var(--loong-color-nijin); /* 泥金：夜墨上的“着色”部分，如磁青纸泥金写经 */
+    --loong-color-on-control: #15140f;
+    --loong-color-knob: #ece6d9;
+    --loong-color-chip: #34312a;
+    --loong-color-tile: #2b2820;
+    --loong-tile-wash: 72%;
+    --loong-tile-edge: inset 0 0 0 0.5px rgb(255 246 224 / 0.08), 0 1px 2px rgb(0 0 0 / 0.4);
+    --loong-color-scrim: rgb(0 0 0 / 0.5);
+    --loong-material-silk: rgb(31 29 23 / 0.74);
+    --loong-shadow-low: 0 0.5px 1px rgb(0 0 0 / 0.4), -1px 4px 10px -3px rgb(0 0 0 / 0.36), 2px 14px 30px -12px rgb(0 0 0 / 0.5);
+    --loong-shadow-mid: 0 1px 2px rgb(0 0 0 / 0.4), -2px 10px 26px -8px rgb(0 0 0 / 0.46), 3px 28px 56px -22px rgb(0 0 0 / 0.6);
+    --loong-shadow-high: 0 2px 4px rgb(0 0 0 / 0.4), -3px 18px 44px -14px rgb(0 0 0 / 0.5), 4px 48px 84px -28px rgb(0 0 0 / 0.66);
+    --loong-shadow-edge: inset 0 0.5px 0 rgb(255 246 224 / 0.06), inset 0 0 0 0.5px rgb(255 246 224 / 0.04);
+    --loong-paper-texture: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='c' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.007' numOctaves='3' seed='11' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .9  0 0 0 0 .85  0 0 0 0 .72  3 0 0 0 -1.35'/></filter><filter id='g' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' seed='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -2.4 0 0 0 1.35'/></filter><rect width='320' height='320' filter='url(%23c)' opacity='0.035'/><rect width='320' height='320' filter='url(%23g)' opacity='0.07'/></svg>");
+    --loong-sheet-texture: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256'><filter id='c' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.007' numOctaves='3' seed='11' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .9  0 0 0 0 .85  0 0 0 0 .72  3 0 0 0 -1.35'/></filter><filter id='g' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' seed='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -2.4 0 0 0 1.35'/></filter><rect width='256' height='256' filter='url(%23c)' opacity='0.025'/><rect width='256' height='256' filter='url(%23g)' opacity='0.06'/></svg>");
+    --loong-silk-texture: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='c' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.007' numOctaves='3' seed='11' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .9  0 0 0 0 .85  0 0 0 0 .72  3 0 0 0 -1.35'/></filter><filter id='f' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.012 .38' numOctaves='2' seed='4' stitchTiles='stitch' result='s'/><feTurbulence type='fractalNoise' baseFrequency='.01' numOctaves='2' seed='8' stitchTiles='stitch' result='w'/><feDisplacementMap in='s' in2='w' scale='40' xChannelSelector='R' yChannelSelector='G'/><feColorMatrix values='0 0 0 0 .9  0 0 0 0 .85  0 0 0 0 .72  16 0 0 0 -10.6'/></filter><filter id='h' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.38 .012' numOctaves='2' seed='6' stitchTiles='stitch' result='s'/><feTurbulence type='fractalNoise' baseFrequency='.01' numOctaves='2' seed='3' stitchTiles='stitch' result='w'/><feDisplacementMap in='s' in2='w' scale='40' xChannelSelector='R' yChannelSelector='G'/><feColorMatrix values='0 0 0 0 .9  0 0 0 0 .85  0 0 0 0 .72  16 0 0 0 -10.6'/></filter><filter id='g' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' seed='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -2.4 0 0 0 1.35'/></filter><rect width='320' height='320' filter='url(%23c)' opacity='0.02'/><rect width='320' height='320' filter='url(%23f)' opacity='0.01'/><rect width='320' height='320' filter='url(%23h)' opacity='0.01'/><rect width='320' height='320' filter='url(%23g)' opacity='0.05'/></svg>");
   }
 }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --loong-color-paper: #15140f;
+  --loong-color-paper-raised: #1f1d17;
+  --loong-color-sheet: #1f1d17;
+  --loong-color-ink-jiao: #e6e0d2;
+  --loong-color-ink-nong: #cfc8b8;
+  --loong-color-ink-zhong: #a39d90;
+  --loong-color-ink-dan: #7a756a;
+  --loong-color-ink-qing: #5a564c;
+  --loong-ink-rgb: 207 200 184;
+  --loong-paper-rgb: 21 20 15;
+  --loong-shadow-rgb: 0 0 0;
+  --loong-color-separator: rgb(var(--loong-ink-rgb) / 0.12);
+  --loong-color-fill: rgb(var(--loong-ink-rgb) / 0.13);
+  --loong-color-secondary-fill: rgb(var(--loong-ink-rgb) / 0.09);
+  --loong-color-tertiary-fill: rgb(var(--loong-ink-rgb) / 0.06);
+  --loong-color-accent-text: #e06a55;
+  --loong-color-link: #93afcb;
+  --loong-color-success: #7bb59b;
+  --loong-color-warning: var(--loong-color-nijin);
+  --loong-color-danger: #e06a55;
+  --loong-color-control: var(--loong-color-nijin); /* 泥金：夜墨上的“着色”部分，如磁青纸泥金写经 */
+  --loong-color-on-control: #15140f;
+  --loong-color-knob: #ece6d9;
+  --loong-color-chip: #34312a;
+  --loong-color-tile: #2b2820;
+  --loong-tile-wash: 72%;
+  --loong-tile-edge: inset 0 0 0 0.5px rgb(255 246 224 / 0.08), 0 1px 2px rgb(0 0 0 / 0.4);
+  --loong-color-scrim: rgb(0 0 0 / 0.5);
+  --loong-material-silk: rgb(31 29 23 / 0.74);
+  --loong-shadow-low: 0 0.5px 1px rgb(0 0 0 / 0.4), -1px 4px 10px -3px rgb(0 0 0 / 0.36), 2px 14px 30px -12px rgb(0 0 0 / 0.5);
+  --loong-shadow-mid: 0 1px 2px rgb(0 0 0 / 0.4), -2px 10px 26px -8px rgb(0 0 0 / 0.46), 3px 28px 56px -22px rgb(0 0 0 / 0.6);
+  --loong-shadow-high: 0 2px 4px rgb(0 0 0 / 0.4), -3px 18px 44px -14px rgb(0 0 0 / 0.5), 4px 48px 84px -28px rgb(0 0 0 / 0.66);
+  --loong-shadow-edge: inset 0 0.5px 0 rgb(255 246 224 / 0.06), inset 0 0 0 0.5px rgb(255 246 224 / 0.04);
+  --loong-paper-texture: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='c' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.007' numOctaves='3' seed='11' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .9  0 0 0 0 .85  0 0 0 0 .72  3 0 0 0 -1.35'/></filter><filter id='g' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' seed='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -2.4 0 0 0 1.35'/></filter><rect width='320' height='320' filter='url(%23c)' opacity='0.035'/><rect width='320' height='320' filter='url(%23g)' opacity='0.07'/></svg>");
+  --loong-sheet-texture: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='256' height='256'><filter id='c' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.007' numOctaves='3' seed='11' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .9  0 0 0 0 .85  0 0 0 0 .72  3 0 0 0 -1.35'/></filter><filter id='g' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' seed='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -2.4 0 0 0 1.35'/></filter><rect width='256' height='256' filter='url(%23c)' opacity='0.025'/><rect width='256' height='256' filter='url(%23g)' opacity='0.06'/></svg>");
+  --loong-silk-texture: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'><filter id='c' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.007' numOctaves='3' seed='11' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 .9  0 0 0 0 .85  0 0 0 0 .72  3 0 0 0 -1.35'/></filter><filter id='f' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.012 .38' numOctaves='2' seed='4' stitchTiles='stitch' result='s'/><feTurbulence type='fractalNoise' baseFrequency='.01' numOctaves='2' seed='8' stitchTiles='stitch' result='w'/><feDisplacementMap in='s' in2='w' scale='40' xChannelSelector='R' yChannelSelector='G'/><feColorMatrix values='0 0 0 0 .9  0 0 0 0 .85  0 0 0 0 .72  16 0 0 0 -10.6'/></filter><filter id='h' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.38 .012' numOctaves='2' seed='6' stitchTiles='stitch' result='s'/><feTurbulence type='fractalNoise' baseFrequency='.01' numOctaves='2' seed='3' stitchTiles='stitch' result='w'/><feDisplacementMap in='s' in2='w' scale='40' xChannelSelector='R' yChannelSelector='G'/><feColorMatrix values='0 0 0 0 .9  0 0 0 0 .85  0 0 0 0 .72  16 0 0 0 -10.6'/></filter><filter id='g' x='0' y='0' width='1' height='1'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' seed='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -2.4 0 0 0 1.35'/></filter><rect width='320' height='320' filter='url(%23c)' opacity='0.02'/><rect width='320' height='320' filter='url(%23f)' opacity='0.01'/><rect width='320' height='320' filter='url(%23h)' opacity='0.01'/><rect width='320' height='320' filter='url(%23g)' opacity='0.05'/></svg>");
+}
 
+/* ───────────────────────── 页面：宣纸 ───────────────────────── */
 html {
-  font-family: var(--loong-font);
-  background: var(--loong-grouped-background);
-  color: var(--loong-label);
+  font: var(--loong-font-body);
+  color: var(--loong-color-label);
+  background: var(--loong-paper-texture), var(--loong-color-paper);
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  line-break: strict;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+body {
+  margin: 0;
+}
+::selection {
+  background: rgb(var(--loong-ink-rgb) / 0.18);
+}
+:focus-visible {
+  outline: 2px solid var(--loong-color-link);
+  outline-offset: 2px;
 }
 
+/* ───────────────────────── 文字 ───────────────────────── */
+.loong-large-title,
+.loong-title1,
+.loong-title2,
+.loong-title3 {
+  color: var(--loong-color-title);
+  font-weight: 400;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+.loong-large-title { font: var(--loong-font-large-title); }
+.loong-title1 { font: var(--loong-font-title1); }
+.loong-title2 { font: var(--loong-font-title2); }
+.loong-title3 { font: var(--loong-font-title3); }
+.loong-headline { font: var(--loong-font-headline); }
+.loong-body { font: var(--loong-font-body); }
+.loong-callout { font: var(--loong-font-callout); }
+.loong-subhead { font: var(--loong-font-subhead); }
+.loong-footnote { font: var(--loong-font-footnote); }
+.loong-caption { font: var(--loong-font-caption); }
+.loong-secondary { color: var(--loong-color-secondary-label); }
+.loong-tertiary { color: var(--loong-color-tertiary-label); }
+.loong-display { font-family: var(--loong-font-display-family); font-weight: 400; }
+.loong-numeric { font-variant-numeric: tabular-nums; }
+a { color: var(--loong-color-link); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+
+/* ───────────────────────── 卡片：素笺 + 墨影 ───────────────────────── */
 .loong-card {
-  background: var(--loong-background);
+  position: relative;
+  background: var(--loong-sheet-texture), var(--loong-color-sheet);
   border-radius: var(--loong-radius-card);
-  padding: 20px;
+  box-shadow: var(--loong-shadow-edge), var(--loong-shadow-low);
+}
+.loong-card--padded { padding: var(--loong-space-20); }
+.loong-card--raised { box-shadow: var(--loong-shadow-edge), var(--loong-shadow-mid); }
+
+/* 一笔淡墨分隔线：起笔略浓，向右渐淡。 */
+.loong-rule {
+  height: 1px;
+  border: 0;
+  margin: var(--loong-space-16) 0;
+  background: linear-gradient(90deg, rgb(var(--loong-ink-rgb) / 0.22), rgb(var(--loong-ink-rgb) / 0.12) 60%, transparent);
 }
 
+/* ───────────────────────── 分组列表 ───────────────────────── */
+.loong-section { margin: 0 0 var(--loong-space-32); }
+.loong-section-header {
+  font: 400 15px/20px var(--loong-font-display-family);
+  color: var(--loong-color-secondary-label);
+  margin: 0 var(--loong-space-16) var(--loong-space-8);
+  display: flex;
+  align-items: baseline;
+  gap: var(--loong-space-8);
+  letter-spacing: 0.04em;
+}
+.loong-section-footer {
+  font: var(--loong-font-footnote);
+  color: var(--loong-color-secondary-label);
+  margin: var(--loong-space-8) var(--loong-space-16) 0;
+}
+.loong-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+.loong-list.loong-card { padding: 0; }
+.loong-row {
+  --loong-row-inset: var(--loong-space-16);
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--loong-space-12);
+  min-height: 48px;
+  padding: 6px var(--loong-space-16);
+  box-sizing: border-box;
+  color: inherit;
+  text-decoration: none;
+  font: var(--loong-font-body);
+  font-size: 16px;
+  line-height: 22px;
+  background: none;
+  border: 0;
+  width: 100%;
+  text-align: start;
+  isolation: isolate;
+}
+.loong-row:has(> .loong-tile) { --loong-row-inset: 58px; }
+.loong-row + .loong-row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: var(--loong-row-inset);
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, var(--loong-color-separator), rgb(var(--loong-ink-rgb) / 0.08) 70%, rgb(var(--loong-ink-rgb) / 0.03));
+  transform: scaleY(0.6);
+  transform-origin: top;
+}
+.loong-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.loong-row-subtitle { display: block; font: var(--loong-font-footnote); color: var(--loong-color-secondary-label); }
+.loong-row-value { color: var(--loong-color-secondary-label); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.loong-row-trail { display: flex; align-items: center; gap: var(--loong-space-8); color: var(--loong-color-secondary-label); }
+a.loong-row,
+button.loong-row,
+.loong-row[data-ink] { cursor: default; }
+
+/* 行尾的“›”：一笔淡墨折笔。 */
+.loong-chevron {
+  width: 8px;
+  height: 14px;
+  flex: none;
+  background: var(--loong-color-ink-dan);
+  -webkit-mask: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 14'><path d='M1.2 1.4c2 1.6 4.4 4 5.6 5.4-1.3 1.7-3.5 4-5.4 5.8' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/></svg>") center / contain no-repeat;
+  mask: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 14'><path d='M1.2 1.4c2 1.6 4.4 4 5.6 5.4-1.3 1.7-3.5 4-5.4 5.8' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='round' stroke-linejoin='round'/></svg>") center / contain no-repeat;
+}
+
+/* 选中的行（侧栏当前项）：一笔浓墨横画托住文字。 */
+.loong-row[aria-current="page"],
+.loong-row.is-selected {
+  color: var(--loong-color-on-control);
+}
+.loong-row[aria-current="page"]::after,
+.loong-row.is-selected::after {
+  content: "";
+  position: absolute;
+  inset: 4px 2px 4px 4px;
+  z-index: -1;
+  background: var(--loong-color-control);
+  -webkit-mask: var(--loong-brush-stroke) 0 0 / 100% 100% no-repeat;
+  mask: var(--loong-brush-stroke) 0 0 / 100% 100% no-repeat;
+  animation: loong-brush-in var(--loong-spring-smooth-duration) var(--loong-spring-smooth-easing) both;
+}
+.loong-row[aria-current="page"] .loong-row-value,
+.loong-row.is-selected .loong-row-value {
+  color: inherit;
+  opacity: 0.85;
+  /* 收笔处是飞白：给字衬一圈墨，落在飞白上也清楚。 */
+  text-shadow: 0 0 2px var(--loong-color-control), 0 0 6px var(--loong-color-control);
+}
+.loong-row[aria-current="page"] .loong-chevron,
+.loong-row.is-selected .loong-chevron {
+  background-color: currentColor;
+  opacity: 0.7;
+}
+.loong-row[aria-current="page"] + .loong-row::before,
+.loong-row.is-selected + .loong-row::before,
+.loong-row[aria-current="page"]::before,
+.loong-row.is-selected::before { opacity: 0; }
+@keyframes loong-brush-in {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+
+/* ───────────────────────── 宣纸小笺图标（行首） ─────────────────────────
+ * <span class="loong-tile" style="--loong-pigment: var(--loong-color-shiqing)"><svg class="loong-symbol">…</svg></span> */
+.loong-tile {
+  --loong-pigment: var(--loong-color-ink-dan);
+  position: relative;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--loong-color-ink-jiao);
+  background:
+    radial-gradient(70% 65% at 62% 64%, color-mix(in srgb, var(--loong-pigment) var(--loong-tile-wash), transparent), transparent 72%),
+    radial-gradient(60% 55% at 34% 30%, color-mix(in srgb, var(--loong-pigment) 28%, transparent), transparent 70%),
+    var(--loong-color-tile);
+  box-shadow: var(--loong-tile-edge);
+}
+.loong-tile--large { width: 56px; height: 56px; border-radius: 14px; }
+.loong-tile--large .loong-symbol { width: 32px; height: 32px; }
+
+/* 符号：线条图标（Lucide），用 loongkit.js 注入的 #loong-brush 滤镜画出毛笔的边缘。 */
+.loong-symbol {
+  width: 19px;
+  height: 19px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  overflow: visible;
+}
+.loong-symbol--fill { fill: currentColor; stroke: none; }
+.loong-ready .loong-tile .loong-symbol { filter: url(#loong-brush); }
+
+/* ───────────────────────── 按钮 ───────────────────────── */
 .loong-button {
-  font: 600 17px/1.2 var(--loong-font);
-  color: #fff;
-  background: var(--loong-accent);
+  --loong-drop-color: rgb(var(--loong-paper-rgb) / 0.32);
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--loong-space-8);
+  min-height: 44px;
+  padding: 0 22px;
+  box-sizing: border-box;
   border: 0;
   border-radius: var(--loong-radius-button);
-  padding: 12px 22px;
+  font: 500 16px/1.2 var(--loong-font-family);
+  letter-spacing: 0.02em;
+  color: var(--loong-color-on-control);
+  /* 浓墨：中间略透、边缘积墨。 */
+  background:
+    radial-gradient(130% 120% at 30% 15%, rgb(255 255 255 / 0.07), transparent 55%),
+    var(--loong-color-control);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.18), inset 0 -6px 12px -8px rgb(0 0 0 / 0.35), var(--loong-shadow-low);
+  transition: transform var(--loong-spring-snappy-duration) var(--loong-spring-snappy-easing);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.loong-button:active { transform: scale(0.96); }
+.loong-button:disabled { opacity: 0.4; }
+
+/* 朱砂：像一方印——印泥颗粒感 + 文楷。用于品牌主操作与重要确认，一屏最多一个。 */
+.loong-button--accent {
+  --loong-drop-color: rgb(80 10 8 / 0.3);
+  color: var(--loong-color-on-accent);
+  font: 400 18px/1.2 var(--loong-font-display-family);
+  letter-spacing: 0.12em;
+  background:
+    radial-gradient(120% 140% at 50% 0%, rgb(255 210 180 / 0.12), transparent 60%),
+    var(--loong-color-accent);
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgb(90 12 6 / 0.25), inset 0 0 10px rgb(90 12 6 / 0.25), var(--loong-shadow-low);
+  -webkit-mask: var(--loong-seal-texture) 0 0 / 64px 64px;
+  mask: var(--loong-seal-texture) 0 0 / 64px 64px;
+}
+/* mask 会裁掉外阴影：把阴影交给外层 .loong-seal-shadow（可选）。 */
+
+/* 素按钮：无底色，墨字；按下时由点墨表达。 */
+.loong-button--plain {
+  --loong-drop-color: rgb(var(--loong-ink-rgb) / 0.2);
+  color: var(--loong-color-label);
+  background: var(--loong-color-secondary-fill);
+  box-shadow: none;
+}
+.loong-button--small { min-height: 32px; padding: 0 14px; font-size: 14px; border-radius: 9px; }
+
+/* ───────────────────────── 开关：砚池里研开一池墨 ─────────────────────────
+ * <label class="loong-switch"><input type="checkbox" role="switch"><span></span></label> */
+.loong-switch {
+  position: relative;
+  display: inline-block;
+  flex: none;
+  width: 50px;
+  height: 30px;
+}
+.loong-switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  z-index: 1;
+  cursor: default;
+}
+.loong-switch > span {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--loong-radius-capsule);
+  background: var(--loong-color-fill);
+  box-shadow: inset 0 1px 2.5px rgb(var(--loong-shadow-rgb) / 0.22), inset 0 0 0 0.5px rgb(var(--loong-shadow-rgb) / 0.12);
+  overflow: hidden;
+}
+/* 墨：从滑块处晕开，铺满砚池。 */
+.loong-switch > span::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    radial-gradient(90% 140% at 30% 30%, rgb(255 255 255 / 0.08), transparent 60%),
+    var(--loong-color-control);
+  box-shadow: inset 0 0 6px rgb(0 0 0 / 0.35);
+  clip-path: circle(0 at 15px 50%);
+  transition: clip-path var(--loong-spring-smooth-duration) var(--loong-spring-smooth-easing);
+}
+/* 滑块：一枚纸团/墨锭。 */
+.loong-switch > span::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: radial-gradient(80% 80% at 40% 30%, #fff, var(--loong-color-knob) 70%);
+  box-shadow: 0 0 0 0.5px rgb(var(--loong-shadow-rgb) / 0.16), 0 2px 5px rgb(var(--loong-shadow-rgb) / 0.28), 0 1px 1px rgb(var(--loong-shadow-rgb) / 0.12);
+  transition: transform var(--loong-spring-snappy-duration) var(--loong-spring-snappy-easing);
+}
+.loong-switch input:checked + span::before { clip-path: circle(60px at 15px 50%); }
+.loong-switch input:checked + span::after { transform: translateX(20px); }
+.loong-switch input:active + span::after { transform: scale(1.06, 0.94); }
+.loong-switch input:checked:active + span::after { transform: translateX(20px) scale(1.06, 0.94); }
+.loong-switch input:focus-visible + span { outline: 2px solid var(--loong-color-link); outline-offset: 2px; }
+.loong-switch input:disabled + span { opacity: 0.45; }
+
+/* ───────────────────────── 滑块：一笔淡墨，拖动时着墨 ─────────────────────────
+ * <div class="loong-slider"><input type="range"></div>；loongkit.js 维护 --loong-value（0..1）。 */
+.loong-slider {
+  --loong-value: 0.5;
+  position: relative;
+  flex: 1;
+  height: 32px;
+  min-width: 120px;
+}
+.loong-slider::before,
+.loong-slider::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 12px;
+  margin-top: -6px;
+  -webkit-mask: var(--loong-brush-stroke) 0 0 / 100% 100% no-repeat;
+  mask: var(--loong-brush-stroke) 0 0 / 100% 100% no-repeat;
+  pointer-events: none;
+}
+.loong-slider::before { background: rgb(var(--loong-ink-rgb) / 0.16); }
+.loong-slider::after {
+  background: var(--loong-color-control);
+  clip-path: inset(0 calc((1 - var(--loong-value)) * (100% - 26px) + 0px) 0 0);
+}
+.loong-slider input {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  z-index: 1;
+}
+.loong-slider input::-webkit-slider-runnable-track { height: 100%; background: transparent; }
+.loong-slider input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 26px;
+  height: 26px;
+  margin-top: 3px;
+  border-radius: 50%;
+  background: radial-gradient(80% 80% at 40% 30%, #fff, var(--loong-color-knob) 70%);
+  box-shadow: 0 0 0 0.5px rgb(var(--loong-shadow-rgb) / 0.18), 0 2px 6px rgb(var(--loong-shadow-rgb) / 0.3);
+}
+.loong-slider input::-moz-range-thumb {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--loong-color-knob);
+  box-shadow: 0 2px 6px rgb(var(--loong-shadow-rgb) / 0.3);
+}
+.loong-slider input:focus-visible { outline: none; }
+.loong-slider input:focus-visible::-webkit-slider-thumb { outline: 2px solid var(--loong-color-link); outline-offset: 2px; }
+
+/* ───────────────────────── 分段控件 ─────────────────────────
+ * <div class="loong-segmented" role="radiogroup"><label><input type="radio" name="x" checked>浓</label>…<i></i></div>
+ * loongkit.js 维护 --loong-index / --loong-count。 */
+.loong-segmented {
+  --loong-index: 0;
+  --loong-count: 2;
+  position: relative;
+  display: inline-grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  padding: 2px;
+  border-radius: 10px;
+  background: var(--loong-color-secondary-fill);
+  box-shadow: inset 0 1px 2px rgb(var(--loong-shadow-rgb) / 0.12);
+  isolation: isolate;
+}
+.loong-segmented label {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  min-height: 30px;
+  padding: 0 18px;
+  border-radius: 8px;
+  font: 400 14px/1 var(--loong-font-family);
+  color: var(--loong-color-secondary-label);
+  white-space: nowrap;
+  transition: color var(--loong-spring-snappy-duration) var(--loong-spring-snappy-easing);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.loong-segmented input { position: absolute; opacity: 0; pointer-events: none; }
+.loong-segmented label:has(input:checked) { color: var(--loong-color-title); }
+.loong-segmented label:has(input:focus-visible) { outline: 2px solid var(--loong-color-link); outline-offset: -2px; }
+.loong-segmented > i {
+  position: absolute;
+  z-index: -1;
+  top: 2px;
+  bottom: 2px;
+  left: 2px;
+  width: calc((100% - 4px) / var(--loong-count));
+  border-radius: 8px;
+  background: var(--loong-color-chip);
+  box-shadow: 0 0 0 0.5px rgb(var(--loong-shadow-rgb) / 0.1), 0 2px 6px -1px rgb(var(--loong-shadow-rgb) / 0.22);
+  transform: translateX(calc(var(--loong-index) * 100%));
   transition: transform var(--loong-spring-snappy-duration) var(--loong-spring-snappy-easing);
 }
 
-.loong-button:active {
-  transform: scale(0.94);
-  transition-duration: 120ms;
-  transition-timing-function: ease-out;
+/* ───────────────────────── 搜索框 ───────────────────────── */
+.loong-search {
+  display: flex;
+  align-items: center;
+  gap: var(--loong-space-8);
+  height: 38px;
+  padding: 0 12px;
+  border-radius: var(--loong-radius-field);
+  background: var(--loong-color-secondary-fill);
+  box-shadow: inset 0 1px 2px rgb(var(--loong-shadow-rgb) / 0.1);
+  color: var(--loong-color-secondary-label);
+}
+.loong-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font: var(--loong-font-callout);
+  color: var(--loong-color-label);
+}
+.loong-search input::placeholder { color: var(--loong-color-secondary-label); opacity: 0.85; }
+
+/* ───────────────────────── 导航栏 ───────────────────────── */
+.loong-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  min-height: 52px;
+  padding: var(--loong-safe-area-top) var(--loong-space-24) 0;
+  background: var(--loong-silk-texture), var(--loong-material-silk);
+  -webkit-backdrop-filter: blur(24px) saturate(1.2);
+  backdrop-filter: blur(24px) saturate(1.2);
+}
+.loong-nav::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--loong-color-separator) 20%, var(--loong-color-separator) 80%, transparent);
+}
+.loong-nav-title {
+  grid-column: 2;
+  margin: 0;
+  font: 400 19px/26px var(--loong-font-display-family);
+  color: var(--loong-color-title);
+  letter-spacing: 0.06em;
 }
 
-/* 系统设置“减少动态效果”时，弹簧动画退化为短暂淡入淡出。 */
+/* ───────────────────────── 印章与角标（朱砂） ───────────────────────── */
+.loong-seal {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 5px 4px 6px 4px;
+  background: var(--loong-color-accent);
+  color: var(--loong-color-on-accent);
+  font: 400 21px/1 var(--loong-font-display-family);
+  -webkit-mask: var(--loong-seal-texture) 0 0 / 64px 64px;
+  mask: var(--loong-seal-texture) 0 0 / 64px 64px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* 多字印：竖排，从右往左读。 */
+.loong-seal--vertical {
+  width: auto;
+  height: auto;
+  padding: 5px 4px;
+  writing-mode: vertical-rl;
+  font-size: 15px;
+  line-height: 1.05;
+  letter-spacing: 0.04em;
+}
+.loong-seal--small { width: 22px; height: 22px; font-size: 14px; border-radius: 3px; }
+/* 落印：印章带着 BOUNCY 弹簧按到纸上（LoongKit.stamp(el)）。 */
+.is-stamped { animation: loong-stamp var(--loong-spring-bouncy-duration) var(--loong-spring-bouncy-easing) both; }
+@keyframes loong-stamp {
+  from { transform: scale(1.6) rotate(-8deg); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.loong-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  border-radius: 5px 4px 5px 3px; /* 手钤的印，四角略有出入 */
+  background:
+    radial-gradient(120% 90% at 30% 20%, rgb(255 220 190 / 0.14), transparent 60%),
+    var(--loong-color-accent);
+  box-shadow: inset 0 0 3px rgb(90 12 6 / 0.35);
+  color: var(--loong-color-on-accent);
+  font: 600 13px/1 var(--loong-font-family);
+  font-variant-numeric: tabular-nums;
+}
+/* 选中标记：一方小印，里面一个“✓”。小尺寸不用印泥颗粒，保持清晰。 */
+.loong-check {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px 3px 4px 3px;
+  background:
+    radial-gradient(120% 90% at 30% 20%, rgb(255 220 190 / 0.14), transparent 60%),
+    var(--loong-color-accent);
+  box-shadow: inset 0 0 3px rgb(90 12 6 / 0.35);
+}
+.loong-check::after {
+  content: "";
+  width: 12px;
+  height: 12px;
+  background: var(--loong-color-on-accent);
+  -webkit-mask: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path d='M1.6 6.4 4.6 9.2 10.4 2.6' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>") center / contain no-repeat;
+  mask: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path d='M1.6 6.4 4.6 9.2 10.4 2.6' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/></svg>") center / contain no-repeat;
+}
+
+/* ───────────────────────── 点墨（按下反馈） ─────────────────────────
+ * loongkit.js 在按下处插入 .loong-inkdrop；颜色由宿主的 --loong-drop-color 决定。 */
+[data-ink],
+a.loong-row,
+button.loong-row,
+.loong-segmented label {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+[data-ink] { --loong-drop-color: rgb(var(--loong-ink-rgb) / 0.16); }
+a.loong-row,
+button.loong-row,
+.loong-segmented label { --loong-drop-color: rgb(var(--loong-ink-rgb) / 0.17); }
+.loong-row[aria-current="page"],
+.loong-row.is-selected { --loong-drop-color: rgb(var(--loong-paper-rgb) / 0.22); }
+.loong-inkdrop {
+  position: absolute;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: 50%;
+  background: var(--loong-drop-color, rgb(var(--loong-ink-rgb) / 0.16));
+  -webkit-mask: var(--loong-ink-drop) center / 100% 100% no-repeat;
+  mask: var(--loong-ink-drop) center / 100% 100% no-repeat;
+  will-change: transform, opacity;
+}
+
+/* ───────────────────────── 晕染开启：内容像墨在湿纸上洇开 ───────────────────────── */
+.loong-bloom { animation: loong-bloom var(--loong-spring-smooth-duration) var(--loong-spring-smooth-easing) both; }
+@keyframes loong-bloom {
+  from { opacity: 0; filter: blur(8px); transform: scale(0.985); }
+  to { opacity: 1; filter: none; transform: none; }
+}
+
+/* ───────────────────────── 减弱动态效果 / 降低透明度 ─────────────────────────
+ * 位移、缩放、晕染都退化为短暂的淡入淡出；点墨由 loongkit.js 关闭。 */
 @media (prefers-reduced-motion: reduce) {
-  * {
+  *,
+  *::before,
+  *::after {
     transition-duration: 1ms !important;
     animation-duration: 1ms !important;
   }
+  .loong-bloom { animation: loong-fade 200ms ease-out both !important; }
+  .loong-button:active { transform: none; filter: brightness(0.92); }
+}
+@keyframes loong-fade { from { opacity: 0; } }
+@media (prefers-reduced-transparency: reduce) {
+  :root { --loong-material-silk: var(--loong-color-paper); }
+  .loong-nav { -webkit-backdrop-filter: none; backdrop-filter: none; }
 }

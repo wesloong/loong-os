@@ -5,9 +5,9 @@
 //! 卡片按最近使用排成一行：最旧的在最左，最近的在最右（与设计规范 8.6 一致）。
 //! 吸附位置让相邻两张卡片并排完整显示，较新的一张在右侧；只有一张卡片时居中。
 
-use loong_motion::{
-    Decay, RUBBER_BAND_COEFFICIENT, rubber_band, rubber_band_clamp, rubber_band_inverse, snap,
-};
+use loong_motion::{Decay, RUBBER_BAND_COEFFICIENT, rubber_band, rubber_band_inverse, snap};
+
+use super::gesture::{rubber_clamp, rubber_clamp_inverse};
 
 /// 卡片相对屏幕的缩放。
 pub const CARD_SCALE: f64 = 0.45;
@@ -30,37 +30,6 @@ pub const SHADOW_OFFSET_Y: f64 = 16.0;
 pub const PAUSE_SPEED: f64 = 100.0;
 /// 停顿进入多任务：停顿需要持续的时间（秒）。
 pub const PAUSE_DURATION: f64 = 0.1;
-
-/// 拖动方向。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Axis {
-    Horizontal,
-    Vertical,
-}
-
-/// 方向锁定（设计规范 9.2）：位移超过起手阈值 `slop` 后，与某条主轴的夹角小于 30°
-/// 就锁定为该方向；落在两者之间时继续等待，位移超过 3 倍阈值仍未确定则取位移较大的方向。
-pub fn lock_axis(dx: f64, dy: f64, slop: f64) -> Option<Axis> {
-    let distance = dx.hypot(dy);
-    if distance <= slop {
-        return None;
-    }
-    // 与水平轴的夹角（0..90°）。
-    let angle = dy.abs().atan2(dx.abs()).to_degrees();
-    if angle < 30.0 {
-        Some(Axis::Horizontal)
-    } else if angle > 60.0 {
-        Some(Axis::Vertical)
-    } else if distance > 3.0 * slop {
-        Some(if dx.abs() >= dy.abs() {
-            Axis::Horizontal
-        } else {
-            Axis::Vertical
-        })
-    } else {
-        None
-    }
-}
 
 /// 底边上滑中的“停顿”检测（设计规范 9.1 / 9.2）：上移距离达到 `min_distance` 后，
 /// 手指速度持续低于 [`PAUSE_SPEED`] 达到 [`PAUSE_DURATION`]，即进入多任务。
@@ -182,20 +151,13 @@ impl SwitcherLayout {
     /// 拖动时：手指对应的滚动位置 → 显示的滚动位置（越界部分按橡皮筋，d = 屏幕宽度）。
     pub fn rubber_scroll(&self, raw: f64, n: usize) -> f64 {
         let (lo, hi) = self.scroll_range(n);
-        rubber_band_clamp(raw, lo, hi, self.w, RUBBER_BAND_COEFFICIENT)
+        rubber_clamp(raw, lo, hi, self.w)
     }
 
     /// [`rubber_scroll`](Self::rubber_scroll) 的反函数：手指按到正在回弹的列表时还原手指位置。
     pub fn unrubber_scroll(&self, shown: f64, n: usize) -> f64 {
         let (lo, hi) = self.scroll_range(n);
-        let c = RUBBER_BAND_COEFFICIENT;
-        if shown < lo {
-            lo + rubber_band_inverse(shown - lo, self.w, c)
-        } else if shown > hi {
-            hi + rubber_band_inverse(shown - hi, self.w, c)
-        } else {
-            shown
-        }
+        rubber_clamp_inverse(shown, lo, hi, self.w)
     }
 
     /// 是否在滚动范围内（允许微小误差）。
@@ -331,17 +293,5 @@ mod tests {
             let off = card_drag_offset(dy, h);
             assert!((card_drag_inverse(off, h) - dy).abs() < 1e-6);
         }
-    }
-
-    #[test]
-    fn axis_lock() {
-        assert_eq!(lock_axis(3.0, 4.0, 8.0), None);
-        assert_eq!(lock_axis(20.0, 5.0, 8.0), Some(Axis::Horizontal));
-        assert_eq!(lock_axis(-20.0, 5.0, 8.0), Some(Axis::Horizontal));
-        assert_eq!(lock_axis(3.0, -20.0, 8.0), Some(Axis::Vertical));
-        // 45° 附近：先等待，走远了再按主导方向决定。
-        assert_eq!(lock_axis(8.0, -9.0, 8.0), None);
-        assert_eq!(lock_axis(20.0, -22.0, 8.0), Some(Axis::Vertical));
-        assert_eq!(lock_axis(-22.0, 20.0, 8.0), Some(Axis::Horizontal));
     }
 }

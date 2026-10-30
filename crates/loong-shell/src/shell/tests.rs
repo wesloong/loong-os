@@ -396,3 +396,82 @@ fn opening_from_home_still_works_after_switcher() {
     s.flick_home();
     assert!(s.shell.is_idle(s.now));
 }
+
+#[test]
+fn home_pages_track_finger_and_snap() {
+    let mut s = Sim::new();
+    assert_eq!(s.shell.layout.pages, 2, "演示应用排满两页");
+    let scroll = |s: &Sim| s.shell.home_scroll.value(s.now);
+    // 慢慢拖过半页后停住再松手：翻到第二页。
+    s.swipe((1000.0, 400.0), (300.0, 400.0), 0.6, 0.1);
+    s.wait(1.0);
+    assert_eq!(scroll(&s), W);
+    // 末页继续往左拖：1:1 变为橡皮筋，松手后弹回。
+    s.shell.touch_down(0, 1000.0, 400.0, s.now);
+    for k in 1..=40 {
+        s.now += FRAME;
+        s.shell
+            .touch_motion(0, 1000.0 - k as f64 * 10.0, 400.0, s.now);
+    }
+    let over = scroll(&s);
+    assert!(over > W && over < W + 400.0 * 0.56, "{over}");
+    s.shell.touch_up(0, s.now);
+    s.wait(1.0);
+    assert_eq!(scroll(&s), W);
+    // 拖得不多但甩得快：翻回第一页。
+    s.swipe((300.0, 400.0), (560.0, 400.0), 0.05, 0.0);
+    s.wait(1.0);
+    assert_eq!(scroll(&s), 0.0);
+    // 慢拖不到半页：回到原页。
+    s.swipe((900.0, 400.0), (700.0, 400.0), 0.5, 0.1);
+    s.wait(1.0);
+    assert_eq!(scroll(&s), 0.0);
+    // 首页往右拖：橡皮筋。
+    s.shell.touch_down(0, 300.0, 400.0, s.now);
+    for k in 1..=40 {
+        s.now += FRAME;
+        s.shell
+            .touch_motion(0, 300.0 + k as f64 * 10.0, 400.0, s.now);
+    }
+    let under = scroll(&s);
+    assert!(under < 0.0 && under > -400.0 * 0.56, "{under}");
+    s.shell.touch_up(0, s.now);
+    s.wait(1.0);
+    assert_eq!(scroll(&s), 0.0);
+    assert!(s.shell.is_idle(s.now));
+}
+
+#[test]
+fn paging_catches_and_resnaps() {
+    let mut s = Sim::new();
+    s.swipe((1100.0, 400.0), (700.0, 400.0), 0.03, 0.0);
+    s.wait(0.05);
+    let moving = s.shell.home_scroll.value(s.now);
+    assert!(moving > 0.0 && moving < W);
+    // 翻页途中按住：主屏停住；松手后吸附到最近的一页。
+    s.shell.touch_down(0, 640.0, 400.0, s.now);
+    s.wait(0.2);
+    assert_eq!(s.shell.home_scroll.value(s.now), moving);
+    s.shell.touch_up(0, s.now);
+    s.wait(1.0);
+    let settled = s.shell.home_scroll.value(s.now);
+    assert!(settled == 0.0 || settled == W);
+}
+
+#[test]
+fn app_on_second_page_opens_from_and_returns_to_its_icon() {
+    let mut s = Sim::new();
+    s.swipe((1000.0, 400.0), (300.0, 400.0), 0.6, 0.1);
+    s.wait(1.0);
+    let app = s.app("terminal");
+    let icon = s.shell.layout.icon_at(app, W);
+    assert!(icon.x > 0.0 && icon.x + icon.w < W, "图标在第二页上可见");
+    s.tap(icon.x + icon.w / 2.0, icon.y + icon.h / 2.0);
+    assert!(s.shell.app_in_front());
+    assert_eq!(s.shell.tasks.last().unwrap().app, app);
+    s.wait(1.0);
+    s.flick_home();
+    assert_eq!(s.shell.home_scroll.value(s.now), W);
+    let target = [icon.x, icon.y, icon.w, icon.h, s.shell.icon_target(app)[4]];
+    assert_rect_eq(s.shell.tasks[0].rect.value(s.now), target, 1e-6);
+}

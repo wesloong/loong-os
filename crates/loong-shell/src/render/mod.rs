@@ -79,6 +79,7 @@ impl Assets {
             switcher_backdrop(&wallpaper, scale),
         );
         assets.put(TexKey::CardShadow, card_shadow(&shell.switcher, scale));
+        assets.put(TexKey::PageDot, page_dot(scale));
         assets.put(TexKey::Wallpaper, wallpaper);
         assets.put(TexKey::Dock, dock);
 
@@ -346,6 +347,28 @@ impl Assets {
 
 fn px(v: f64, scale: f64) -> u32 {
     (v * scale).round().max(1.0) as u32
+}
+
+/// 主屏页面指示点：白色圆点（`capsule` 用圆弧，不用连续圆角）。
+fn page_dot(scale: f64) -> Pixmap {
+    use loong_ui::tiny_skia::{FillRule, Paint, PathBuilder, Transform};
+    let d = px(crate::shell::layout::PAGE_DOT, scale);
+    let mut pm = loong_ui::pixmap(d, d);
+    let r = d as f32 / 2.0;
+    let path = PathBuilder::from_circle(r, r, r).expect("圆点尺寸有效");
+    let mut paint = Paint {
+        anti_alias: true,
+        ..Paint::default()
+    };
+    paint.set_color(Color::WHITE);
+    pm.fill_path(
+        &path,
+        &paint,
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+    pm
 }
 
 /// 模糊类位图在 CPU 上以 1/4 分辨率生成，GPU 绘制时再放大：模糊后的画面放大看不出差别。

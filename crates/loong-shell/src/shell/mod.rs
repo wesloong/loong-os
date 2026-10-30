@@ -9,6 +9,7 @@
 
 pub mod apps;
 pub mod geometry;
+pub mod gesture;
 pub mod layout;
 pub mod lock;
 pub mod switcher;
@@ -19,9 +20,10 @@ use smithay::{desktop::Window, reexports::wayland_server::protocol::wl_surface::
 use self::{
     apps::AppEntry,
     geometry::{RectF, lerp, smoothstep},
-    layout::{BOTTOM_EDGE, Layout},
+    gesture::{Axis, lock_axis, rubber_clamp, rubber_clamp_inverse},
+    layout::{BOTTOM_EDGE, Layout, PAGE_DOT, PAGE_DOT_GAP},
     lock::LockScreen,
-    switcher::{Axis, PauseDetector, SwitcherLayout},
+    switcher::{PauseDetector, SwitcherLayout},
 };
 
 /// 应用打开时主屏放大的倍数（营造“进入”的纵深感）。
@@ -62,6 +64,8 @@ pub enum TexKey {
     CardLabel(usize),
     /// 多任务卡片阴影（`shadowHigh`），按标准卡片尺寸生成，绘制时拉伸。
     CardShadow,
+    /// 主屏页面指示点（白色圆点）。
+    PageDot,
 }
 
 /// 画面中的一个元素。
@@ -218,13 +222,21 @@ enum Mode {
 #[derive(Debug, Clone, Copy)]
 enum Gesture {
     Idle,
-    /// 主屏上的触摸（可能是点击图标）。
+    /// 主屏上的触摸：点击图标，或横滑翻页。
     Home {
         slot: u32,
         start: (f64, f64),
         t0: f64,
         icon: Option<usize>,
         moved: bool,
+        /// 锁定的拖动方向（横向即翻页）。
+        axis: Option<Axis>,
+        /// 锁定方向时的手指位置。
+        origin: (f64, f64),
+        /// 锁定方向时的滚动位置（已去掉橡皮筋）。
+        base: f64,
+        /// 手势开始时所在页（一次手势最多翻一页）。
+        start_page: usize,
     },
     /// 底边上滑：拖动前台应用卡片。停顿则进入多任务。
     AppSwipe {
@@ -274,6 +286,8 @@ pub struct Shell {
     pub switcher: SwitcherLayout,
     /// 主屏 [缩放, 变暗]。
     home: SpringAnimation<[f64; 2]>,
+    /// 主屏横向滚动位置（第 p 页为 p × 屏幕宽度）。
+    home_scroll: SpringAnimation<f64>,
     mode: Mode,
     /// 运行中的应用，按最近使用排序（最后一个最近）。
     tasks: Vec<Task>,
@@ -311,6 +325,7 @@ impl Shell {
             switcher: SwitcherLayout::new(w, h),
             apps,
             home: SpringAnimation::at_rest(Spring::SMOOTH, [1.0, 0.0], 0.0),
+            home_scroll: offset_anim(Spring::SNAPPY, 0.0, 0.0, 0.0, 0.0),
             mode: Mode::Home,
             tasks: Vec::new(),
             dismissed: Vec::new(),
@@ -348,13 +363,20 @@ impl Shell {
         [0.0, 0.0, self.w, self.h, self.screen_radius]
     }
 
+    /// 应用图标在主屏（停稳后）上的位置：打开时从这里弹出，回主屏时飞回这里。
+    /// 图标不在当前页时，缩小到屏幕中央。
     fn icon_target(&self, app: usize) -> [f64; 5] {
-        let r = self
-            .layout
-            .icons
-            .get(app)
-            .copied()
-            .unwrap_or(RectF::centered(self.w / 2.0, self.h / 2.0, 60.0, 60.0));
+        let scroll = self.home_scroll.target();
+        let on_screen = |r: &RectF| r.x + r.w > 0.0 && r.x < self.w;
+        let r = (app < self.layout.icons.len())
+            .then(|| self.layout.icon_at(app, scroll))
+            .filter(on_screen)
+            .unwrap_or(RectF::centered(
+                self.w / 2.0,
+                self.h / 2.0,
+                self.layout.icon,
+                self.layout.icon,
+            ));
         [
             r.x,
             r.y,
@@ -401,6 +423,7 @@ impl Shell {
     pub fn is_idle(&self, now: f64) -> bool {
         self.lock.is_idle(now)
             && self.home.is_done(now)
+            && self.home_scroll.is_done(now)
             && self.switcher_progress.is_done(now)
             && self.backdrop.is_done(now)
             && self.scroll.is_done(now)
@@ -848,12 +871,21 @@ impl Shell {
                 TouchRoute::Shell
             }
             Mode::Home => {
+                self.begin_tracking(now, x, y);
+                // 手指按下即“接住”正在翻页的主屏。
+                let scroll = self.home_scroll.value(now);
+                pin(&mut self.home_scroll, scroll, now);
+                let page = (scroll / self.layout.page_width).round();
                 self.gesture = Gesture::Home {
                     slot,
                     start: (x, y),
                     t0: now,
-                    icon: self.layout.hit(x, y),
+                    icon: self.layout.hit(x, y, scroll),
                     moved: false,
+                    axis: None,
+                    origin: (x, y),
+                    base: 0.0,
+                    start_page: (page.max(0.0) as usize).min(self.layout.pages - 1),
                 };
                 TouchRoute::Shell
             }
@@ -876,15 +908,9 @@ impl Shell {
             return TouchRoute::Shell;
         }
         match self.gesture {
-            Gesture::Home {
-                slot: s,
-                start,
-                ref mut moved,
-                ..
-            } if s == slot => {
-                if (x - start.0).hypot(y - start.1) > TAP_SLOP {
-                    *moved = true;
-                }
+            Gesture::Home { slot: s, .. } if s == slot => {
+                self.track(now, x, y);
+                self.home_drag(x, y, now);
             }
             Gesture::AppSwipe { slot: s, start, .. } if s == slot => {
                 self.track(now, x, y);
@@ -920,6 +946,91 @@ impl Shell {
         TouchRoute::Shell
     }
 
+    /// 主屏翻页的滚动范围内 1:1，首页之前和末页之后按橡皮筋（d = 屏幕宽度）。
+    fn rubber_home(&self, raw: f64) -> f64 {
+        rubber_clamp(raw, 0.0, self.layout.max_scroll(), self.w)
+    }
+
+    /// 主屏上的拖动：横向锁定后 1:1 翻页。
+    fn home_drag(&mut self, x: f64, y: f64, now: f64) {
+        let Gesture::Home {
+            slot,
+            start,
+            t0,
+            icon,
+            mut moved,
+            mut axis,
+            mut origin,
+            mut base,
+            start_page,
+        } = self.gesture
+        else {
+            return;
+        };
+        if (x - start.0).hypot(y - start.1) > TAP_SLOP {
+            moved = true;
+        }
+        if axis.is_none()
+            && let Some(locked) = lock_axis(x - start.0, y - start.1, TAP_SLOP)
+        {
+            axis = Some(locked);
+            origin = (x, y);
+            let shown = self.home_scroll.value(now);
+            base = rubber_clamp_inverse(shown, 0.0, self.layout.max_scroll(), self.w);
+        }
+        if axis == Some(Axis::Horizontal) {
+            let shown = self.rubber_home(base - (x - origin.0));
+            pin(&mut self.home_scroll, shown, now);
+        }
+        self.gesture = Gesture::Home {
+            slot,
+            start,
+            t0,
+            icon,
+            moved,
+            axis,
+            origin,
+            base,
+            start_page,
+        };
+    }
+
+    /// 主屏翻页松手：`page_for_release`（FAST 投影，一次最多一页），`SNAPPY` 继承速度；
+    /// 越界松手用 `SMOOTH` 弹回。
+    fn home_release(
+        &mut self,
+        start: (f64, f64),
+        origin: (f64, f64),
+        base: f64,
+        start_page: usize,
+        now: f64,
+    ) {
+        let v = self.tracker.velocity_at(now);
+        let last = self.last_pos.unwrap_or(start);
+        let raw = base - (last.0 - origin.0);
+        let shown = self.rubber_home(raw);
+        let [velocity] = map_velocity(|p| [self.rubber_home(p.0)], (raw, 0.0), [-v[0], 0.0]);
+        let w = self.layout.page_width;
+        let page = snap::page_for_release(shown, velocity, w, self.layout.pages, start_page);
+        let in_range = (-0.5..=self.layout.max_scroll() + 0.5).contains(&shown);
+        let spring = if in_range {
+            Spring::SNAPPY
+        } else {
+            Spring::SMOOTH
+        };
+        self.home_scroll = offset_anim(spring, shown, page as f64 * w, velocity, now);
+    }
+
+    /// 主屏被手指停在两页之间（按住后没有横向拖动）：吸附回最近的一页。
+    fn settle_home(&mut self, now: f64) {
+        let shown = self.home_scroll.value(now);
+        let w = self.layout.page_width;
+        let page = (shown / w)
+            .round()
+            .clamp(0.0, (self.layout.pages - 1) as f64);
+        self.home_scroll = offset_anim(Spring::SNAPPY, shown, page * w, 0.0, now);
+    }
+
     /// 多任务中的拖动：先锁定方向，横向滚动列表，纵向拖动卡片。
     fn switcher_drag(&mut self, x: f64, y: f64, now: f64) {
         let Gesture::Switcher {
@@ -938,7 +1049,7 @@ impl Shell {
         let sw = self.switcher;
         let card = app.and_then(|a| self.task_index(a));
         if axis.is_none()
-            && let Some(locked) = switcher::lock_axis(x - start.0, y - start.1, TAP_SLOP)
+            && let Some(locked) = lock_axis(x - start.0, y - start.1, TAP_SLOP)
         {
             // 从锁定方向时的位置开始跟手，元素不会因为起手阈值而跳一下。
             axis = Some(locked);
@@ -982,15 +1093,24 @@ impl Shell {
         match gesture {
             Gesture::Home {
                 slot: s,
+                start,
+                t0,
                 icon,
                 moved,
-                t0,
-                ..
+                axis,
+                origin,
+                base,
+                start_page,
             } if s == slot => {
-                if let (Some(app), false) = (icon, moved)
-                    && now - t0 < TAP_TIMEOUT
-                {
-                    self.launch(app, now);
+                if axis == Some(Axis::Horizontal) {
+                    self.home_release(start, origin, base, start_page, now);
+                } else {
+                    self.settle_home(now);
+                    if let (Some(app), false) = (icon, moved)
+                        && now - t0 < TAP_TIMEOUT
+                    {
+                        self.launch(app, now);
+                    }
                 }
             }
             Gesture::AppSwipe { slot: s, start, .. } if s == slot => {
@@ -1153,7 +1273,7 @@ impl Shell {
 
         // 主屏（被多任务背景完全盖住时不画）
         if backdrop < 0.999 {
-            self.push_home(&mut scene, zoom, dim);
+            self.push_home(&mut scene, zoom, dim, now);
         }
         // 多任务背景
         if backdrop > 0.001 {
@@ -1249,8 +1369,9 @@ impl Shell {
         scene
     }
 
-    fn push_home(&self, scene: &mut Scene, zoom: f64, dim: f64) {
+    fn push_home(&self, scene: &mut Scene, zoom: f64, dim: f64, now: f64) {
         let (cx, cy) = (self.w / 2.0, self.h / 2.0);
+        let scroll = self.home_scroll.value(now);
         let full = RectF::new(0.0, 0.0, self.w, self.h);
         scene.push(DrawItem::Texture {
             key: TexKey::Wallpaper,
@@ -1272,8 +1393,11 @@ impl Shell {
             .last()
             .filter(|t| self.mode == Mode::App || t.homing)
             .map(|t| t.app);
-        for (i, rect) in self.layout.icons.iter().enumerate() {
-            if Some(i) == hidden_app {
+        for i in 0..self.layout.icons.len() {
+            let rect = self.layout.icon_at(i, scroll);
+            // 其他页上的图标不画（名称比图标宽，留一些余量）。
+            let margin = self.layout.icon;
+            if Some(i) == hidden_app || rect.x + rect.w < -margin || rect.x > self.w + margin {
                 continue;
             }
             let r = rect.scaled_about(cx, cy, zoom);
@@ -1292,6 +1416,30 @@ impl Shell {
                     align: Align::Center,
                     alpha: 1.0,
                     scale: zoom,
+                });
+            }
+        }
+        // 页面指示点（设计规范 8.4）：当前页不透明，其余 40%，随滚动连续过渡；只有一页时隐藏。
+        let pages = self.layout.pages;
+        if pages > 1 {
+            let total = pages as f64 * PAGE_DOT + (pages - 1) as f64 * PAGE_DOT_GAP;
+            let x0 = (self.w - total) / 2.0;
+            let position = scroll / self.layout.page_width;
+            for p in 0..pages {
+                let near = 1.0 - (position - p as f64).abs().min(1.0);
+                let dot = RectF::new(
+                    x0 + p as f64 * (PAGE_DOT + PAGE_DOT_GAP),
+                    self.layout.dots_y - PAGE_DOT / 2.0,
+                    PAGE_DOT,
+                    PAGE_DOT,
+                )
+                .scaled_about(cx, cy, zoom);
+                scene.push(DrawItem::Texture {
+                    key: TexKey::PageDot,
+                    rect: dot,
+                    alpha: lerp(0.4, 1.0, near),
+                    radius: 0.0,
+                    clip: None,
                 });
             }
         }

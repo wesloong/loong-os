@@ -9,11 +9,13 @@
 //! - [`text`]：文字排版与绘制（cosmic-text，支持中文）。
 //! - [`icon`]：应用图标与符号（Lucide 线性图标，ISC 许可）。
 //! - [`material`]：毛玻璃材质（模糊 + 着色）。
-//! - [`wallpaper`]：程序生成的默认壁纸。
+//! - [`wallpaper`]：程序生成的默认壁纸（旧版，将由 [`ink::landscape`] 取代）。
+//! - [`ink`]：「墨韵」水墨绘画工具：宣纸、毛笔笔触、山水长卷、宣纸小笺图标、印章。
 
 #![forbid(unsafe_code)]
 
 pub mod icon;
+pub mod ink;
 pub mod material;
 pub mod shape;
 pub mod text;

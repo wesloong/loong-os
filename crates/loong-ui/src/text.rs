@@ -8,6 +8,8 @@ use tiny_skia::{Color, Pixmap};
 /// 文字样式（单位：物理像素）。
 #[derive(Debug, Clone, Copy)]
 pub struct TextStyle {
+    /// 字体角色：正文（思源黑体/Inter）或展示（霞鹜文楷）。
+    pub family: FontRole,
     /// 字号。
     pub size: f32,
     /// 字重（400 常规，500 中等，600 半粗，700 粗）。
@@ -16,6 +18,16 @@ pub struct TextStyle {
     pub color: Color,
     /// 是否加一层柔和阴影（壁纸上的文字需要，保证可读性）。
     pub shadow: bool,
+}
+
+/// 字体角色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FontRole {
+    /// 正文、小字：清晰优先。
+    #[default]
+    Body,
+    /// 展示文字：标题、锁屏时间、应用名（楷体，带笔意）。
+    Display,
 }
 
 /// 文字排版器。创建时加载系统字体，开销较大，应长期复用。
@@ -49,7 +61,10 @@ impl TextRenderer {
     fn layout(&mut self, text: &str, style: &TextStyle) -> Buffer {
         let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(style.size, style.size * 1.3));
         let mut attrs = Attrs::new();
-        attrs.family = Family::Name(crate::theme::font::FAMILY);
+        attrs.family = Family::Name(match style.family {
+            FontRole::Body => crate::theme::font::FAMILY,
+            FontRole::Display => crate::theme::font::DISPLAY_FAMILY,
+        });
         attrs.weight = Weight(style.weight);
         buffer.set_size(None, None);
         buffer.set_text(text, &attrs, Shaping::Advanced, None);

@@ -94,6 +94,7 @@ impl Assets {
             };
             assets.put(TexKey::Icon(i), icon::app_icon(icon_px, svg, style));
             let label_style = TextStyle {
+                family: loong_ui::text::FontRole::Body,
                 size: (theme::font::ICON_LABEL as f64 * scale) as f32,
                 weight: 500,
                 color: theme::label_on_wallpaper(),
@@ -109,6 +110,7 @@ impl Assets {
         let hint = assets.text.render(
             "上滑解锁",
             &TextStyle {
+                family: loong_ui::text::FontRole::Body,
                 size: (15.0 * scale) as f32,
                 weight: 500,
                 color: Color::WHITE,
@@ -142,6 +144,7 @@ impl Assets {
         let text = self.text.render(
             &app.name,
             &TextStyle {
+                family: loong_ui::text::FontRole::Body,
                 size,
                 weight: 600,
                 color: Color::WHITE,
@@ -175,6 +178,7 @@ impl Assets {
 
     fn status_style(&self) -> TextStyle {
         TextStyle {
+            family: loong_ui::text::FontRole::Body,
             size: (theme::font::STATUS as f64 * self.scale) as f32,
             weight: 600,
             color: Color::WHITE,
@@ -229,6 +233,7 @@ impl Assets {
             let big = self.text.render(
                 &self.clock_text,
                 &TextStyle {
+                    family: loong_ui::text::FontRole::Body,
                     size: 96.0 * s,
                     weight: 300,
                     color: Color::WHITE,
@@ -242,6 +247,7 @@ impl Assets {
             let pm = self.text.render(
                 &self.date_text,
                 &TextStyle {
+                    family: loong_ui::text::FontRole::Body,
                     size: 20.0 * s,
                     weight: 500,
                     color: Color::WHITE,
@@ -309,6 +315,7 @@ impl Assets {
         let title = self.text.render(
             &entry.name,
             &TextStyle {
+                family: loong_ui::text::FontRole::Body,
                 size: theme::font::LARGE_TITLE * s,
                 weight: 700,
                 color: Color::WHITE,
@@ -327,6 +334,7 @@ impl Assets {
         let sub = self.text.render(
             "Loong OS · 演示应用",
             &TextStyle {
+                family: loong_ui::text::FontRole::Body,
                 size: theme::font::BODY * s,
                 weight: 400,
                 color: Color::from_rgba8(255, 255, 255, 200),

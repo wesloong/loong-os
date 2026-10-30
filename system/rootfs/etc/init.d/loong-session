@@ -24,7 +24,7 @@ start_pre() {
 	checkpath -d -m 0700 -o loong:loong /home/loong
 	checkpath -f -m 0644 -o loong:loong /var/log/loong-shell.log
 	# 会话环境变量（机型可在 /etc/conf.d/loong-session 中追加 LOONG_SESSION_ENV）
-	supervise_daemon_args="--env XDG_RUNTIME_DIR=/run/user/1000 --env HOME=/home/loong --env RUST_LOG=${RUST_LOG:-info}"
+	supervise_daemon_args="--env XDG_RUNTIME_DIR=/run/user/1000 --env HOME=/home/loong --env LANG=C.UTF-8 --env RUST_LOG=${RUST_LOG:-info}"
 	for kv in ${LOONG_SESSION_ENV:-}; do
 		supervise_daemon_args="$supervise_daemon_args --env $kv"
 	done

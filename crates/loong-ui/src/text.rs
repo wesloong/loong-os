@@ -200,3 +200,68 @@ fn paint_coverage(pixmap: &mut Pixmap, coverage: &[u8], color: Color) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inked(pm: &Pixmap) -> usize {
+        pm.pixels().iter().filter(|p| p.alpha() > 128).count()
+    }
+
+    fn style(family: FontRole) -> TextStyle {
+        TextStyle {
+            family,
+            size: 32.0,
+            weight: 400,
+            color: Color::BLACK,
+            shadow: false,
+        }
+    }
+
+    /// 没装霞鹜文楷时，展示文字回退到正文字体（思源黑体/Inter），照样画得出来。
+    #[test]
+    fn display_role_falls_back_when_wenkai_is_missing() {
+        let mut db = cosmic_text::fontdb::Database::new();
+        for dir in ["/usr/share/fonts/noto", "/usr/share/fonts/inter"] {
+            db.load_fonts_dir(dir);
+        }
+        if db.is_empty() {
+            return; // 没有系统字体的环境（如裸 CI 容器）跳过。
+        }
+        assert!(!db.faces().any(|f| {
+            f.families
+                .iter()
+                .any(|(n, _)| n == crate::theme::font::DISPLAY_FAMILY)
+        }));
+        let mut t = TextRenderer {
+            fonts: FontSystem::new_with_locale_and_db("zh-CN".into(), db),
+            cache: SwashCache::new(),
+        };
+        let display = t.render("墨韵 9:41", &style(FontRole::Display));
+        let body = t.render("墨韵 9:41", &style(FontRole::Body));
+        assert!(inked(&display) > 200, "回退后没有字形");
+        // 回退到的正是正文字体：宽度与正文一致。
+        assert!((display.width() as i32 - body.width() as i32).abs() <= 2);
+    }
+
+    #[test]
+    fn halo_surrounds_the_text() {
+        let mut t = TextRenderer::new();
+        let s = style(FontRole::Display);
+        let plain = t.render("山水", &s);
+        if inked(&plain) == 0 {
+            return; // 没有任何中文字体的环境。
+        }
+        let halo = t.render_halo("山水", &s, Color::WHITE, 6.0);
+        assert!(halo.width() > plain.width() && halo.height() > plain.height());
+        // 光晕外缘透明，字周围有一圈半透明的白。
+        assert_eq!(halo.pixel(0, 0).unwrap().alpha(), 0);
+        let whiteish = halo
+            .pixels()
+            .iter()
+            .filter(|p| p.alpha() > 40 && p.red() as u16 * 255 >= 200 * p.alpha() as u16)
+            .count();
+        assert!(whiteish > 100);
+    }
+}

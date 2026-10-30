@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+# 把 /data 的 ext4 扩展到整个分区。
+#
+# 刷机用的 data 镜像只有几百 MB（例如小米平板 5 的 userdata.img），而分区有上百 GB。
+# 首次启动时在线扩展（ext4 支持挂载状态下扩大）；之后文件系统已占满分区，本服务什么也不做。
+
+description="把 /data 扩展到整个分区"
+
+depend() {
+	need localmount
+	before loong-session
+}
+
+start() {
+	dev=$(awk '$2 == "/data" { print $1 }' /proc/mounts)
+	[ -b "$dev" ] || return 0
+	dev_bytes=$(blockdev --getsize64 "$dev")
+	fs_bytes=$(tune2fs -l "$dev" 2>/dev/null | awk -F: '
+		/^Block count/ { n = $2 } /^Block size/ { b = $2 } END { printf "%.0f", n * b }')
+	# 差距小于 64 MiB 时不扩展（分区尾部可能有对齐或保留空间）
+	[ "$((dev_bytes - fs_bytes))" -gt $((64 * 1048576)) ] || return 0
+	ebegin "扩展 /data（$((fs_bytes / 1048576)) MiB → $((dev_bytes / 1048576)) MiB）"
+	resize2fs "$dev" >/dev/null 2>&1
+	eend $?
+}

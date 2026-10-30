@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """在 QEMU 中运行 Loong OS 镜像，并通过 QMP 截图、模拟触摸（在开发 chroot 内运行）。
 
-  tools/qemu.py start  <镜像> [--arch x86_64] [--size 1280x800] [--mem 2048]
+  tools/qemu.py start  <镜像> [--arch x86_64|aarch64] [--size 1280x800] [--mem 2048] [--smp 4]
   tools/qemu.py wait   <正则> [--timeout 秒]        等待串口日志出现某内容
   tools/qemu.py shot   <文件.png>                   截图
   tools/qemu.py tap    <x> <y>                       点按（逻辑坐标 = 屏幕像素）
   tools/qemu.py swipe  <x1> <y1> <x2> <y2> [毫秒]    滑动
   tools/qemu.py stop
 
-运行时文件放在 build/qemu/（QMP socket、串口日志、OVMF 变量）。
+运行时文件放在 build/qemu/（QMP socket、串口日志、UEFI 变量）。
+x86_64 用 q35 + OVMF；aarch64 用 virt（Cortex-A72，GICv3）+ QEMU 自带的 edk2 固件（qemu-system-aarch64 包）。
+两者都是 TCG 软件模拟（沙箱没有 KVM），aarch64 比 x86_64 慢不少。
 """
 
 import argparse
@@ -27,19 +29,36 @@ SERIAL = os.path.join(RUN, "serial.log")
 STATE = os.path.join(RUN, "state.json")
 
 
+# 每种架构的机器类型与 UEFI 固件（代码、变量模板）
+MACHINES = {
+    "x86_64": {
+        "machine": ["-machine", "q35", "-cpu", "max"],
+        "code": "/usr/share/OVMF/OVMF_CODE.fd",
+        "vars": "/usr/share/OVMF/OVMF_VARS.fd",
+    },
+    "aarch64": {
+        # cortex-a72 比 max 在 TCG 下快（不模拟指针认证、SVE 等）
+        "machine": ["-machine", "virt,gic-version=3", "-cpu", "cortex-a72"],
+        "code": "/usr/share/qemu/edk2-aarch64-code.fd",
+        "vars": "/usr/share/qemu/edk2-arm-vars.fd",
+    },
+}
+
+
 def start(args):
     os.makedirs(RUN, exist_ok=True)
     for f in (QMP, SERIAL):
         if os.path.exists(f):
             os.remove(f)
     w, h = (int(v) for v in args.size.split("x"))
-    vars_file = os.path.join(RUN, "OVMF_VARS.fd")
-    shutil.copy("/usr/share/OVMF/OVMF_VARS.fd", vars_file)
+    m = MACHINES[args.arch]
+    vars_file = os.path.join(RUN, f"efivars-{args.arch}.fd")
+    shutil.copy(m["vars"], vars_file)
     cmd = [
         f"qemu-system-{args.arch}",
-        "-machine", "q35", "-accel", "tcg,thread=multi", "-cpu", "max",
-        "-smp", "4", "-m", str(args.mem),
-        "-drive", "if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE.fd",
+        *m["machine"], "-accel", "tcg,thread=multi",
+        "-smp", str(args.smp), "-m", str(args.mem),
+        "-drive", f"if=pflash,format=raw,readonly=on,file={m['code']}",
         "-drive", f"if=pflash,format=raw,file={vars_file}",
         "-drive", f"file={args.image},format=raw,if=virtio",
         "-device", f"virtio-gpu-pci,xres={w},yres={h}",
@@ -149,9 +168,10 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("start")
     s.add_argument("image")
-    s.add_argument("--arch", default="x86_64")
+    s.add_argument("--arch", default="x86_64", choices=sorted(MACHINES))
     s.add_argument("--size", default="1280x800")
     s.add_argument("--mem", type=int, default=2048)
+    s.add_argument("--smp", type=int, default=4)
     s.set_defaults(fn=start)
     s = sub.add_parser("wait")
     s.add_argument("pattern")

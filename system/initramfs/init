@@ -1,11 +1,17 @@
 #!/bin/busybox sh
 # Loong OS initramfs
 #
-# 1. 按内核命令行 loong.slot=a|b 找到分区名为 root_a / root_b 的分区，只读挂载 erofs 根文件系统
+# 1. 按内核命令行 loong.slot=a|b 找到根分区（如 root_a / root_b），只读挂载根文件系统（erofs）
 # 2. 挂载可写的 data 分区，把 /var、/home、/root 从 data 绑定进来（首次启动时初始化 /var）
 # 3. switch_root 到真正的系统
 #
 # 分区靠 GPT 分区名查找（/sys/class/block/*/uevent 中的 PARTNAME），不依赖设备名，适用于所有机型。
+# 机型相关的设置由 mkimage 写入 /etc/loong/initramfs.conf：
+#   ROOT_PART   根分区名前缀，后面接 slot（uefi-sdboot：root_；android-abl：system_）
+#   ROOT_FS     根文件系统类型（erofs；内核不支持 erofs 的机型用 squashfs）
+#   DATA_PART   可写数据分区（uefi-sdboot：data；小米平板 5：userdata）
+#   SUPER_PART  非空时，根分区是这个物理分区（Android 动态分区 super）里的逻辑分区，
+#               先由 loong-dynpart 映射成 /dev/mapper/<名字>
 
 /bin/busybox mkdir -p /bin /sbin /proc /sys /dev /newroot
 /bin/busybox --install -s /bin
@@ -20,14 +26,24 @@ mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 
-slot=a
+ROOT_PART=root_
+ROOT_FS=erofs
+DATA_PART=data
+SUPER_PART=
+[ -f /etc/loong/initramfs.conf ] && . /etc/loong/initramfs.conf
+
+slot=
+abl_slot=a
 for arg in $(cat /proc/cmdline); do
 	case "$arg" in
 		loong.slot=*) slot="${arg#loong.slot=}" ;;
+		# Android 引导程序（ABL）会附加当前 slot；boot.img 自带的 loong.slot 优先
+		androidboot.slot_suffix=_*) abl_slot="${arg#androidboot.slot_suffix=_}" ;;
 		loong.debug) set -x ;;
 		loong.rescue) rescue "命令行要求进入救援模式" ;;
 	esac
 done
+slot=${slot:-$abl_slot}
 
 for m in $(cat /etc/loong/initramfs-modules 2>/dev/null); do
 	modprobe -q "$m" || echo "加载模块 $m 失败"
@@ -53,11 +69,18 @@ wait_partition() {
 	return 1
 }
 
-root=$(wait_partition "root_$slot") || rescue "找不到分区 root_$slot"
-mount -t erofs -o ro "$root" /newroot || rescue "无法挂载 $root"
+if [ -n "$SUPER_PART" ]; then
+	super=$(wait_partition "$SUPER_PART") || rescue "找不到分区 $SUPER_PART"
+	loong-dynpart "$super" "$slot" || rescue "无法映射 $super 中的动态分区"
+	root="/dev/mapper/$ROOT_PART$slot"
+	[ -b "$root" ] || rescue "$SUPER_PART 中没有逻辑分区 $ROOT_PART$slot"
+else
+	root=$(wait_partition "$ROOT_PART$slot") || rescue "找不到分区 $ROOT_PART$slot"
+fi
+mount -t "$ROOT_FS" -o ro "$root" /newroot || rescue "无法挂载 $root（$ROOT_FS）"
 
-data=$(wait_partition data) || rescue "找不到 data 分区"
-mount -t ext4 -o noatime "$data" /newroot/data || rescue "无法挂载 data 分区"
+data=$(wait_partition "$DATA_PART") || rescue "找不到 $DATA_PART 分区"
+mount -t ext4 -o noatime "$data" /newroot/data || rescue "无法挂载 $DATA_PART 分区"
 
 for d in var home root; do
 	mkdir -p "/newroot/data/$d"

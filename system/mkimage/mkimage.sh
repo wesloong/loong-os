@@ -1,13 +1,21 @@
 #!/bin/sh
 # Loong OS 镜像构建器。在开发 chroot 内运行：
 #
-#   tools/dev-chroot.sh run /src/system/mkimage/mkimage.sh qemu-x86_64
+#   tools/dev-chroot.sh run system/mkimage/mkimage.sh qemu-x86_64
+#   tools/dev-chroot.sh run system/mkimage/mkimage.sh qemu-aarch64
+#   tools/dev-chroot.sh run system/mkimage/mkimage.sh xiaomi-nabu
 #
-# 流程：apk 安装 rootfs → 叠加配置 → 裁剪 → erofs（只读、压缩）→ initramfs
-#       → UKI（每个 slot 一个）→ ESP（systemd-boot）→ GPT 磁盘（esp | root_a | root_b | data）
+# 流程：apk 安装 rootfs → 叠加配置 → 裁剪 → 只读根（erofs，内核不支持时用 squashfs）→ initramfs
+#       → 按启动后端（BOOT_BACKEND）打包：
+#   uefi-sdboot  UKI（每个 slot 一个）→ ESP（systemd-boot）→ GPT 磁盘（esp | root_a | root_b | data）
+#   android-abl  boot_a.img / boot_b.img（mkbootimg）→ super.img（逻辑分区 system_a | system_b）
+#                → userdata.img，以及刷机脚本 flash.sh
 # 全程不需要 loop 设备（FAT 用 mtools 写入，分区用 dd 写到偏移处）。
 #
-# 产物：/src/build/image/<机型>/loong-<机型>.img
+# 目标架构与开发 chroot 不同时（例如在 x86_64 上构建 aarch64），先在宿主机运行一次 tools/setup-binfmt.sh；
+# loong-shell 用 tools/build-aarch64.sh 交叉编译。
+#
+# 产物：$SRC/build/image/<机型>/
 
 set -eu
 
@@ -15,25 +23,60 @@ PROFILE=${1:?用法: mkimage.sh <机型>}
 SRC=${SRC:-/src}
 PROFILE_CONF="$SRC/system/profiles/$PROFILE.conf"
 [ -f "$PROFILE_CONF" ] || { echo "没有这个机型: $PROFILE" >&2; exit 1; }
+
+# 机型配置的默认值（各项含义见 system/profiles/*.conf）
+BOOT_BACKEND=uefi-sdboot
+ROOT_FS=erofs
+SERIAL_TTY=ttyS0
+EXTRA_REPOS=""
+EXTRA_KEYS=""
+DEVICE_SERVICES=""
+ROOT_PART=root_
+DATA_PART=data
+SUPER_PART=""
+DTB=""
+APPEND_DTB=0
+SESSION_ENV=""
 # shellcheck disable=SC1090
 . "$PROFILE_CONF"
 
 OUT="$SRC/build/image/$PROFILE"
 ROOT="$OUT/rootfs"
 WORK="$OUT/work"
-IMG="$OUT/loong-$PROFILE.img"
+TOOLS="$WORK/tools"
 VERSION=${LOONG_VERSION:-0.1.0-dev}
 ALPINE_BRANCH=${ALPINE_BRANCH:-v3.24}
 MIRROR=${MIRROR:-http://dl-cdn.alpinelinux.org/alpine}
+HOST_ARCH=$(apk --print-arch)
 
 log() { printf '\033[1;36m==> %s\033[0m\n' "$*"; }
+die() { echo "mkimage: $*" >&2; exit 1; }
+
+case "$BOOT_BACKEND" in
+	uefi-sdboot|android-abl) ;;
+	*) die "未知的启动后端: $BOOT_BACKEND" ;;
+esac
+case "$ROOT_FS" in
+	erofs|squashfs) ;;
+	*) die "不支持的根文件系统: $ROOT_FS" ;;
+esac
+
+# loong-shell：与开发 chroot 同架构时是普通的 cargo 构建，否则是 tools/build-aarch64.sh 的交叉编译产物
+if [ "$ARCH" = "$HOST_ARCH" ]; then
+	SHELL_BIN=${SHELL_BIN:-$SRC/build/target-alpine/release/loong-shell}
+	SHELL_HINT="cargo build --release -p loong-shell"
+else
+	SHELL_BIN=${SHELL_BIN:-$SRC/build/target-alpine/$ARCH-alpine-linux-musl/release/loong-shell}
+	SHELL_HINT="tools/build-$ARCH.sh"
+fi
+[ -x "$SHELL_BIN" ] || die "缺少 $SHELL_BIN，请先运行 $SHELL_HINT"
 
 # ───────────────────────── 1. rootfs ─────────────────────────
 PACKAGES="
 	alpine-base busybox-openrc
 	eudev udev-init-scripts udev-init-scripts-openrc
 	seatd seatd-openrc dbus dbus-openrc
-	kmod e2fsprogs dosfstools
+	kmod e2fsprogs e2fsprogs-extra dosfstools
 	mesa-egl mesa-gles mesa-gbm libinput-libs libxkbcommon xkeyboard-config libseat
 	fontconfig font-inter font-noto-cjk
 	foot
@@ -41,18 +84,26 @@ PACKAGES="
 	$DEVICE_PKGS
 "
 
-log "安装 rootfs（$PROFILE_NAME）"
+log "安装 rootfs（$PROFILE_NAME，$ARCH）"
 rm -rf "$OUT"
-mkdir -p "$ROOT/etc/apk" "$WORK"
-cp -a /etc/apk/keys "$ROOT/etc/apk/"
+mkdir -p "$ROOT/etc/apk/keys" "$WORK"
+# 公钥：目标架构的 Alpine 公钥（开发 chroot 的 /etc/apk/keys 只有宿主架构的），本地软件包的公钥，
+# 以及机型额外仓库的公钥（随仓库存放在 system/keys/）。
+cp /usr/share/apk/keys/"$ARCH"/*.pub /etc/apk/keys/*.pub "$ROOT/etc/apk/keys/"
+for k in $EXTRA_KEYS; do
+	cp "$SRC/$k" "$ROOT/etc/apk/keys/"
+done
 printf '%s\n' "$MIRROR/$ALPINE_BRANCH/main" "$MIRROR/$ALPINE_BRANCH/community" > "$ROOT/etc/apk/repositories"
+[ -z "$EXTRA_REPOS" ] || printf '%s\n' "$EXTRA_REPOS" >> "$ROOT/etc/apk/repositories"
 
 # apk 3 在嵌套 chroot 里无法为安装脚本创建命名空间，所以分两步：
 #   1) 不运行脚本，装一个最小的引导系统（busybox + apk）
 #   2) chroot 进目标系统，由目标系统自己的 apk 安装其余软件包（此时脚本能正常运行）
-# 跨架构构建（如在 x86_64 上构建 aarch64）需要 qemu-user binfmt。
+# 跨架构构建时，第 2 步的程序经 qemu-user binfmt 运行。
 apk add --root "$ROOT" --initdb --arch "$ARCH" --no-cache --no-progress -q --scripts=no \
 	--repositories-file "$ROOT/etc/apk/repositories" alpine-baselayout busybox apk-tools alpine-keys
+chroot "$ROOT" /bin/busybox true 2>/dev/null ||
+	die "无法在 chroot 中运行 $ARCH 程序：请先在宿主机上运行 tools/setup-binfmt.sh"
 chroot "$ROOT" /bin/busybox --install -s
 
 cleanup_mounts() {
@@ -83,8 +134,6 @@ rm -f "$ROOT/etc/resolv.conf"
 
 # ───────────────────────── 2. Loong OS 组件 ─────────────────────────
 log "安装 Loong OS 组件"
-SHELL_BIN="$SRC/build/target-alpine/release/loong-shell"
-[ -x "$SHELL_BIN" ] || { echo "缺少 $SHELL_BIN，请先运行 cargo build --release -p loong-shell" >&2; exit 1; }
 install -Dm755 "$SHELL_BIN" "$ROOT/usr/bin/loong-shell"
 install -Dm644 "$SRC/system/profiles/$PROFILE.device.toml" "$ROOT/usr/share/loong/device.toml"
 # Web 运行时（WPE WebKit 构建完成后可用：WITH_WPE=1）
@@ -98,10 +147,14 @@ if [ -n "${WITH_WPE:-}" ]; then
 		install -Dm644 "$SRC/system/profiles/$PROFILE.apps.toml" "$ROOT/usr/share/loong/apps.toml"
 fi
 cp -a "$SRC/system/rootfs/." "$ROOT/"
-chmod 755 "$ROOT/etc/init.d/loong-session" "$ROOT/etc/init.d/loong-boot-ok"
-if [ -n "${SESSION_ENV:-}" ]; then
+# 机型专属文件（音频 UCM 配置等），相当于 loong-device-<机型> 包的内容
+[ -d "$SRC/system/devices/$PROFILE/rootfs" ] && cp -a "$SRC/system/devices/$PROFILE/rootfs/." "$ROOT/"
+chmod 755 "$ROOT"/etc/init.d/loong-*
+if [ -n "$SESSION_ENV" ]; then
 	printf 'LOONG_SESSION_ENV="%s"\n' "$SESSION_ENV" >> "$ROOT/etc/conf.d/loong-session"
 fi
+mkdir -p "$ROOT/etc/conf.d"
+printf 'BOOT_BACKEND=%s\n' "$BOOT_BACKEND" > "$ROOT/etc/conf.d/loong-boot-ok"
 
 cat > "$ROOT/etc/os-release" <<EOF
 NAME="Loong OS"
@@ -128,7 +181,8 @@ done
 if [ "${DEV_IMAGE:-0}" = 1 ]; then
 	# 开发镜像：root 免密，串口可登录。
 	sed -i 's/^root:[^:]*:/root::/' "$ROOT/etc/shadow"
-	grep -q '^ttyS0' "$ROOT/etc/inittab" || echo 'ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100' >> "$ROOT/etc/inittab"
+	grep -q "^$SERIAL_TTY:" "$ROOT/etc/inittab" ||
+		echo "$SERIAL_TTY::respawn:/sbin/getty -L 115200 $SERIAL_TTY vt100" >> "$ROOT/etc/inittab"
 fi
 # 屏幕属于系统界面：不在虚拟终端上启动文字登录。
 sed -i -E 's/^(tty[0-9]+::respawn)/#\1/' "$ROOT/etc/inittab"
@@ -136,9 +190,14 @@ sed -i -E 's/^(tty[0-9]+::respawn)/#\1/' "$ROOT/etc/inittab"
 # OpenRC 服务（直接建符号链接，等价于 rc-update add）
 enable() { mkdir -p "$ROOT/etc/runlevels/$2"; ln -sf "/etc/init.d/$1" "$ROOT/etc/runlevels/$2/$1"; }
 for s in devfs dmesg sysfs procfs udev udev-trigger udev-settle; do enable "$s" sysinit; done
-for s in modules hostname bootmisc sysctl seedrng; do enable "$s" boot; done
+for s in modules hostname bootmisc sysctl seedrng loong-growfs; do enable "$s" boot; done
 for s in dbus seatd loong-session loong-boot-ok; do enable "$s" default; done
 for s in killprocs savecache; do enable "$s" shutdown; done
+# 机型服务，格式为“服务名:运行级别”
+for e in $DEVICE_SERVICES; do
+	[ -e "$ROOT/etc/init.d/${e%%:*}" ] || die "机型服务 ${e%%:*} 不存在（缺少对应的 -openrc 包？）"
+	enable "${e%%:*}" "${e#*:}"
+done
 
 # 只读根：会被写入的文件改为指向可写位置
 ln -sf /run/resolv.conf "$ROOT/etc/resolv.conf"
@@ -154,6 +213,12 @@ chroot "$ROOT" /bin/udevadm hwdb --update 2>/dev/null || chroot "$ROOT" /sbin/ud
 log "裁剪 rootfs"
 KVER=$(ls "$ROOT/lib/modules" | head -1)
 cp "$ROOT$KERNEL_IMAGE" "$WORK/vmlinuz"
+if [ -n "$DTB" ]; then
+	# 内核包把 dtb 装在 /boot/dtbs/ 或 /usr/share/dtb/ 下（随发行版和版本而异）
+	dtb_path=$(find "$ROOT/boot" "$ROOT/usr/share" -path "*/$DTB.dtb" 2>/dev/null | head -1)
+	[ -n "$dtb_path" ] || die "内核包里找不到 $DTB.dtb"
+	cp "$dtb_path" "$WORK/dtb"
+fi
 rm -rf "$ROOT/boot"/* "$ROOT/usr/share/man" "$ROOT/usr/share/doc" "$ROOT/usr/share/info" \
 	"$ROOT/usr/share/fonts/noto/NotoSerifCJK-"* "$ROOT/var/cache/apk"/*
 # Inter 只保留可变字体
@@ -164,22 +229,52 @@ mkdir -p "$ROOT/usr/share/loong"
 mv "$ROOT/var" "$ROOT/usr/share/loong/var-skel"
 mkdir -p "$ROOT/var" "$ROOT/data" "$ROOT/home" "$ROOT/root" "$ROOT/tmp"
 
-# ───────────────────────── 4. erofs ─────────────────────────
-log "生成 erofs 根文件系统"
-mkfs.erofs -zlz4hc,12 -T0 "$WORK/root.erofs" "$ROOT" >/dev/null
+# ───────────────────────── 4. 只读根 ─────────────────────────
+log "生成 $ROOT_FS 根文件系统"
+ROOTIMG="$WORK/root.$ROOT_FS"
+case "$ROOT_FS" in
+	erofs) mkfs.erofs -zlz4hc,12 -T0 "$ROOTIMG" "$ROOT" >/dev/null ;;
+	# 内核没有 erofs 时的替代（例如 pmOS 的 sm8150 内核）：同样只读、lz4hc 压缩，时间戳固定以便复现
+	squashfs) mksquashfs "$ROOT" "$ROOTIMG" -noappend -quiet -no-progress -comp lz4 -Xhc \
+		-mkfs-time 0 -all-time 0 >/dev/null ;;
+esac
+root_bytes=$(stat -c %s "$ROOTIMG")
+# 根分区（slot）留 50% 余量给后续 OTA 更新，按 MiB 对齐
+ROOT_MB=$(( (root_bytes * 3 / 2) / 1048576 + 16 ))
 
 # ───────────────────────── 5. initramfs ─────────────────────────
+# initramfs 与启动程序要用目标架构的文件：装进一个临时目录（不运行安装脚本）再取出。
+log "准备目标架构的启动文件"
+TOOLS_PKGS="busybox-static"
+[ "$BOOT_BACKEND" = uefi-sdboot ] && TOOLS_PKGS="$TOOLS_PKGS systemd-boot systemd-efistub"
+[ -n "$SUPER_PART" ] && TOOLS_PKGS="$TOOLS_PKGS device-mapper-static"
+# shellcheck disable=SC2086
+apk add --root "$TOOLS" --initdb --arch "$ARCH" --no-cache --no-progress -q --scripts=no \
+	--keys-dir "$ROOT/etc/apk/keys" --repositories-file "$ROOT/etc/apk/repositories" $TOOLS_PKGS
+
 log "生成 initramfs（内核 $KVER）"
 IRD="$WORK/initramfs"
 mkdir -p "$IRD/bin" "$IRD/etc/loong" "$IRD/lib/modules/$KVER"
-cp /bin/busybox.static "$IRD/bin/busybox"
+cp "$TOOLS/bin/busybox.static" "$IRD/bin/busybox"
 install -m755 "$SRC/system/initramfs/init" "$IRD/init"
+cat > "$IRD/etc/loong/initramfs.conf" <<EOF
+ROOT_PART=$ROOT_PART
+ROOT_FS=$ROOT_FS
+DATA_PART=$DATA_PART
+SUPER_PART=$SUPER_PART
+EOF
+if [ -n "$SUPER_PART" ]; then
+	install -m755 "$SRC/system/initramfs/dynpart" "$IRD/bin/loong-dynpart"
+	cp "$TOOLS/usr/sbin/dmsetup.static" "$IRD/bin/dmsetup"
+fi
 echo "$INITRAMFS_MODULES" | tr ' ' '\n' > "$IRD/etc/loong/initramfs-modules"
 # 复制所需模块及其依赖（解压为 .ko，busybox modprobe 可直接加载）
 MODDIR="$ROOT/lib/modules/$KVER"
 need_mods=""
 add_mod() {
-	path=$(modinfo -b "$ROOT" -k "$KVER" -F filename "$1" 2>/dev/null | head -1) || return 0
+	# 内核里根本没有的模块（既不是内建也不是 .ko）直接报错，免得做出一个启动不了的镜像
+	path=$(modinfo -b "$ROOT" -k "$KVER" -F filename "$1" 2>/dev/null | head -1) ||
+		die "内核 $KVER 不支持 $1（既不是内建，也没有模块）"
 	case "$path" in ""|"(builtin)"|*builtin*) return 0 ;; esac
 	case " $need_mods " in *" $path "*) return 0 ;; esac
 	need_mods="$need_mods $path"
@@ -202,66 +297,150 @@ cp "$MODDIR"/modules.builtin* "$MODDIR/modules.order" "$IRD/lib/modules/$KVER/" 
 depmod -b "$IRD" "$KVER"
 (cd "$IRD" && find . | cpio -o -H newc --quiet | gzip -9) > "$WORK/initramfs.img"
 
-# ───────────────────────── 6. UKI ─────────────────────────
-log "生成 UKI"
-# systemd-boot 优先启动版本号更高的 UKI；用尽启动次数的 UKI 会被排到最后（自动回退）。
-# 初始镜像中 slot A 是当前系统，slot B 作为“旧版本”备份。OTA 时把新版本写入另一个 slot 即可。
-for slot in a b; do
-	if [ "$slot" = a ]; then slot_version=$VERSION; else slot_version=0; fi
-	sed "s/^IMAGE_VERSION=.*/IMAGE_VERSION=$slot_version/" "$ROOT/etc/os-release" > "$WORK/os-release-$slot"
-	ukify build \
-		--linux "$WORK/vmlinuz" \
-		--initrd "$WORK/initramfs.img" \
-		--cmdline "$CMDLINE loong.slot=$slot" \
-		--os-release "@$WORK/os-release-$slot" \
-		--stub "/usr/lib/systemd/boot/efi/linux$EFI_ARCH.efi.stub" \
-		--output "$WORK/loong-$slot.efi" >/dev/null
-done
-
-# ───────────────────────── 7. ESP ─────────────────────────
-log "生成 ESP（systemd-boot）"
-ESP="$WORK/esp.img"
-mkfs.vfat -C -n ESP "$ESP" $((ESP_MB * 1024)) >/dev/null
-EFI_UPPER=$(echo "$EFI_ARCH" | tr a-z A-Z)
-mmd -i "$ESP" ::/EFI ::/EFI/BOOT ::/EFI/systemd ::/EFI/Linux ::/loader
-mcopy -i "$ESP" "/usr/lib/systemd/boot/efi/systemd-boot$EFI_ARCH.efi" "::/EFI/BOOT/BOOT$EFI_UPPER.EFI"
-mcopy -i "$ESP" "/usr/lib/systemd/boot/efi/systemd-boot$EFI_ARCH.efi" "::/EFI/systemd/systemd-boot$EFI_ARCH.efi"
-# slot A 是当前系统，带 3 次启动计数；成功启动后由 loong-boot-ok 去掉计数。
-mcopy -i "$ESP" "$WORK/loong-a.efi" "::/EFI/Linux/loong-a+3.efi"
-mcopy -i "$ESP" "$WORK/loong-b.efi" "::/EFI/Linux/loong-b.efi"
-printf 'timeout 0\ndefault loong-*\nconsole-mode keep\neditor no\n' > "$WORK/loader.conf"
-mcopy -i "$ESP" "$WORK/loader.conf" ::/loader/loader.conf
-
-# ───────────────────────── 8. data ─────────────────────────
+# ───────────────────────── 6. data ─────────────────────────
 log "生成 data 分区"
 truncate -s "${DATA_MB}M" "$WORK/data.img"
-mke2fs -q -t ext4 -L data -F "$WORK/data.img"
+# 块大小固定 4096：UFS 等存储的逻辑扇区是 4096 字节，1024 字节块的 ext4 在上面无法挂载
+mke2fs -q -t ext4 -b 4096 -L data -F "$WORK/data.img"
 
-# ───────────────────────── 9. GPT 磁盘 ─────────────────────────
-log "组装磁盘镜像"
-root_bytes=$(stat -c %s "$WORK/root.erofs")
-# root 分区留 50% 余量给后续 OTA 更新，按 MiB 对齐
-ROOT_MB=$(( (root_bytes * 3 / 2) / 1048576 + 16 ))
-TOTAL_MB=$(( 1 + ESP_MB + ROOT_MB * 2 + DATA_MB + 1 ))
-rm -f "$IMG"
-truncate -s "${TOTAL_MB}M" "$IMG"
-sfdisk -q "$IMG" <<EOF
-label: gpt
-size=${ESP_MB}MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="esp"
-size=${ROOT_MB}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root_a"
-size=${ROOT_MB}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="root_b"
-size=${DATA_MB}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="data"
-EOF
-# 分区按 1MiB 对齐（sfdisk 默认），起始扇区换算成 MiB 偏移写入。
-put() { dd if="$2" of="$IMG" bs=1M seek=$(($1 / 2048)) conv=notrunc status=none; }
-starts=$(sfdisk -d "$IMG" | sed -nE 's/.*start= *([0-9]+).*/\1/p')
-set -- $starts
-put "$1" "$ESP"
-put "$2" "$WORK/root.erofs"
-put "$3" "$WORK/root.erofs"
-put "$4" "$WORK/data.img"
+# ───────────────────────── 7a. uefi-sdboot ─────────────────────────
+build_uefi_sdboot() {
+	IMG="$OUT/loong-$PROFILE.img"
+	EFI_DIR="$TOOLS/usr/lib/systemd/boot/efi"
 
-log "完成：$IMG"
-printf '  rootfs (erofs): %s MiB\n  initramfs:      %s KiB\n  UKI:            %s MiB\n  磁盘镜像:       %s MiB\n' \
-	$((root_bytes / 1048576)) $(($(stat -c %s "$WORK/initramfs.img") / 1024)) \
-	$(($(stat -c %s "$WORK/loong-a.efi") / 1048576)) "$TOTAL_MB"
+	log "生成 UKI"
+	# systemd-boot 优先启动版本号更高的 UKI；用尽启动次数的 UKI 会被排到最后（自动回退）。
+	# 初始镜像中 slot A 是当前系统，slot B 作为“旧版本”备份。OTA 时把新版本写入另一个 slot 即可。
+	for slot in a b; do
+		if [ "$slot" = a ]; then slot_version=$VERSION; else slot_version=0; fi
+		sed "s/^IMAGE_VERSION=.*/IMAGE_VERSION=$slot_version/" "$ROOT/etc/os-release" > "$WORK/os-release-$slot"
+		ukify build \
+			--linux "$WORK/vmlinuz" \
+			--initrd "$WORK/initramfs.img" \
+			--cmdline "$CMDLINE loong.slot=$slot" \
+			--os-release "@$WORK/os-release-$slot" \
+			--stub "$EFI_DIR/linux$EFI_ARCH.efi.stub" \
+			--efi-arch "$EFI_ARCH" \
+			--output "$WORK/loong-$slot.efi" >/dev/null
+	done
+
+	log "生成 ESP（systemd-boot）"
+	ESP="$WORK/esp.img"
+	mkfs.vfat -C -n ESP "$ESP" $((ESP_MB * 1024)) >/dev/null
+	EFI_UPPER=$(echo "$EFI_ARCH" | tr a-z A-Z)
+	mmd -i "$ESP" ::/EFI ::/EFI/BOOT ::/EFI/systemd ::/EFI/Linux ::/loader
+	mcopy -i "$ESP" "$EFI_DIR/systemd-boot$EFI_ARCH.efi" "::/EFI/BOOT/BOOT$EFI_UPPER.EFI"
+	mcopy -i "$ESP" "$EFI_DIR/systemd-boot$EFI_ARCH.efi" "::/EFI/systemd/systemd-boot$EFI_ARCH.efi"
+	# slot A 是当前系统，带 3 次启动计数；成功启动后由 loong-boot-ok 去掉计数。
+	mcopy -i "$ESP" "$WORK/loong-a.efi" "::/EFI/Linux/loong-a+3.efi"
+	mcopy -i "$ESP" "$WORK/loong-b.efi" "::/EFI/Linux/loong-b.efi"
+	printf 'timeout 0\ndefault loong-*\nconsole-mode keep\neditor no\n' > "$WORK/loader.conf"
+	mcopy -i "$ESP" "$WORK/loader.conf" ::/loader/loader.conf
+
+	log "组装磁盘镜像"
+	TOTAL_MB=$(( 1 + ESP_MB + ROOT_MB * 2 + DATA_MB + 1 ))
+	rm -f "$IMG"
+	truncate -s "${TOTAL_MB}M" "$IMG"
+	sfdisk -q "$IMG" <<-EOF
+		label: gpt
+		size=${ESP_MB}MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="esp"
+		size=${ROOT_MB}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="${ROOT_PART}a"
+		size=${ROOT_MB}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="${ROOT_PART}b"
+		size=${DATA_MB}MiB, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name="$DATA_PART"
+	EOF
+	# 分区按 1MiB 对齐（sfdisk 默认），起始扇区换算成 MiB 偏移写入。
+	put() { dd if="$2" of="$IMG" bs=1M seek=$(($1 / 2048)) conv=notrunc status=none; }
+	# shellcheck disable=SC2046
+	set -- $(sfdisk -d "$IMG" | sed -nE 's/.*start= *([0-9]+).*/\1/p')
+	put "$1" "$ESP"
+	put "$2" "$ROOTIMG"
+	put "$3" "$ROOTIMG"
+	put "$4" "$WORK/data.img"
+
+	log "完成：$IMG"
+	printf '  rootfs (%s): %s MiB\n  initramfs:      %s KiB\n  UKI:            %s MiB\n  磁盘镜像:       %s MiB\n' \
+		"$ROOT_FS" $((root_bytes / 1048576)) $(($(stat -c %s "$WORK/initramfs.img") / 1024)) \
+		$(($(stat -c %s "$WORK/loong-a.efi") / 1048576)) "$TOTAL_MB"
+}
+
+# ───────────────────────── 7b. android-abl ─────────────────────────
+# Android 引导程序（如高通 ABL）从 boot_a / boot_b 加载 boot.img；根文件系统放在 super 分区的
+# 逻辑分区 system_a / system_b 里（由 initramfs 的 loong-dynpart 映射），/data 是 userdata 分区。
+build_android_abl() {
+	kernel="$WORK/vmlinuz"
+	if [ "$APPEND_DTB" = 1 ]; then
+		cat "$WORK/vmlinuz" "$WORK/dtb" > "$WORK/vmlinuz-dtb"
+		kernel="$WORK/vmlinuz-dtb"
+	fi
+
+	log "生成 boot_a.img / boot_b.img"
+	for slot in a b; do
+		mkbootimg \
+			--header_version "$BOOTIMG_HEADER_VERSION" \
+			--kernel "$kernel" \
+			--ramdisk "$WORK/initramfs.img" \
+			--base "$BOOTIMG_BASE" \
+			--kernel_offset "$BOOTIMG_KERNEL_OFFSET" \
+			--ramdisk_offset "$BOOTIMG_RAMDISK_OFFSET" \
+			--second_offset "$BOOTIMG_SECOND_OFFSET" \
+			--tags_offset "$BOOTIMG_TAGS_OFFSET" \
+			--pagesize "$BOOTIMG_PAGESIZE" \
+			--cmdline "$CMDLINE loong.slot=$slot" \
+			--output "$OUT/boot_$slot.img"
+		[ "$(stat -c %s "$OUT/boot_$slot.img")" -le "$BOOTIMG_MAX_BYTES" ] || die "boot_$slot.img 超过 boot 分区大小"
+	done
+	# 自检：解包核对内核、initramfs 与 cmdline（boot.img v0 的 cmdline 最长 512 字节，超长会被截断）
+	unpack_bootimg --boot_img "$OUT/boot_b.img" --out "$WORK/unpacked" > "$WORK/unpacked.txt"
+	cmp -s "$WORK/unpacked/kernel" "$kernel" || die "boot.img 自检失败：内核不一致"
+	cmp -s "$WORK/unpacked/ramdisk" "$WORK/initramfs.img" || die "boot.img 自检失败：initramfs 不一致"
+	grep -q "^command line args: $CMDLINE loong.slot=b\$" "$WORK/unpacked.txt" || die "boot.img 自检失败：cmdline 不一致"
+	rm -rf "$WORK/unpacked" "$WORK/unpacked.txt"
+
+	log "生成 super.img（${ROOT_PART}a | ${ROOT_PART}b）"
+	cp "$ROOTIMG" "$OUT/system.img"
+	slot_bytes=$((ROOT_MB * 1048576))
+	[ $((slot_bytes * 2 + 16 * 1048576)) -le "$SUPER_SIZE" ] || die "super 分区放不下两个 ${ROOT_MB} MiB 的 slot"
+	# 两个 slot 写入同一个系统；元数据 2 个槽，对应 A/B。
+	lpmake --metadata-size 65536 --metadata-slots 2 --super-name "$SUPER_PART" \
+		--device "$SUPER_PART:$SUPER_SIZE" --group "loong:$((slot_bytes * 2))" \
+		--partition "${ROOT_PART}a:none:$slot_bytes:loong" --image "${ROOT_PART}a=$ROOTIMG" \
+		--partition "${ROOT_PART}b:none:$slot_bytes:loong" --image "${ROOT_PART}b=$ROOTIMG" \
+		--sparse --output "$OUT/super.img" 2> "$WORK/lpmake.log" || { cat "$WORK/lpmake.log" >&2; die "lpmake 失败"; }
+
+	log "生成 $DATA_PART.img"
+	img2simg "$WORK/data.img" "$OUT/$DATA_PART.img"
+
+	# 万一 ABL 因 AVB 校验拒绝启动，可刷入这个关闭校验的 vbmeta（见 docs/devices/）
+	avbtool make_vbmeta_image --flags 2 --padding_size 4096 --output "$OUT/vbmeta-disabled.img"
+
+	cat > "$OUT/flash.sh" <<-EOF
+		#!/bin/sh
+		# 用 fastboot 把 Loong OS 刷入 $PROFILE_NAME。会覆盖 super（Android 系统）与 userdata（全部用户数据）！
+		# 用法：平板进入 fastboot 模式并连接电脑，然后在本目录运行 sh flash.sh
+		set -eu
+		cd "\$(dirname "\$0")"
+		product=\$(fastboot getvar product 2>&1 | sed -n 's/^product: *//p')
+		[ "\$product" = "$FASTBOOT_PRODUCT" ] || { echo "连接的设备是 '\$product'，不是 $FASTBOOT_PRODUCT"; exit 1; }
+		size=\$(fastboot getvar partition-size:$SUPER_PART 2>&1 | sed -n 's/^partition-size:$SUPER_PART: *//p')
+		[ "\$((size))" -eq $SUPER_SIZE ] || { echo "$SUPER_PART 分区大小是 '\$size'，镜像按 $SUPER_SIZE 字节生成，不刷"; exit 1; }
+		fastboot erase dtbo_a
+		fastboot erase dtbo_b
+		fastboot flash boot_a boot_a.img
+		fastboot flash boot_b boot_b.img
+		fastboot flash $SUPER_PART super.img
+		fastboot flash $DATA_PART $DATA_PART.img
+		fastboot --set-active=a
+		fastboot reboot
+	EOF
+	chmod 755 "$OUT/flash.sh"
+
+	log "完成：$OUT"
+	printf '  rootfs (%s): %s MiB（每个 slot %s MiB）\n  initramfs:      %s KiB\n  boot.img:       %s MiB\n  super.img:      %s MiB（sparse）\n' \
+		"$ROOT_FS" $((root_bytes / 1048576)) "$ROOT_MB" $(($(stat -c %s "$WORK/initramfs.img") / 1024)) \
+		$(($(stat -c %s "$OUT/boot_a.img") / 1048576)) $(($(stat -c %s "$OUT/super.img") / 1048576))
+}
+
+case "$BOOT_BACKEND" in
+	uefi-sdboot) build_uefi_sdboot ;;
+	android-abl) build_android_abl ;;
+esac

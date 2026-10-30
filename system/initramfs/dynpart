@@ -1,0 +1,87 @@
+#!/bin/busybox sh
+# Loong OS initramfs：把 Android 动态分区（super 分区里的逻辑分区）映射成 device-mapper 设备。
+#
+#   loong-dynpart <super 设备或镜像> [slot]           创建 /dev/mapper/<分区名>（如 system_a、system_b）
+#   loong-dynpart --print <super 设备或镜像> [slot]   只打印 dmsetup 表，不创建（用于测试）
+#
+# 功能等同于 postmarketOS 的 make-dynpart-mappings，但只用 busybox（od、dd）解析 LP 元数据，
+# 再交给 dmsetup.static 创建 linear 映射，initramfs 里不需要动态链接库。
+# slot 选择元数据槽（a → 0，b → 1）；元数据槽只有一个时总用 0。只支持单块设备的 super。
+#
+# LP 元数据格式（AOSP system/core/fs_mgr/liblp/include/liblp/metadata_format.h，均为小端）：
+#   偏移 4096         几何信息：magic(u32)=0x616c4467，metadata_max_size(u32 @40)，metadata_slot_count(u32 @44)
+#   偏移 12288+N*max  第 N 个元数据槽的头：magic(u32)=0x414c5030，header_size(u32 @8)，
+#                     各表的描述符 {offset, num_entries, entry_size}（u32×3）：分区 @80，extent @92
+#   表的起点 = 头的起点 + header_size
+#   分区项：name(36 字节)，attributes(u32 @36)，first_extent_index(u32 @40)，num_extents(u32 @44)
+#   extent：num_sectors(u64 @0)，target_type(u32 @8，0=linear 1=zero)，target_data(u64 @12)，
+#           target_source(u32 @20)。扇区固定 512 字节。
+
+set -e
+
+print_only=0
+if [ "$1" = --print ]; then
+	print_only=1
+	shift
+fi
+dev=${1:?用法: loong-dynpart [--print] <super 设备> [slot]}
+slot=${2:-a}
+
+u32() { od -An -tu4 -j "$1" -N 4 "$dev" | tr -d ' '; }
+u64() { od -An -tu8 -j "$1" -N 8 "$dev" | tr -d ' '; }
+cstr() { dd if="$dev" bs=1 skip="$1" count="$2" 2>/dev/null | tr -d '\000'; }
+
+LP_GEOMETRY=4096
+LP_METADATA=12288
+LP_GEOMETRY_MAGIC=1634485351 # 0x616c4467
+LP_HEADER_MAGIC=1095520304   # 0x414c5030
+LP_ATTR_DISABLED=8
+
+[ "$(u32 $LP_GEOMETRY)" = $LP_GEOMETRY_MAGIC ] || { echo "loong-dynpart: $dev 没有 LP 几何信息" >&2; exit 1; }
+max_size=$(u32 $((LP_GEOMETRY + 40)))
+slot_count=$(u32 $((LP_GEOMETRY + 44)))
+mslot=0
+[ "$slot" = b ] && [ "$slot_count" -gt 1 ] && mslot=1
+
+hdr=$((LP_METADATA + mslot * max_size))
+[ "$(u32 $hdr)" = $LP_HEADER_MAGIC ] || { echo "loong-dynpart: $dev 元数据槽 $mslot 无效" >&2; exit 1; }
+tables=$((hdr + $(u32 $((hdr + 8)))))
+p_off=$(u32 $((hdr + 80))); p_num=$(u32 $((hdr + 84))); p_size=$(u32 $((hdr + 88)))
+e_off=$(u32 $((hdr + 92))); e_size=$(u32 $((hdr + 100)))
+
+i=0
+while [ $i -lt "$p_num" ]; do
+	p=$((tables + p_off + i * p_size))
+	i=$((i + 1))
+	name=$(cstr $p 36)
+	attrs=$(u32 $((p + 36)))
+	first=$(u32 $((p + 40)))
+	count=$(u32 $((p + 44)))
+	[ -n "$name" ] && [ "$count" -gt 0 ] || continue
+	[ $((attrs & LP_ATTR_DISABLED)) -eq 0 ] || continue
+	table=""
+	start=0
+	e=$first
+	while [ $e -lt $((first + count)) ]; do
+		x=$((tables + e_off + e * e_size))
+		e=$((e + 1))
+		sectors=$(u64 $x)
+		case "$(u32 $((x + 8)))" in
+			0)
+				[ "$(u32 $((x + 20)))" = 0 ] || { echo "loong-dynpart: $name 位于第二块设备上，不支持" >&2; exit 1; }
+				line="$start $sectors linear $dev $(u64 $((x + 12)))" ;;
+			1) line="$start $sectors zero" ;;
+			*) echo "loong-dynpart: $name 有未知类型的 extent" >&2; exit 1 ;;
+		esac
+		table="$table$line
+"
+		start=$((start + sectors))
+	done
+	if [ $print_only = 1 ]; then
+		printf '%s:\n%s' "$name" "$table"
+	elif [ ! -e "/dev/mapper/$name" ]; then
+		# initramfs 里没有 udev：不等待 udev，由 dmsetup 自己创建 /dev/mapper/<名字>。
+		printf '%s' "$table" | dmsetup create --noudevsync "$name"
+		dmsetup mknodes "$name"
+	fi
+done

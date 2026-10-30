@@ -34,7 +34,7 @@ v1 包含 OTA A/B 更新。系统要做到：更新可靠（断电或坏包都�
 | 后端 | 适用 | 启动链 | A/B 切换与回滚 |
 |---|---|---|---|
 | **`uefi-sdboot`** | QEMU、UEFI 设备 | UEFI → systemd-boot → 每个 slot 一个 **UKI**（`ukify` 生成，内含 cmdline） | systemd-boot 的**文件名启动计数** `+N-M`：剩余次数用完的项被视为坏项，自动改从另一个 slot 启动 |
-| **`android-abl`** | 小米平板 5 | ABL → `boot_a`/`boot_b` 中的 Android `boot.img`（`mkbootimg` 生成，附带 dtb）→ `super` 分区内的 `system_a`/`system_b`（由 `make-dynpart-mappings` 映射）；`/data` 位于 `userdata` | `qbootctl` + ABL 自带的重试计数 |
+| **`android-abl`** | 小米平板 5 | ABL → `boot_a`/`boot_b` 中的 Android `boot.img`（`mkbootimg` 生成，附带 dtb）→ `super` 分区内的 `system_a`/`system_b`（由 initramfs 的 `loong-dynpart` 映射，功能同 pmOS 的 `make-dynpart-mappings`）；`/data` 位于 `userdata` | `qbootctl` + ABL 自带的重试计数 |
 | `uboot`（后续） | Rockchip、全志、树莓派等 | U-Boot | U-Boot bootcount |
 
 `uefi-sdboot` 的细节：

@@ -28,6 +28,10 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 
 ![QEMU 中的 Loong OS](docs/images/qemu-home.png)
 
+ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-shell 为交叉编译）：
+
+![QEMU aarch64 中的 Loong OS](docs/images/qemu-aarch64-home.png)
+
 ## 当前状态：M0 基础设施
 
 | 模块 | 状态 |

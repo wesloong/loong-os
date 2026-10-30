@@ -123,6 +123,9 @@ if [ -d "$LOCAL_REPO/packages/$ARCH" ]; then
 	mount --bind "$LOCAL_REPO" "$ROOT/mnt/loong-packages"
 	extra_repo="--repository /mnt/loong-packages/packages"
 	[ -n "${WITH_WPE:-}" ] && PACKAGES="$PACKAGES wpewebkit wpewebkit-minibrowser"
+	# 「墨韵」展示字体（霞鹜文楷屏幕版）：tools/build-pkg.sh font-lxgw-wenkai-screen
+	ls "$LOCAL_REPO/packages/$ARCH"/font-lxgw-wenkai-screen-*.apk >/dev/null 2>&1 && \
+		PACKAGES="$PACKAGES font-lxgw-wenkai-screen"
 fi
 # 重新安装引导包以运行它们的脚本，再安装其余软件包。
 chroot "$ROOT" /sbin/apk fix --no-cache --no-progress -q --reinstall alpine-baselayout busybox

@@ -7,7 +7,7 @@ use smithay::{
     input::{Seat, SeatState, keyboard::XkbConfig},
     output::Output,
     reexports::{
-        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction, generic::Generic},
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -29,8 +29,10 @@ use crate::{device::DeviceConfig, shell::Shell};
 pub struct LoongState {
     pub display_handle: DisplayHandle,
     pub socket_name: OsString,
-    #[allow(dead_code, reason = "真机后端用于退出事件循环")]
-    pub loop_signal: LoopSignal,
+    /// 尚未注册到事件循环的 display 与 socket（见 [`LoongState::register_sources`]）。
+    pending: Option<(Display<LoongState>, ListeningSocketSource)>,
+    /// 客户端提交了新画面，需要重画。
+    damaged: bool,
 
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
@@ -49,16 +51,24 @@ pub struct LoongState {
     pub output: Option<Output>,
     /// 系统界面。
     pub shell: Shell,
-    /// 当前时间（秒），由后端驱动（真实 vblank 时间或测试用虚拟时钟）。
+    /// 当前时间（秒），由后端驱动（真实时间或测试用虚拟时钟）。
     pub now: f64,
 }
 
 impl LoongState {
+    /// 创建状态并注册到以 `LoongState` 为数据的事件循环（headless 后端用）。
     pub fn new(
         event_loop: &mut EventLoop<Self>,
         display: Display<Self>,
         device: &DeviceConfig,
     ) -> anyhow::Result<Self> {
+        let mut state = Self::new_detached(display, device)?;
+        state.register_sources(&event_loop.handle(), |s: &mut LoongState| s)?;
+        Ok(state)
+    }
+
+    /// 创建状态，但暂不注册事件源（事件循环的数据类型由后端决定）。
+    pub fn new_detached(display: Display<Self>, device: &DeviceConfig) -> anyhow::Result<Self> {
         let dh = display.handle();
         let compositor_state = CompositorState::new::<Self>(&dh);
         let xdg_shell_state = XdgShellState::new::<Self>(&dh);
@@ -72,13 +82,15 @@ impl LoongState {
         seat.add_pointer();
         seat.add_touch();
 
-        let socket_name = Self::init_wayland_listener(display, event_loop)?;
+        let socket = ListeningSocketSource::new_auto()?;
+        let socket_name = socket.socket_name().to_os_string();
         let (w, h) = device.logical_size();
 
         Ok(LoongState {
             display_handle: dh,
             socket_name,
-            loop_signal: event_loop.get_signal(),
+            pending: Some((display, socket)),
+            damaged: true,
             compositor_state,
             xdg_shell_state,
             shm_state,
@@ -94,15 +106,19 @@ impl LoongState {
         })
     }
 
-    fn init_wayland_listener(
-        display: Display<Self>,
-        event_loop: &mut EventLoop<Self>,
-    ) -> anyhow::Result<OsString> {
-        let socket = ListeningSocketSource::new_auto()?;
-        let name = socket.socket_name().to_os_string();
-        let handle = event_loop.handle();
+    /// 把 Wayland socket 与 display 注册到事件循环。`get` 从事件循环数据中取出 `LoongState`。
+    pub fn register_sources<'l, D: 'l>(
+        &mut self,
+        handle: &LoopHandle<'l, D>,
+        get: fn(&mut D) -> &mut LoongState,
+    ) -> anyhow::Result<()> {
+        let (display, socket) = self
+            .pending
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("事件源已注册"))?;
         handle
-            .insert_source(socket, |stream, _, state| {
+            .insert_source(socket, move |stream, _, data| {
+                let state = get(data);
                 if let Err(e) = state
                     .display_handle
                     .insert_client(stream, Arc::new(ClientState::default()))
@@ -114,7 +130,8 @@ impl LoongState {
         handle
             .insert_source(
                 Generic::new(display, Interest::READ, Mode::Level),
-                |_, display, state| {
+                move |_, display, data| {
+                    let state = get(data);
                     // SAFETY: display 在事件源存在期间不会被 drop。
                     unsafe {
                         display.get_mut().dispatch_clients(state).ok();
@@ -123,7 +140,17 @@ impl LoongState {
                 },
             )
             .map_err(|e| anyhow::anyhow!("注册 Wayland display 失败: {e}"))?;
-        Ok(name)
+        Ok(())
+    }
+
+    /// 标记需要重画（客户端提交新画面时调用）。
+    pub fn mark_damaged(&mut self) {
+        self.damaged = true;
+    }
+
+    /// 取出并清除“需要重画”标记。
+    pub fn take_damage(&mut self) -> bool {
+        std::mem::take(&mut self.damaged)
     }
 }
 

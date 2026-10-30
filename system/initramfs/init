@@ -1,0 +1,84 @@
+#!/bin/busybox sh
+# Loong OS initramfs
+#
+# 1. 按内核命令行 loong.slot=a|b 找到分区名为 root_a / root_b 的分区，只读挂载 erofs 根文件系统
+# 2. 挂载可写的 data 分区，把 /var、/home、/root 从 data 绑定进来（首次启动时初始化 /var）
+# 3. switch_root 到真正的系统
+#
+# 分区靠 GPT 分区名查找（/sys/class/block/*/uevent 中的 PARTNAME），不依赖设备名，适用于所有机型。
+
+/bin/busybox mkdir -p /bin /sbin /proc /sys /dev /newroot
+/bin/busybox --install -s /bin
+
+rescue() {
+	echo "Loong OS initramfs: $*"
+	echo "进入救援 shell。"
+	exec /bin/sh
+}
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+
+slot=a
+for arg in $(cat /proc/cmdline); do
+	case "$arg" in
+		loong.slot=*) slot="${arg#loong.slot=}" ;;
+		loong.debug) set -x ;;
+		loong.rescue) rescue "命令行要求进入救援模式" ;;
+	esac
+done
+
+for m in $(cat /etc/loong/initramfs-modules 2>/dev/null); do
+	modprobe -q "$m" || echo "加载模块 $m 失败"
+done
+
+find_partition() {
+	for u in /sys/class/block/*/uevent; do
+		if grep -qx "PARTNAME=$1" "$u" 2>/dev/null; then
+			echo "/dev/$(basename "$(dirname "$u")")"
+			return 0
+		fi
+	done
+	return 1
+}
+
+wait_partition() {
+	i=0
+	while [ $i -lt 100 ]; do
+		p=$(find_partition "$1") && { echo "$p"; return 0; }
+		sleep 0.1
+		i=$((i + 1))
+	done
+	return 1
+}
+
+root=$(wait_partition "root_$slot") || rescue "找不到分区 root_$slot"
+mount -t erofs -o ro "$root" /newroot || rescue "无法挂载 $root"
+
+data=$(wait_partition data) || rescue "找不到 data 分区"
+mount -t ext4 -o noatime "$data" /newroot/data || rescue "无法挂载 data 分区"
+
+for d in var home root; do
+	mkdir -p "/newroot/data/$d"
+done
+if [ ! -e /newroot/data/var/.loong-initialized ]; then
+	echo "首次启动：初始化 /var"
+	cp -a /newroot/usr/share/loong/var-skel/. /newroot/data/var/
+	touch /newroot/data/var/.loong-initialized
+fi
+chmod 0700 /newroot/data/root
+# machine-id：根文件系统只读，放在 data 分区（/etc/machine-id 是指向这里的符号链接）
+if [ ! -s /newroot/data/var/lib/dbus/machine-id ]; then
+	mkdir -p /newroot/data/var/lib/dbus
+	tr -d '-' < /proc/sys/kernel/random/uuid > /newroot/data/var/lib/dbus/machine-id
+fi
+mount --bind /newroot/data/var /newroot/var
+mount --bind /newroot/data/home /newroot/home
+mount --bind /newroot/data/root /newroot/root
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /newroot/tmp
+
+echo "Loong OS：从 slot $slot 启动（$root）"
+umount /proc /sys
+mount --move /dev /newroot/dev
+exec switch_root /newroot /sbin/init

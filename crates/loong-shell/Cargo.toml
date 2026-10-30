@@ -18,6 +18,11 @@ toml = { version = "1", default-features = false, features = ["parse", "serde", 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[dependencies.smithay-drm-extras]
+git = "https://github.com/Smithay/smithay.git"
+rev = "f581531d479cf2e3307bafb913c5d2bb12860bb3"
+default-features = false
+
 [dependencies.smithay]
 # 固定到经过验证的提交，升级时统一测试。
 git = "https://github.com/Smithay/smithay.git"

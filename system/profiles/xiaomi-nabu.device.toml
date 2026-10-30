@@ -1,0 +1,10 @@
+# 小米平板 5（nabu）的设备描述（M3 适配时随 loong-device-xiaomi-nabu 安装）
+name = "小米平板 5"
+size_class = "regular"
+
+[screen]
+width = 2560
+height = 1600
+diagonal_inch = 11.0
+refresh_hz = 120
+corner_radius = 18

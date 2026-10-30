@@ -28,8 +28,8 @@ PKGS_TOOLCHAIN="clang lld cmake samurai meson pkgconf rust cargo rustfmt rust-cl
 PKGS_SHELL="wayland-dev wayland-protocols libxkbcommon-dev libinput-dev eudev-dev libseat-dev
   mesa-dev libdrm-dev pixman-dev mesa-dri-gallium mesa-egl mesa-gles mesa-gbm seatd
   font-inter font-noto-cjk weston weston-clients foot"
-PKGS_IMAGE="erofs-utils mtools dosfstools sfdisk ukify py3-pefile systemd-boot systemd-efistub
-  busybox-static kmod qemu-system-x86_64 ovmf"
+PKGS_IMAGE="erofs-utils e2fsprogs mtools dosfstools sfdisk ukify py3-pefile systemd-boot systemd-efistub
+  busybox-static kmod qemu-system-x86_64 qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci ovmf"
 
 die() { echo "dev-chroot: $*" >&2; exit 1; }
 

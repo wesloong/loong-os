@@ -20,6 +20,10 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 |---|---|---|
 | ![主屏](docs/images/home.png) | ![打开应用](docs/images/app-opening.png) | ![回主屏手势](docs/images/go-home-gesture.png) |
 
+完整系统在 QEMU 中启动后的画面（UEFI → systemd-boot → UKI → initramfs → 只读 erofs → OpenRC → `loong-shell` 走 DRM/KMS）：
+
+![QEMU 中的 Loong OS](docs/images/qemu-home.png)
+
 ## 当前状态：M0 基础设施
 
 | 模块 | 状态 |
@@ -29,8 +33,8 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 | `crates/loong-motion`：弹簧、惯性衰减、橡皮筋、速度跟踪、吸附/分页、CSS `linear()` 缓动 | ✅ 已完成（含单元测试） |
 | `system/packages/wpewebkit`：WPE WebKit 2.54.2 APKBUILD 与 CI 工作流 | ✅ 配方完成，正在 chroot 中编译验证 |
 | `crates/loong-ui`：设计令牌、连续圆角、文字（中文）、图标、毛玻璃、壁纸 | ✅ 已完成 |
-| `crates/loong-shell`：headless 后端、主屏、打开应用 / 回主屏手势动画、真实 Wayland 客户端（xdg-shell） | ✅ 已可用；真机后端（DRM/KMS + libinput）🚧 进行中 |
-| QEMU 镜像：`system/mkimage`、`tools/run-qemu.sh`、initramfs、A/B 启动 | 🚧 进行中 |
+| `crates/loong-shell`：headless 后端、主屏、打开应用 / 回主屏手势动画、真实 Wayland 客户端（xdg-shell）、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证） |
+| QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
 
 完整路线图（M0–M7）见[技术规划](docs/技术规划.md#五路线图)。
 
@@ -46,11 +50,11 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 | `webrt/` | C/meson：`webapp/`、`browser/`、`platform/`（`loong` WPEPlatform 后端）、`loongkit/` | 计划（M2） |
 | `system/packages/wpewebkit/` | WPE WebKit 的 APKBUILD | 已有 |
 | `system/packages/loong-*/` | `loong-shell`、`loong-webrt`、`loong-base`、`loong-initramfs`、`loong-device-*` | 计划 |
-| `system/rootfs/` | OpenRC 服务、自动登录会话、`loong-boot-ok`、sysctl、udev 规则 | 进行中 |
-| `system/profiles/` | 机型配置：`qemu-x86_64`、`qemu-aarch64`、`xiaomi-nabu` | 进行中 |
-| `system/mkimage/` | 镜像构建：apk → rootfs → erofs → initramfs → UKI/boot.img → GPT 磁盘 | 进行中 |
+| `system/rootfs/` | OpenRC 服务：`loong-session`（系统界面）、`loong-boot-ok`（A/B 启动确认） | 已有 |
+| `system/profiles/` | 机型配置与设备描述：`qemu-x86_64` 已有；`xiaomi-nabu`（M3） | 部分已有 |
+| `system/initramfs/`、`system/mkimage/` | busybox initramfs；镜像构建：apk → rootfs → erofs → initramfs → UKI → GPT 磁盘 | 已有（UKI）；boot.img（M3） |
 | `tools/dev-chroot.sh`、`tools/build-pkg.sh` | 开发 chroot、APK 构建 | 已有 |
-| `tools/run-qemu.sh` | QEMU（OVMF + virtio-gpu + virtio-multitouch，1280×800） | 进行中 |
+| `tools/qemu.py` | QEMU 启动、QMP 截图、模拟点按/滑动 | 已有 |
 | `.github/workflows/` | `rust.yml`、`wpewebkit.yml` 已有；`image.yml` 计划中 | 部分已有 |
 
 ## 开发者快速上手
@@ -76,6 +80,13 @@ sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build -p loong-shell && \
   build/target-alpine/debug/loong-shell --headless --size 1280x800 \
     --script crates/loong-shell/tests/scripts/open-and-go-home.json --out out/demo'
 #    把某个图标绑定到真实 Wayland 程序：--app browser=foot（再加 --realtime）
+
+# 5. 构建 QEMU 系统镜像并启动（在 chroot 内运行 QEMU，TCG 软件模拟，较慢）
+sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build --release -p loong-shell && \
+  system/mkimage/mkimage.sh qemu-x86_64 && \
+  python3 tools/qemu.py start build/image/qemu-x86_64/loong-qemu-x86_64.img && \
+  python3 tools/qemu.py wait "login:" && python3 tools/qemu.py shot out/qemu.png'
+#    之后可以：python3 tools/qemu.py tap 235 124；swipe 640 795 640 420；stop
 
 # 其他命令
 sudo tools/dev-chroot.sh shell     # 进入 chroot

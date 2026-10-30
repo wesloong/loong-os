@@ -1,0 +1,56 @@
+#!/sbin/openrc-run
+# A/B 启动确认（uefi-sdboot 后端）。
+#
+# systemd-boot 的启动计数：UKI 文件名带 "+剩余次数-已失败次数"（如 loong-a+3.efi），
+# 每次尝试启动都会递减；次数用完的 slot 会被排到最后，自动回退到另一个 slot。
+# 系统界面成功启动后，本服务去掉文件名里的计数，表示这个 slot 是好的。
+# Alpine 只提供 systemd-boot 的 EFI 程序，没有 systemd-bless-boot，所以自己实现。
+
+description="标记本次启动成功（A/B 回滚保护）"
+
+depend() {
+	need localmount
+	after loong-session
+}
+
+EFI_LOADER_GUID="4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+
+find_partition() {
+	for u in /sys/class/block/*/uevent; do
+		if grep -qx "PARTNAME=$1" "$u"; then
+			echo "/dev/$(basename "$(dirname "$u")")"
+			return 0
+		fi
+	done
+	return 1
+}
+
+start() {
+	ebegin "标记本次启动成功"
+	modprobe -q efivarfs 2>/dev/null
+	if ! mountpoint -q /sys/firmware/efi/efivars 2>/dev/null; then
+		mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null
+	fi
+	var="/sys/firmware/efi/efivars/LoaderBootCountPath-$EFI_LOADER_GUID"
+	if [ ! -r "$var" ]; then
+		# 本次启动没有使用计数（已经确认过，或不是 UEFI 启动）。
+		eend 0
+		return 0
+	fi
+	# 变量内容：4 字节属性 + UTF-16LE 路径（例如 \EFI\Linux\loong-a+2-1.efi）
+	path=$(tail -c +5 "$var" | tr -d '\000' | tr '\\' '/')
+	esp=$(find_partition esp) || { eend 1 "找不到 ESP 分区"; return 1; }
+	modprobe -q vfat 2>/dev/null
+	mnt=/run/loong/esp
+	mkdir -p "$mnt"
+	mount -t vfat "$esp" "$mnt" || { eend 1 "无法挂载 ESP"; return 1; }
+	old="$mnt$path"
+	new=$(echo "$old" | sed -E 's/\+[0-9]+(-[0-9]+)?\.efi$/.efi/')
+	rc=0
+	if [ "$old" != "$new" ] && [ -e "$old" ]; then
+		mv "$old" "$new" || rc=1
+		sync
+	fi
+	umount "$mnt"
+	eend $rc
+}

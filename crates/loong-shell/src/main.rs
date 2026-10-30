@@ -1,8 +1,8 @@
 //! loong-shell：Loong OS 的系统界面（Wayland 合成器）。
 //!
 //! ```text
-//! loong-shell --headless [--script 脚本.json] [--out 目录] [--device device.toml | --size 1280x800 --scale 1]
-//!             [--client 命令]... [--app 应用id=命令]... [--realtime]
+//! loong-shell [--device device.toml] [--client 命令]... [--app 应用id=命令]...   # 真机（DRM/KMS）
+//! loong-shell --headless [--script 脚本.json] [--out 目录] [--size 1280x800] [--realtime]
 //! ```
 
 mod backend;
@@ -121,7 +121,13 @@ fn main() -> anyhow::Result<()> {
     );
 
     if !args.headless {
-        bail!("真机后端（DRM/KMS + libinput）尚在开发中，目前请使用 --headless");
+        return backend::udev::run(
+            &device,
+            backend::udev::UdevOptions {
+                app_commands: args.app_commands,
+                autostart: args.clients,
+            },
+        );
     }
     let script = match &args.script {
         Some(path) => Script::parse(&std::fs::read_to_string(path)?)

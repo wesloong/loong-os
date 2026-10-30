@@ -1,0 +1,31 @@
+#!/sbin/openrc-run
+# Loong OS 系统界面：以普通用户 loong 运行 loong-shell（通过 seatd 获取显示与输入设备）。
+
+name="loong-session"
+description="Loong OS 系统界面"
+
+command="/usr/bin/loong-shell"
+command_args="${LOONG_SHELL_ARGS:-}"
+command_user="loong:loong"
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=5
+output_log="/var/log/loong-shell.log"
+error_log="/var/log/loong-shell.log"
+
+depend() {
+	need seatd localmount
+	after udev-settle udev-trigger dbus
+}
+
+start_pre() {
+	checkpath -d -m 0755 /run/user
+	checkpath -d -m 0700 -o loong:loong /run/user/1000
+	checkpath -d -m 0700 -o loong:loong /home/loong
+	checkpath -f -m 0644 -o loong:loong /var/log/loong-shell.log
+	# 会话环境变量（机型可在 /etc/conf.d/loong-session 中追加 LOONG_SESSION_ENV）
+	supervise_daemon_args="--env XDG_RUNTIME_DIR=/run/user/1000 --env HOME=/home/loong --env RUST_LOG=${RUST_LOG:-info}"
+	for kv in ${LOONG_SESSION_ENV:-}; do
+		supervise_daemon_args="$supervise_daemon_args --env $kv"
+	done
+}

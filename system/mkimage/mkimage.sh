@@ -86,6 +86,9 @@ log "安装 Loong OS 组件"
 SHELL_BIN="$SRC/build/target-alpine/release/loong-shell"
 [ -x "$SHELL_BIN" ] || { echo "缺少 $SHELL_BIN，请先运行 cargo build --release -p loong-shell" >&2; exit 1; }
 install -Dm755 "$SHELL_BIN" "$ROOT/usr/bin/loong-shell"
+SYSD_BIN="$SRC/build/target-alpine/release/loong-sysd"
+[ -x "$SYSD_BIN" ] || { echo "缺少 $SYSD_BIN，请先运行 cargo build --release -p loong-sysd" >&2; exit 1; }
+install -Dm755 "$SYSD_BIN" "$ROOT/usr/bin/loong-sysd"
 install -Dm644 "$SRC/system/profiles/$PROFILE.device.toml" "$ROOT/usr/share/loong/device.toml"
 # Web 运行时（WPE WebKit 构建完成后可用：WITH_WPE=1）
 if [ -n "${WITH_WPE:-}" ]; then
@@ -99,6 +102,7 @@ if [ -n "${WITH_WPE:-}" ]; then
 fi
 cp -a "$SRC/system/rootfs/." "$ROOT/"
 chmod 755 "$ROOT/etc/init.d/loong-session" "$ROOT/etc/init.d/loong-boot-ok"
+chmod 755 "$ROOT/etc/init.d/loong-sysd"
 if [ -n "${SESSION_ENV:-}" ]; then
 	printf 'LOONG_SESSION_ENV="%s"\n' "$SESSION_ENV" >> "$ROOT/etc/conf.d/loong-session"
 fi
@@ -138,6 +142,7 @@ enable() { mkdir -p "$ROOT/etc/runlevels/$2"; ln -sf "/etc/init.d/$1" "$ROOT/etc
 for s in devfs dmesg sysfs procfs udev udev-trigger udev-settle; do enable "$s" sysinit; done
 for s in modules hostname bootmisc sysctl seedrng; do enable "$s" boot; done
 for s in dbus seatd loong-session loong-boot-ok; do enable "$s" default; done
+enable loong-sysd default
 for s in killprocs savecache; do enable "$s" shutdown; done
 
 # 只读根：会被写入的文件改为指向可写位置

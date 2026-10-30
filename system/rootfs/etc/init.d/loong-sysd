@@ -1,0 +1,30 @@
+#!/sbin/openrc-run
+# Loong OS 系统服务：以 root 运行 loong-sysd，在系统总线上提供 org.loong.System1
+# （背光、电池/电源、Wi‑Fi）。接口说明见 docs/api/loong-sysd.md。
+#
+# 机型可以在 /etc/conf.d/loong-sysd 中设置：
+#   LOONG_BACKLIGHT=<设备名>        指定 /sys/class/backlight 下的设备（默认自动选择）
+#   LOONG_BACKLIGHT_ALLOW_OFF=1     允许亮度 0 关掉背光（默认保留最低可见亮度）
+
+name="loong-sysd"
+description="Loong OS 系统服务（背光、电源、Wi‑Fi）"
+
+command="/usr/bin/loong-sysd"
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=5
+output_log="/var/log/loong-sysd.log"
+error_log="/var/log/loong-sysd.log"
+
+depend() {
+	need dbus
+	after udev-settle udev-trigger iwd
+	before loong-session
+}
+
+start_pre() {
+	supervise_daemon_args="--env RUST_LOG=${RUST_LOG:-info}"
+	[ -n "${LOONG_BACKLIGHT:-}" ] && supervise_daemon_args="$supervise_daemon_args --env LOONG_BACKLIGHT=$LOONG_BACKLIGHT"
+	[ -n "${LOONG_BACKLIGHT_ALLOW_OFF:-}" ] && supervise_daemon_args="$supervise_daemon_args --env LOONG_BACKLIGHT_ALLOW_OFF=$LOONG_BACKLIGHT_ALLOW_OFF"
+	return 0
+}

@@ -50,7 +50,7 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 | `crates/loong-motion/` | 物理动画引擎（纯数学，无第三方依赖） | 已有 |
 | `crates/loong-ui/` | 绘制、设计令牌、连续圆角（超椭圆） | 已有 |
 | `crates/loong-shell/` | Wayland 合成器、系统 UI、手势识别 | 已有（M1 进行中） |
-| `crates/loong-sysd/` | 系统服务（D-Bus）：背光、电源、Wi‑Fi、OTA | 计划（M4） |
+| `crates/loong-sysd/` | 系统服务（D-Bus `org.loong.System1`）：背光、电源、Wi‑Fi（iwd）；OTA 待做。接口见 [docs/api/loong-sysd.md](docs/api/loong-sysd.md) | 已有（M4 进行中） |
 | `webrt/` | C/meson：`webapp/`、`browser/`、`platform/`（`loong` WPEPlatform 后端）、`loongkit/` | 计划（M2） |
 | `system/packages/wpewebkit/` | WPE WebKit 的 APKBUILD | 已有 |
 | `system/packages/loong-*/` | `loong-shell`、`loong-webrt`、`loong-base`、`loong-initramfs`、`loong-device-*` | 计划 |
@@ -86,7 +86,7 @@ sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build -p loong-shell && \
 #    把某个图标绑定到真实 Wayland 程序：--app browser=foot（再加 --realtime）
 
 # 5. 构建 QEMU 系统镜像并启动（在 chroot 内运行 QEMU，TCG 软件模拟，较慢）
-sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build --release -p loong-shell && \
+sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build --release -p loong-shell -p loong-sysd && \
   system/mkimage/mkimage.sh qemu-x86_64 && \
   python3 tools/qemu.py start build/image/qemu-x86_64/loong-qemu-x86_64.img && \
   python3 tools/qemu.py wait "login:" && python3 tools/qemu.py shot out/qemu.png'

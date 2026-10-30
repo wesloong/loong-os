@@ -1,0 +1,27 @@
+[package]
+name = "loong-sysd"
+description = "Loong OS 系统服务（root，D-Bus org.loong.System1）：背光、电池/电源、Wi‑Fi（iwd）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.87"
+
+[dependencies]
+loong-motion = { path = "../loong-motion" }
+anyhow = "1"
+# zbus 5 自带的 async-io 执行器；不引入 tokio，二进制更小。
+# （zbus 6 于 2026-10 发布，换成了新的 zruntime；稳定后再迁移。）
+zbus = { version = "5.19", default-features = false, features = ["async-io"] }
+# 以下几个与 zbus 共用同一份依赖（不增加体积）：定时器/反应器、单线程执行器、事件通知。
+async-io = "2"
+async-executor = "1"
+event-listener = "5"
+futures-lite = { version = "2", default-features = false, features = ["std"] }
+rustix = { version = "1", default-features = false, features = ["std", "net"] }
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+
+[lints]
+workspace = true

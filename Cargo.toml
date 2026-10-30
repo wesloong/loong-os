@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/loong-motion", "crates/loong-ui", "crates/loong-shell", "crates/loong-sysd"]
+members = ["crates/loong-motion", "crates/loong-ui", "crates/loong-shell", "crates/loong-sysd", "crates/loong-ime"]
 
 [workspace.package]
 version = "0.1.0"

@@ -79,7 +79,7 @@ impl LockScreen {
         }
         // 接住正在进行的动画，从当前位置继续跟手。
         let current = self.offset(now);
-        self.offset.jump_to(current, 0.0, now);
+        super::pin(&mut self.offset, current, now);
         self.tracker.reset();
         self.tracker.add(now, y);
         self.drag = Some(Drag {
@@ -102,7 +102,7 @@ impl LockScreen {
         } else {
             raw.max(-self.h)
         };
-        self.offset.jump_to(offset, 0.0, now);
+        super::pin(&mut self.offset, offset, now);
     }
 
     pub fn touch_up(&mut self, slot: u32, now: f64) {

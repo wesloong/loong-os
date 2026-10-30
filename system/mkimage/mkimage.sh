@@ -12,7 +12,7 @@
 set -eu
 
 PROFILE=${1:?用法: mkimage.sh <机型>}
-SRC=/src
+SRC=${SRC:-/src}
 PROFILE_CONF="$SRC/system/profiles/$PROFILE.conf"
 [ -f "$PROFILE_CONF" ] || { echo "没有这个机型: $PROFILE" >&2; exit 1; }
 # shellcheck disable=SC1090

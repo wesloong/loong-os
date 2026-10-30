@@ -29,11 +29,11 @@ PACKAGER="Loong OS Developers <dev@loong-os.local>"
 PACKAGER_PRIVKEY="$key"
 EOF
 export JOBS='"${JOBS:-3}"'
-export SRCDEST=/src/build/distfiles
-export REPODEST=/src/build/packages
-export srcdir=/src/build/abuild/$pkg/src
-export pkgbasedir=/src/build/abuild/$pkg/pkg
+export SRCDEST=$SRC/build/distfiles
+export REPODEST=$SRC/build/packages
+export srcdir=$SRC/build/abuild/$pkg/src
+export pkgbasedir=$SRC/build/abuild/$pkg/pkg
 mkdir -p "$srcdir" "$pkgbasedir" "$SRCDEST" "$REPODEST"
-cd /src/system/packages/$pkg
+cd $SRC/system/packages/$pkg
 abuild -F -r "$@"
 ' build-pkg "$pkg" "$@"

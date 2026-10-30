@@ -3,12 +3,13 @@
 #
 # 用法:
 #   tools/dev-chroot.sh init            创建 chroot 并安装开发依赖
-#   tools/dev-chroot.sh run <命令...>   在 chroot 内执行命令（仓库挂载在 /src）
+#   tools/dev-chroot.sh run <命令...>   在 chroot 内执行命令（工作目录为仓库挂载点 $SRC）
 #   tools/dev-chroot.sh shell           进入交互 shell
 #   tools/dev-chroot.sh umount          卸载 chroot 的挂载点
 #
 # 环境变量:
-#   CHROOT         chroot 目录（默认 <仓库>/build/chroot）
+#   CHROOT         chroot 目录（默认 <主仓库>/build/chroot，所有 git worktree 共用一个 chroot）
+#   SRC_MOUNT      仓库在 chroot 内的挂载点（主仓库为 /src，worktree 为 /wt/<目录名>）
 #   ALPINE_BRANCH  Alpine 版本（默认 v3.24）
 #   MIRROR         Alpine 镜像（默认 http://dl-cdn.alpinelinux.org/alpine，包本身有签名校验）
 #
@@ -19,7 +20,16 @@ set -eu
 ALPINE_BRANCH=${ALPINE_BRANCH:-v3.24}
 MIRROR=${MIRROR:-http://dl-cdn.alpinelinux.org/alpine}
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-CHROOT=${CHROOT:-$REPO_ROOT/build/chroot}
+# git worktree 与主仓库共用 .git；chroot 与依赖缓存放在主仓库，各 worktree 的构建产物各自独立。
+MAIN_ROOT=$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+MAIN_ROOT=${MAIN_ROOT%/.git}
+[ -n "$MAIN_ROOT" ] && [ -d "$MAIN_ROOT" ] || MAIN_ROOT=$REPO_ROOT
+CHROOT=${CHROOT:-$MAIN_ROOT/build/chroot}
+if [ "$REPO_ROOT" = "$MAIN_ROOT" ]; then
+	SRC_MOUNT=${SRC_MOUNT:-/src}
+else
+	SRC_MOUNT=${SRC_MOUNT:-/wt/$(basename "$REPO_ROOT")}
+fi
 ARCH=$(uname -m)
 
 # 开发所需的包。按用途分组，便于维护。
@@ -55,7 +65,11 @@ do_mount() {
 	is_mounted "$CHROOT/proc" || mount -t proc proc "$CHROOT/proc"
 	is_mounted "$CHROOT/sys" || mount --rbind /sys "$CHROOT/sys"
 	is_mounted "$CHROOT/dev" || mount --rbind /dev "$CHROOT/dev"
-	is_mounted "$CHROOT/src" || mount --bind "$REPO_ROOT" "$CHROOT/src"
+	is_mounted "$CHROOT/src" || mount --bind "$MAIN_ROOT" "$CHROOT/src"
+	if [ "$SRC_MOUNT" != /src ]; then
+		mkdir -p "$CHROOT$SRC_MOUNT"
+		is_mounted "$CHROOT$SRC_MOUNT" || mount --bind "$REPO_ROOT" "$CHROOT$SRC_MOUNT"
+	fi
 	# 网络与证书：复用宿主机的 DNS 与代理 CA。
 	cp -L /etc/resolv.conf "$CHROOT/etc/resolv.conf"
 	if [ -f /root/.ccr/ca-bundle.crt ]; then
@@ -65,6 +79,16 @@ do_mount() {
 }
 
 do_umount() {
+	# worktree 只卸载自己的挂载点：chroot 的 /src、/dev、/proc 由所有 worktree（和后台构建）共用。
+	if [ "$SRC_MOUNT" != /src ]; then
+		if is_mounted "$CHROOT$SRC_MOUNT"; then
+			umount "$CHROOT$SRC_MOUNT" 2>/dev/null || umount -l "$CHROOT$SRC_MOUNT"
+		fi
+		return 0
+	fi
+	if pgrep -f "chroot $CHROOT" >/dev/null 2>&1; then
+		die "chroot 中仍有进程在运行（例如后台编译），不卸载"
+	fi
 	for m in src dev sys proc; do
 		if is_mounted "$CHROOT/$m"; then
 			umount -R "$CHROOT/$m" 2>/dev/null || umount -lR "$CHROOT/$m"
@@ -80,10 +104,11 @@ chroot_exec() {
 		HTTPS_PROXY="${HTTPS_PROXY:-}" https_proxy="${HTTPS_PROXY:-}" \
 		NO_PROXY="${NO_PROXY:-}" no_proxy="${NO_PROXY:-}" \
 		SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+		SRC="$SRC_MOUNT" \
 		CARGO_HOME=/src/build/cargo-home \
-		CARGO_TARGET_DIR=/src/build/target-alpine \
+		CARGO_TARGET_DIR="$SRC_MOUNT/build/target-alpine" \
 		CCACHE_DIR=/src/build/ccache \
-		chroot "$CHROOT" "$@"
+		chroot "$CHROOT" /bin/sh -c 'cd "$SRC" && exec "$@"' sh "$@"
 }
 
 do_init() {

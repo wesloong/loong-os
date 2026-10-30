@@ -37,6 +37,7 @@ pub struct Assets {
     pixmaps: HashMap<TexKey, (Pixmap, u64)>,
     version: u64,
     clock_text: String,
+    date_text: String,
 }
 
 impl Assets {
@@ -48,6 +49,7 @@ impl Assets {
             pixmaps: HashMap::new(),
             version: 0,
             clock_text: String::new(),
+            date_text: String::new(),
         };
         let (w, h) = shell.screen_size();
         let wallpaper = loong_ui::wallpaper::default_wallpaper(px(w, scale), px(h, scale));
@@ -91,6 +93,16 @@ impl Assets {
         }
         let status_icons = assets.status_icons();
         assets.put(TexKey::StatusIcons, status_icons);
+        let hint = assets.text.render(
+            "上滑解锁",
+            &TextStyle {
+                size: (15.0 * scale) as f32,
+                weight: 500,
+                color: Color::WHITE,
+                shadow: true,
+            },
+        );
+        assets.put(TexKey::LockHint, hint);
         assets.refresh_clock(shell);
         assets
     }
@@ -145,13 +157,37 @@ impl Assets {
         pm
     }
 
-    /// 状态栏时间变化时重新生成。
+    /// 时间、日期变化时重新生成状态栏与锁屏文字。
     pub fn refresh_clock(&mut self, shell: &Shell) {
+        let s = self.scale as f32;
         if self.clock_text != shell.clock_text {
             self.clock_text = shell.clock_text.clone();
             let style = self.status_style();
             let pm = self.text.render(&self.clock_text, &style);
             self.put(TexKey::StatusTime, pm);
+            let big = self.text.render(
+                &self.clock_text,
+                &TextStyle {
+                    size: 96.0 * s,
+                    weight: 300,
+                    color: Color::WHITE,
+                    shadow: true,
+                },
+            );
+            self.put(TexKey::LockTime, big);
+        }
+        if self.date_text != shell.date_text {
+            self.date_text = shell.date_text.clone();
+            let pm = self.text.render(
+                &self.date_text,
+                &TextStyle {
+                    size: 20.0 * s,
+                    weight: 500,
+                    color: Color::WHITE,
+                    shadow: true,
+                },
+            );
+            self.put(TexKey::LockDate, pm);
         }
     }
 

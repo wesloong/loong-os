@@ -56,6 +56,10 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
     if let Some(clock) = &opts.script.clock {
         state.shell.clock_text = clock.clone();
     }
+    if let Some(date) = &opts.script.date {
+        state.shell.date_text = date.clone();
+    }
+    state.shell.set_locked(opts.script.locked);
 
     // SAFETY: EGLSurfacelessDisplay 不持有任何原生资源。
     let egl = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }

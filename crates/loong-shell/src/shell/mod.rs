@@ -6,6 +6,7 @@
 pub mod apps;
 pub mod geometry;
 pub mod layout;
+pub mod lock;
 
 use loong_motion::{Decay, Spring, SpringAnimation, VelocityTracker, snap};
 use smithay::{desktop::Window, reexports::wayland_server::protocol::wl_surface::WlSurface};
@@ -14,6 +15,7 @@ use self::{
     apps::AppEntry,
     geometry::{RectF, lerp, smoothstep},
     layout::{BOTTOM_EDGE, Layout},
+    lock::LockScreen,
 };
 
 /// 应用打开时主屏放大的倍数（营造“进入”的纵深感）。
@@ -38,6 +40,10 @@ pub enum TexKey {
     StatusIcons,
     /// 没有真实窗口的演示应用的占位画面。
     Placeholder(usize),
+    /// 锁屏：大号时间、日期、“上滑解锁”提示。
+    LockTime,
+    LockDate,
+    LockHint,
 }
 
 /// 画面中的一个元素。
@@ -142,8 +148,12 @@ pub struct Shell {
     tracker: VelocityTracker<[f64; 2]>,
     pending_spawn: Vec<usize>,
     last_swipe_pos: Option<(f64, f64)>,
-    /// 状态栏时间文字。
+    /// 锁屏。
+    lock: LockScreen,
+    /// 状态栏与锁屏的时间文字。
     pub clock_text: String,
+    /// 锁屏日期文字。
+    pub date_text: String,
 }
 
 impl Shell {
@@ -163,7 +173,9 @@ impl Shell {
             tracker: VelocityTracker::new(),
             pending_spawn: Vec::new(),
             last_swipe_pos: None,
+            lock: LockScreen::new(h, false),
             clock_text: "9:41".into(),
+            date_text: "10月30日 星期五".into(),
         }
     }
 
@@ -212,8 +224,20 @@ impl Shell {
 
     /// 动画是否都已停止（用于空闲时降低帧率）。
     #[allow(dead_code, reason = "真机后端用它在空闲时停止重绘")]
+    /// 立即设为锁定 / 未锁定（开机时使用，不播放动画）。
+    pub fn set_locked(&mut self, locked: bool) {
+        self.lock = LockScreen::new(self.h, locked);
+    }
+
+    /// 锁屏（例如按电源键）：锁屏从上方落下。
+    #[allow(dead_code, reason = "电源键处理（M3/M4）")]
+    pub fn lock_now(&mut self, now: f64) {
+        self.lock.lock(now);
+    }
+
     pub fn is_idle(&self, now: f64) -> bool {
-        self.home.is_done(now)
+        self.lock.is_idle(now)
+            && self.home.is_done(now)
             && self
                 .card
                 .as_ref()
@@ -387,6 +411,10 @@ impl Shell {
     // ───────────────────────── 触摸手势 ─────────────────────────
 
     pub fn touch_down(&mut self, slot: u32, x: f64, y: f64, now: f64) -> TouchRoute {
+        if self.lock.is_locked() {
+            self.lock.touch_down(slot, y, now);
+            return TouchRoute::Shell;
+        }
         if !matches!(self.gesture, Gesture::Idle) {
             // v1 只处理单指系统手势；多指交给应用。
             return self.forward_route();
@@ -431,6 +459,10 @@ impl Shell {
     }
 
     pub fn touch_motion(&mut self, slot: u32, x: f64, y: f64, now: f64) -> TouchRoute {
+        if self.lock.is_dragging() {
+            self.lock.touch_motion(slot, y, now);
+            return TouchRoute::Shell;
+        }
         match &mut self.gesture {
             Gesture::Home {
                 slot: s,
@@ -465,6 +497,10 @@ impl Shell {
     }
 
     pub fn touch_up(&mut self, slot: u32, now: f64) -> TouchRoute {
+        if self.lock.is_dragging() {
+            self.lock.touch_up(slot, now);
+            return TouchRoute::Shell;
+        }
         let gesture = std::mem::replace(&mut self.gesture, Gesture::Idle);
         match gesture {
             Gesture::Home {
@@ -533,6 +569,10 @@ impl Shell {
     pub fn scene(&self, now: f64) -> Scene {
         let mut scene = Scene::new();
         let [zoom, dim] = self.home.value(now);
+        // 锁屏移开的过程中，主屏从稍大、较暗的状态“迎上来”。
+        let unlock = self.lock.progress(now);
+        let zoom = lerp(HOME_ZOOM_BEHIND_APP, zoom, unlock);
+        let dim = lerp(HOME_DIM_BEHIND_APP, dim, unlock);
         let (cx, cy) = (self.w / 2.0, self.h / 2.0);
         let full = RectF::new(0.0, 0.0, self.w, self.h);
 
@@ -642,6 +682,56 @@ impl Shell {
                     });
                 }
             }
+        }
+
+        // 锁屏
+        if self.lock.is_visible(now) {
+            let off = self.lock.offset(now);
+            let sheet = RectF::new(0.0, off, self.w, self.h);
+            scene.push(DrawItem::Texture {
+                key: TexKey::Wallpaper,
+                rect: sheet,
+                alpha: 1.0,
+                radius: 0.0,
+                clip: None,
+            });
+            scene.push(DrawItem::Solid {
+                rect: sheet,
+                color: [0.0, 0.0, 0.0, 0.18],
+                radius: 0.0,
+            });
+            let cx = self.w / 2.0;
+            let top = self.h * 0.13 + off;
+            scene.push(DrawItem::Natural {
+                key: TexKey::LockDate,
+                x: cx,
+                y: top,
+                align: Align::Center,
+                alpha: 1.0,
+                scale: 1.0,
+            });
+            scene.push(DrawItem::Natural {
+                key: TexKey::LockTime,
+                x: cx,
+                y: top + 28.0,
+                align: Align::Center,
+                alpha: 1.0,
+                scale: 1.0,
+            });
+            let hint_alpha = 1.0 - smoothstep(0.0, 0.15, unlock);
+            scene.push(DrawItem::Natural {
+                key: TexKey::LockHint,
+                x: cx,
+                y: self.h - 46.0 + off,
+                align: Align::Center,
+                alpha: hint_alpha * 0.9,
+                scale: 1.0,
+            });
+            scene.push(DrawItem::Solid {
+                rect: RectF::centered(cx, self.h - 9.0 + off, 140.0, 5.0),
+                color: [1.0, 1.0, 1.0, 0.85],
+                radius: 2.5,
+            });
         }
 
         // 状态栏（始终在最上层）

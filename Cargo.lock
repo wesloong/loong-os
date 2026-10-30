@@ -608,6 +608,7 @@ name = "loong-shell"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "loong-motion",
  "loong-ui",
  "png",

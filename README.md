@@ -20,6 +20,10 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 |---|---|---|
 | ![主屏](docs/images/home.png) | ![打开应用](docs/images/app-opening.png) | ![回主屏手势](docs/images/go-home-gesture.png) |
 
+| 锁屏 | 上滑解锁（锁屏跟手上移，主屏在后方迎上来） |
+|---|---|
+| ![锁屏](docs/images/lock.png) | ![上滑解锁](docs/images/unlocking.png) |
+
 完整系统在 QEMU 中启动后的画面（UEFI → systemd-boot → UKI → initramfs → 只读 erofs → OpenRC → `loong-shell` 走 DRM/KMS）：
 
 ![QEMU 中的 Loong OS](docs/images/qemu-home.png)

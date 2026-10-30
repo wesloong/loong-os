@@ -35,6 +35,12 @@ pub struct Script {
     /// 固定状态栏时间，保证截图可复现。
     #[serde(default)]
     pub clock: Option<String>,
+    /// 固定锁屏日期文字。
+    #[serde(default)]
+    pub date: Option<String>,
+    /// 开始时是否处于锁屏。
+    #[serde(default)]
+    pub locked: bool,
     #[serde(default)]
     pub events: Vec<Event>,
     #[serde(default)]
@@ -99,6 +105,8 @@ impl Script {
             fps: 60,
             duration_ms: 0,
             clock: None,
+            date: None,
+            locked: false,
             events: vec![],
             screenshots: vec![0],
             record: None,

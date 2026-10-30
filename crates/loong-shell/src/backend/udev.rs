@@ -6,7 +6,10 @@
 //!
 //! 在 QEMU（virtio-gpu 无 3D）中 Mesa 会退回软件渲染（kms_swrast），同样可用。
 
-use std::{path::PathBuf, time::Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, anyhow};
 use smithay::{
@@ -33,7 +36,10 @@ use smithay::{
     input::keyboard::FilterResult,
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale as OutputScale, Subpixel},
     reexports::{
-        calloop::{EventLoop, LoopHandle},
+        calloop::{
+            EventLoop, LoopHandle,
+            timer::{TimeoutAction, Timer},
+        },
         drm::control::{ModeTypeFlags, connector},
         input::Libinput,
         rustix::fs::OFlags,
@@ -207,6 +213,11 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
     output.set_preferred(output_mode);
     state.output = Some(output.clone());
 
+    // 开机即锁屏；时间取本地时间。
+    state
+        .shell
+        .set_locked(std::env::var_os("LOONG_NO_LOCK").is_none());
+    (state.shell.clock_text, state.shell.date_text) = crate::clock::now_strings();
     let assets = Assets::new(&state.shell, scale);
     let mut renderer = renderer;
     let painter = Painter::new(&mut renderer, scale)?;
@@ -245,6 +256,23 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
             }
             DrmEvent::Error(e) => tracing::error!("DRM 错误: {e:?}"),
         })
+        .map_err(|e| anyhow!("{e}"))?;
+
+    // 每 10 秒检查一次时间，分钟变化时重画状态栏与锁屏。
+    handle
+        .insert_source(
+            Timer::from_duration(Duration::from_secs(10)),
+            |_, _, d: &mut Data| {
+                let (clock, date) = crate::clock::now_strings();
+                if clock != d.state.shell.clock_text || date != d.state.shell.date_text {
+                    d.state.shell.clock_text = clock;
+                    d.state.shell.date_text = date;
+                    d.backend.dirty = true;
+                    render(d);
+                }
+                TimeoutAction::ToDuration(Duration::from_secs(10))
+            },
+        )
         .map_err(|e| anyhow!("{e}"))?;
 
     // 输入

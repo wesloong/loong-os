@@ -64,7 +64,7 @@ esac
 # loong-shell：与开发 chroot 同架构时是普通的 cargo 构建，否则是 tools/build-aarch64.sh 的交叉编译产物
 if [ "$ARCH" = "$HOST_ARCH" ]; then
 	SHELL_BIN=${SHELL_BIN:-$SRC/build/target-alpine/release/loong-shell}
-	SHELL_HINT="cargo build --release -p loong-shell"
+	SHELL_HINT="cargo build --release -p loong-shell -p loong-sysd"
 else
 	SHELL_BIN=${SHELL_BIN:-$SRC/build/target-alpine/$ARCH-alpine-linux-musl/release/loong-shell}
 	SHELL_HINT="tools/build-$ARCH.sh"
@@ -135,6 +135,10 @@ rm -f "$ROOT/etc/resolv.conf"
 # ───────────────────────── 2. Loong OS 组件 ─────────────────────────
 log "安装 Loong OS 组件"
 install -Dm755 "$SHELL_BIN" "$ROOT/usr/bin/loong-shell"
+# loong-sysd 与 loong-shell 由同一次（交叉）构建产出，放在同一目录
+SYSD_BIN=${SYSD_BIN:-$(dirname "$SHELL_BIN")/loong-sysd}
+[ -x "$SYSD_BIN" ] || die "缺少 $SYSD_BIN，请先运行 $SHELL_HINT"
+install -Dm755 "$SYSD_BIN" "$ROOT/usr/bin/loong-sysd"
 install -Dm644 "$SRC/system/profiles/$PROFILE.device.toml" "$ROOT/usr/share/loong/device.toml"
 # Web 运行时（WPE WebKit 构建完成后可用：WITH_WPE=1）
 if [ -n "${WITH_WPE:-}" ]; then
@@ -150,7 +154,7 @@ cp -a "$SRC/system/rootfs/." "$ROOT/"
 # 机型专属文件（音频 UCM 配置等），相当于 loong-device-<机型> 包的内容
 [ -d "$SRC/system/devices/$PROFILE/rootfs" ] && cp -a "$SRC/system/devices/$PROFILE/rootfs/." "$ROOT/"
 chmod 755 "$ROOT"/etc/init.d/loong-*
-if [ -n "$SESSION_ENV" ]; then
+if [ -n "${SESSION_ENV:-}" ]; then
 	printf 'LOONG_SESSION_ENV="%s"\n' "$SESSION_ENV" >> "$ROOT/etc/conf.d/loong-session"
 fi
 mkdir -p "$ROOT/etc/conf.d"
@@ -192,6 +196,7 @@ enable() { mkdir -p "$ROOT/etc/runlevels/$2"; ln -sf "/etc/init.d/$1" "$ROOT/etc
 for s in devfs dmesg sysfs procfs udev udev-trigger udev-settle; do enable "$s" sysinit; done
 for s in modules hostname bootmisc sysctl seedrng loong-growfs; do enable "$s" boot; done
 for s in dbus seatd loong-session loong-boot-ok; do enable "$s" default; done
+enable loong-sysd default
 for s in killprocs savecache; do enable "$s" shutdown; done
 # 机型服务，格式为“服务名:运行级别”
 for e in $DEVICE_SERVICES; do

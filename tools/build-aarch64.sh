@@ -125,7 +125,7 @@ prepare_rust_sysroot() {
 prepare_sysroot
 prepare_rust_sysroot
 [ "${1:-}" = sysroot ] && exit 0
-[ $# -gt 0 ] || set -- build --release -p loong-shell
+[ $# -gt 0 ] || set -- build --release -p loong-shell -p loong-sysd
 
 export "CARGO_TARGET_${ENV_TARGET}_RUSTFLAGS=--sysroot=$RUST_SYSROOT $LINK_FLAGS"
 # 文档测试由 rustdoc 编译，它不读 RUSTFLAGS（使用 --target 时 RUSTDOCFLAGS 只作用于目标架构）

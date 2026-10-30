@@ -17,7 +17,7 @@ jobs:
           apk add --no-progress git rust cargo rustfmt rust-clippy pkgconf clang \
             wayland-dev wayland-protocols libxkbcommon-dev libinput-dev eudev-dev \
             libseat-dev mesa-dev libdrm-dev pixman-dev mesa-dri-gallium mesa-egl \
-            mesa-gles mesa-gbm font-inter font-noto-cjk
+            mesa-gles mesa-gbm font-inter font-noto-cjk dbus
       - uses: actions/checkout@v4
       - uses: actions/cache@v4
         with:

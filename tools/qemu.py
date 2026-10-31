@@ -2,7 +2,10 @@
 """在 QEMU 中运行 Loong OS 镜像，并通过 QMP 截图、模拟触摸（在开发 chroot 内运行）。
 
   tools/qemu.py start  <镜像> [--arch x86_64|aarch64] [--size 1280x800] [--mem 2048] [--smp 4]
+                       [--disk 文件]...               额外的只读 virtio 磁盘（/dev/vdb、vdc…，例如 OTA 更新包）
   tools/qemu.py wait   <正则> [--timeout 秒]        等待串口日志出现某内容
+  tools/qemu.py send   <文本>                       向串口输入一行（例如在 login: 提示后输入 root）
+  tools/qemu.py exec   <命令> [--timeout 秒]        在串口 shell 里运行命令（需已登录），打印输出，返回其退出码
   tools/qemu.py shot   <文件.png>                   截图
   tools/qemu.py tap    <x> <y>                       点按（逻辑坐标 = 屏幕像素）
   tools/qemu.py swipe  <x1> <y1> <x2> <y2> [毫秒] [--hold 毫秒]   滑动（可在终点停留）
@@ -26,6 +29,8 @@ import time
 RUN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "qemu")
 QMP = os.path.join(RUN, "qmp.sock")
 SERIAL = os.path.join(RUN, "serial.log")
+# 串口输入：QEMU 在这个 unix socket 上收发串口数据，同时把输出记进 SERIAL
+SERIAL_SOCK = os.path.join(RUN, "serial.sock")
 STATE = os.path.join(RUN, "state.json")
 
 
@@ -47,7 +52,7 @@ MACHINES = {
 
 def start(args):
     os.makedirs(RUN, exist_ok=True)
-    for f in (QMP, SERIAL):
+    for f in (QMP, SERIAL, SERIAL_SOCK):
         if os.path.exists(f):
             os.remove(f)
     w, h = (int(v) for v in args.size.split("x"))
@@ -60,12 +65,15 @@ def start(args):
         "-smp", str(args.smp), "-m", str(args.mem),
         "-drive", f"if=pflash,format=raw,readonly=on,file={m['code']}",
         "-drive", f"if=pflash,format=raw,file={vars_file}",
-        "-drive", f"file={args.image},format=raw,if=virtio",
+        # .qcow2：写时复制的覆盖层（qemu-img create -f qcow2 -b 原镜像 -F raw x.qcow2），原镜像不变
+        "-drive", f"file={args.image},format={'qcow2' if args.image.endswith('.qcow2') else 'raw'},if=virtio",
+        *[a for d in args.disk for a in ("-drive", f"file={os.path.abspath(d)},format=raw,if=virtio,readonly=on")],
         "-device", f"virtio-gpu-pci,xres={w},yres={h}",
         "-device", "virtio-tablet-pci",
         "-device", "virtio-keyboard-pci",
         "-display", "none",
-        "-serial", f"file:{SERIAL}",
+        "-chardev", f"socket,id=ser0,path={SERIAL_SOCK},server=on,wait=off,logfile={SERIAL}",
+        "-serial", "chardev:ser0",
         "-qmp", f"unix:{QMP},server=on,wait=off",
         "-daemonize", "-pidfile", os.path.join(RUN, "qemu.pid"),
     ]
@@ -159,6 +167,43 @@ def wait(args):
     sys.exit(1)
 
 
+def serial_write(text):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(SERIAL_SOCK)
+    s.sendall(text.encode())
+    time.sleep(0.2)
+    s.close()
+
+
+def serial_size():
+    return os.path.getsize(SERIAL) if os.path.exists(SERIAL) else 0
+
+
+def send(args):
+    serial_write(args.text + "\n")
+
+
+def exec_(args):
+    # 输出前后的标记由 shell 拼出来（"@@""@" → "@@@"），命令回显里没有连续的标记文本，
+    # 不会被误认；ash 的行编辑在长命令换行时会把回显弄乱，所以不靠回显定位输出。
+    token = f"{os.getpid()}-{int(time.time() * 1000)}"
+    start_at = serial_size()
+    serial_write(f'echo "@@""@ B {token}"; {args.command}; echo "@@""@ E {token} rc=$?"\n')
+    pat = re.compile(rf"@@@ B {re.escape(token)}\r?\n(.*?)@@@ E {re.escape(token)} rc=(\d+)", re.S)
+    deadline = time.time() + args.timeout
+    while time.time() < deadline:
+        with open(SERIAL, "rb") as f:
+            f.seek(start_at)
+            out = f.read().decode(errors="replace")
+        m = pat.search(out)
+        if m:
+            print(m.group(1).replace("\r", "").rstrip("\n"))
+            sys.exit(int(m.group(2)))
+        time.sleep(1)
+    print("超时：命令没有结束", file=sys.stderr)
+    sys.exit(124)
+
+
 def stop(_args):
     try:
         Qmp().cmd("quit")
@@ -175,7 +220,15 @@ def main():
     s.add_argument("--size", default="1280x800")
     s.add_argument("--mem", type=int, default=2048)
     s.add_argument("--smp", type=int, default=4)
+    s.add_argument("--disk", action="append", default=[], help="额外的只读 raw 磁盘（可多次）")
     s.set_defaults(fn=start)
+    s = sub.add_parser("send")
+    s.add_argument("text")
+    s.set_defaults(fn=send)
+    s = sub.add_parser("exec")
+    s.add_argument("command")
+    s.add_argument("--timeout", type=int, default=600)
+    s.set_defaults(fn=exec_)
     s = sub.add_parser("wait")
     s.add_argument("pattern")
     s.add_argument("--timeout", type=int, default=300)

@@ -76,13 +76,14 @@
 
     /**
      * 订阅属性：先读一次全部属性并回调 callback(props, null)，之后每次变化回调 callback(props, changedKeys)。
+     * 第一次读取失败（例如 loong-sysd 没有运行）时调用 onError(e)；服务启动后会自动补上。
      * 返回取消订阅的函数。
      */
-    watch(callback) {
+    watch(callback, onError) {
       this.#watchers.add(callback);
       this.getAll().then(
         (props) => this.#watchers.has(callback) && callback(props, null),
-        (e) => console.warn(`loong.system: 读取 ${this.#name} 失败：${e.name}: ${e.message}`),
+        (e) => (onError ? onError(e) : console.warn(`loong.system: 读取 ${this.#name} 失败：${e.name}: ${e.message}`)),
       );
       return () => this.#watchers.delete(callback);
     }
@@ -112,7 +113,7 @@
           if (this.#props) this.#notify(Object.keys(changed));
           break;
         }
-        case 'Reload': // loong-sysd 重新启动：重新读取全部属性
+        case 'Reload': // loong-sysd（重新）启动：重新读取全部属性
           if (this.#props || this.#watchers.size) {
             const props = await this.getAll().catch(() => null);
             if (props) {

@@ -135,6 +135,98 @@
     return root.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   }
 
+  // —— JS 弹簧：loong-motion `Spring::solve` 解析解的直接移植 ——
+  // 给 CSS 过渡做不到的场合用：跟随外部数值（例如别处改了亮度，滑块平滑地跟过去）、
+  // 中途改目标并继承当前速度。预设与 loong-motion 相同（response 秒, dampingFraction）。
+
+  const SPRINGS = {
+    interactive: [0.15, 0.86],
+    snappy: [0.3, 0.85],
+    smooth: [0.5, 1.0],
+    bouncy: [0.5, 0.7],
+  };
+
+  /** 相对目标的位移 x0、速度 v0，经过 t 秒后的 [位移, 速度]。 */
+  function springSolve(x0, v0, t, response, damping) {
+    if (t <= 0) return [x0, v0];
+    const w0 = (2 * Math.PI) / Math.max(response, 1e-6);
+    const z = Math.max(damping, 0);
+    if (z < 1 - 1e-6) {
+      const wd = w0 * Math.sqrt(1 - z * z);
+      const decay = Math.exp(-z * w0 * t);
+      const a = x0;
+      const b = (v0 + z * w0 * x0) / wd;
+      const s = Math.sin(wd * t);
+      const c = Math.cos(wd * t);
+      return [decay * (a * c + b * s), decay * (-z * w0 * (a * c + b * s) + wd * (b * c - a * s))];
+    }
+    if (z <= 1 + 1e-6) {
+      const decay = Math.exp(-w0 * t);
+      const b = v0 + w0 * x0;
+      return [decay * (x0 + b * t), decay * (v0 - w0 * b * t)];
+    }
+    const s = Math.sqrt(z * z - 1);
+    const r1 = -w0 * (z - s);
+    const r2 = -w0 * (z + s);
+    const c2 = (v0 - r1 * x0) / (r2 - r1);
+    const c1 = x0 - c2;
+    return [c1 * Math.exp(r1 * t) + c2 * Math.exp(r2 * t), c1 * r1 * Math.exp(r1 * t) + c2 * r2 * Math.exp(r2 * t)];
+  }
+
+  /**
+   * 一个可中途改目标的弹簧值，由 requestAnimationFrame 驱动；停稳后不再占用帧。
+   *   const s = LoongKit.springValue(0, (v) => draw(v), 'smooth');
+   *   s.to(0.8);      // 从当前位置与速度出发，弹向 0.8
+   *   s.set(0.3);     // 立即跳到 0.3（例如手指正在拖动）
+   */
+  function springValue(initial, onUpdate, preset = 'smooth') {
+    const [response, damping] = Array.isArray(preset) ? preset : SPRINGS[preset] || SPRINGS.smooth;
+    let value = initial;
+    let velocity = 0;
+    let target = initial;
+    let frame = 0;
+    let start = 0;
+    let x0 = 0;
+    let v0 = 0;
+    const tick = (now) => {
+      const [x, v] = springSolve(x0, v0, (now - start) / 1000, response, damping);
+      value = target + x;
+      velocity = v;
+      const scale = Math.max(Math.abs(x0), 1e-3);
+      if (Math.abs(x) < scale * 1e-3 && Math.abs(v) < scale * 1e-2) {
+        value = target;
+        velocity = 0;
+        frame = 0;
+      } else {
+        frame = requestAnimationFrame(tick);
+      }
+      onUpdate(value);
+    };
+    return {
+      get value() {
+        return value;
+      },
+      to(next) {
+        if (reduceMotion.matches) return this.set(next);
+        // 继承当前速度：从现在的位置与速度重新出发。
+        x0 = value - next;
+        v0 = velocity;
+        target = next;
+        start = performance.now();
+        if (!frame) frame = requestAnimationFrame(tick);
+        return this;
+      },
+      set(next) {
+        cancelAnimationFrame(frame);
+        frame = 0;
+        value = target = next;
+        velocity = 0;
+        onUpdate(value);
+        return this;
+      },
+    };
+  }
+
   // —— 落印：确认类操作，印章带着 BOUNCY 弹簧按到纸上 ——
 
   function stamp(el) {
@@ -165,5 +257,16 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
 
-  window.LoongKit = { inkDrop, releaseDrop, setTheme, currentTheme, stamp, spring, syncSlider, syncSegmented };
+  window.LoongKit = {
+    inkDrop,
+    releaseDrop,
+    setTheme,
+    currentTheme,
+    stamp,
+    spring,
+    springSolve,
+    springValue,
+    syncSlider,
+    syncSegmented,
+  };
 })();

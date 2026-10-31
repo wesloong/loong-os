@@ -2,7 +2,7 @@
   "fps": 60,
   "duration_ms": 1800,
   "clock": "9:41",
-  "date": "10月30日 星期五",
+  "date": "九月廿一 · 星期五",
   "locked": true,
   "events": [
     { "at": 400, "swipe": { "from": [640, 760], "to": [640, 560], "duration": 120 } }

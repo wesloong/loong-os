@@ -1,0 +1,12 @@
+{
+  "fps": 60,
+  "duration_ms": 2600,
+  "clock": "9:41",
+  "date": "九月廿一 · 星期五",
+  "locked": true,
+  "events": [
+    { "at": 400, "swipe": { "from": [640, 760], "to": [640, 420], "duration": 420 } }
+  ],
+  "screenshots": [0, 560, 700, 820, 900, 1000, 1150, 2500],
+  "record": { "every": 2, "scale": 0.5 }
+}

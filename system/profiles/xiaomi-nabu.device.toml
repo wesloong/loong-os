@@ -1,6 +1,8 @@
 # 小米平板 5（nabu）的设备描述（xiaomi-nabu 机型安装到 /usr/share/loong/device.toml）
 name = "小米平板 5"
 size_class = "regular"
+# 外观：light（宣纸，默认）或 dark（夜墨）；环境变量 LOONG_THEME 优先。
+theme = "light"
 
 [screen]
 width = 2560

@@ -10,18 +10,22 @@
 pub mod apps;
 pub mod geometry;
 pub mod gesture;
+pub mod ink;
 pub mod layout;
 pub mod lock;
 pub mod switcher;
 
 use loong_motion::{Animatable, Decay, Spring, SpringAnimation, VelocityTracker, snap};
+use loong_ui::theme::Theme;
 use smithay::{desktop::Window, reexports::wayland_server::protocol::wl_surface::WlSurface};
 
+pub use self::ink::{InkDab, Reveal, RevealMode};
 use self::{
     apps::AppEntry,
     geometry::{RectF, lerp, smoothstep},
     gesture::{Axis, lock_axis, rubber_clamp, rubber_clamp_inverse},
-    layout::{BOTTOM_EDGE, Layout, PAGE_DOT, PAGE_DOT_GAP},
+    ink::{InkLayer, InkState},
+    layout::{BOTTOM_EDGE, ICON_SHADOW_SPREAD, LABEL_HALO, Layout, PAGE_DOT, PAGE_DOT_GAP},
     lock::LockScreen,
     switcher::{PauseDetector, SwitcherLayout},
 };
@@ -42,42 +46,57 @@ const SWIPE_MIN_SCALE: f64 = 0.42;
 const SWITCHER_SLIDE_IN: f64 = 0.6;
 /// 离开多任务时，其余卡片淡出并缩小到的比例。
 const SWITCHER_EXIT_SCALE: f64 = 0.92;
+/// 展卷：烟云层随翻页速度额外漂移的系数（秒）与上限（点）。
+const MIST_DRIFT: f64 = 0.035;
+const MIST_DRIFT_MAX: f64 = 56.0;
+/// 烟云漂移的弹簧：临界阻尼（不来回晃），翻页停下后约 0.3 秒归位。
+const MIST_SPRING: Spring = Spring::new(0.35, 1.0);
+/// 墨散遮罩的种子。
+const LOCK_SEED: f32 = 5.0;
 
 /// 纹理标识（具体位图由 `render::Assets` 生成）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TexKey {
-    Wallpaper,
+    /// 山水长卷的第 i 层（从远到近），见 [`DrawItem::Landscape`]。
+    WallpaperLayer(usize),
+    /// 主屏第 p 页停稳时的整幅山水（各层预先合成）：不翻页时只画这一张，而不是逐层混合。
+    LandscapePage(usize),
     Dock,
     Icon(usize),
+    /// 图标下方的墨影（所有图标共用，四周各留 [`ICON_SHADOW_SPREAD`] × 边长）。
+    IconShadow,
     Label(usize),
     StatusTime,
     StatusIcons,
     /// 没有真实窗口的演示应用的占位画面。
     Placeholder(usize),
-    /// 锁屏：大号时间、日期、“上滑解锁”提示。
-    LockTime,
-    LockDate,
-    LockHint,
-    /// 多任务背景：模糊后的壁纸 + `thin` 材质叠加色。
+    /// 锁屏整张“纸”：山水 + 大号时间、农历日期、印章、“上滑解锁”提示（合成为一张纹理，
+    /// 墨散时只需对一个元素做遮罩）。
+    LockSheet,
+    /// 多任务背景：模糊后的山水 + 烟云/纸色罩染。
     SwitcherBackdrop,
     /// 多任务卡片上方的标签：小图标 + 应用名称。
     CardLabel(usize),
-    /// 多任务卡片阴影（`shadowHigh`），按标准卡片尺寸生成，绘制时拉伸。
+    /// 多任务卡片的墨影，按标准卡片尺寸生成，绘制时拉伸。
     CardShadow,
-    /// 主屏页面指示点（白色圆点）。
+    /// 主屏页面指示点：淡墨点（其余页）。
     PageDot,
+    /// 主屏页面指示点：当前页（亮色为浓墨，暗色为泥金）。
+    PageDotActive,
 }
 
 /// 画面中的一个元素。
 #[derive(Debug, Clone)]
 pub enum DrawItem {
     /// `clip` 为裁剪矩形（圆角作用在裁剪矩形上）；`None` 表示不裁剪、圆角作用在 `rect` 上。
+    /// `reveal` 为可选的水墨遮罩（晕染 / 墨散）。
     Texture {
         key: TexKey,
         rect: RectF,
         alpha: f64,
         radius: f64,
         clip: Option<RectF>,
+        reveal: Option<Reveal>,
     },
     Solid {
         rect: RectF,
@@ -90,6 +109,7 @@ pub enum DrawItem {
         alpha: f64,
         radius: f64,
         clip: Option<RectF>,
+        reveal: Option<Reveal>,
     },
     /// 按位图原始尺寸绘制（文字等），`scale` 为额外缩放。
     Natural {
@@ -100,6 +120,20 @@ pub enum DrawItem {
         alpha: f64,
         scale: f64,
     },
+    /// 山水长卷：各层（[`TexKey::WallpaperLayer`]）按自己的视差系数 p 平移 `-p × scroll`。
+    /// `rect` 为屏幕可视区域（随主屏缩放），`scroll` 为主屏横向滚动位置（点，已限制在页面范围内），
+    /// `drift` 为烟云层随翻页速度的额外漂移（点）。
+    ///
+    /// `page` 为 `Some(p)` 时主屏正停在第 p 页、烟云不漂移：直接画预先合成好的整页
+    /// （[`TexKey::LandscapePage`]，网格图标的墨影也已画在里面，场景中不再单独给出）。
+    Landscape {
+        rect: RectF,
+        scroll: f64,
+        drift: f64,
+        page: Option<usize>,
+    },
+    /// 水墨印记：点墨或一段笔迹（屏幕坐标）。
+    Ink(InkDab),
 }
 
 /// 水平对齐方式（相对 `x`）。
@@ -181,6 +215,9 @@ struct Task {
     homing: bool,
     /// 应用已经退出（窗口关闭），飞回主屏后移除。
     exited: bool,
+    /// 晕染开启 / 收墨：`Some(q_ref)` 时内容按卡片大小进度晕开（见 [`ink::spread_progress`]）；
+    /// `None` 时内容完整显示（多任务中的卡片、手指正拖着的卡片）。
+    spread_from: Option<f64>,
 }
 
 impl Task {
@@ -193,6 +230,7 @@ impl Task {
             content: SpringAnimation::at_rest(Spring::SMOOTH, 1.0, now),
             homing: false,
             exited: false,
+            spread_from: None,
         }
     }
 
@@ -311,8 +349,16 @@ pub struct Shell {
     lock: LockScreen,
     /// 状态栏与锁屏的时间文字。
     pub clock_text: String,
-    /// 锁屏日期文字。
+    /// 锁屏日期文字（农历 + 星期）。
     pub date_text: String,
+    /// 外观：亮色「宣纸」/ 暗色「夜墨」。改变后 `render::Assets` 重新生成全部位图。
+    pub theme: Theme,
+    /// “减少动态效果”：不画点墨、笔迹、视差与墨散，晕染退化为淡入淡出。
+    reduced_motion: bool,
+    /// 点墨与笔迹。
+    ink: InkState,
+    /// 展卷：烟云层随翻页速度的额外漂移（点）。
+    mist: SpringAnimation<f64>,
 }
 
 impl Shell {
@@ -341,8 +387,23 @@ impl Shell {
             pending_spawn: Vec::new(),
             lock: LockScreen::new(h, false),
             clock_text: "9:41".into(),
-            date_text: "10月30日 星期五".into(),
+            date_text: "九月廿一 · 星期五".into(),
+            theme: Theme::default(),
+            reduced_motion: false,
+            ink: InkState::new(),
+            mist: SpringAnimation::at_rest(MIST_SPRING, 0.0, 0.0).with_rest_thresholds(0.2, 2.0),
         }
+    }
+
+    /// 切换外观（资源在下一帧重新生成）。
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+    }
+
+    /// “减少动态效果”：关闭点墨、笔迹、视差与墨散，晕染退化为淡入淡出。
+    pub fn set_reduced_motion(&mut self, reduced: bool) {
+        self.reduced_motion = reduced;
+        self.ink.enabled = !reduced;
     }
 
     /// 屏幕逻辑尺寸。
@@ -405,6 +466,18 @@ impl Shell {
         self.mode == Mode::Switcher
     }
 
+    /// 手指正按在主屏的哪个图标上（还没有移动）：渲染端据此提前准备应用画面。
+    pub fn pressed_app(&self) -> Option<usize> {
+        match self.gesture {
+            Gesture::Home {
+                icon: Some(app),
+                moved: false,
+                ..
+            } => Some(app),
+            _ => None,
+        }
+    }
+
     /// 运行中的应用（按最近使用排序，最后一个最近）。
     #[allow(dead_code, reason = "测试与后续的后台冻结策略使用")]
     pub fn running_apps(&self) -> Vec<usize> {
@@ -433,6 +506,14 @@ impl Shell {
             && self.dismissed.is_empty()
             && self.tasks.iter().all(|t| t.is_settled(now))
             && matches!(self.gesture, Gesture::Idle)
+            && self.ink.is_idle()
+            && self.mist.is_done(now)
+    }
+
+    /// 卡片宽度 → 大小进度（0 = 图标大小，1 = 全屏）。
+    fn card_progress(&self, w: f64) -> f64 {
+        let icon = self.layout.icon;
+        ((w - icon) / (self.w - icon)).clamp(0.0, 1.0)
     }
 
     // ───────────────────────── 应用生命周期 ─────────────────────────
@@ -486,6 +567,8 @@ impl Shell {
         task.rect = rect_anim(Spring::APP_OPEN, self.icon_target(app), full, ZERO5, now);
         task.lift = offset_anim(Spring::SNAPPY, 0.0, 0.0, 0.0, now);
         task.content = SpringAnimation::at_rest(Spring::SMOOTH, if ready { 1.0 } else { 0.0 }, now);
+        // 晕染开启：内容从图标处晕开，卡片铺满前完成。
+        task.spread_from = Some(1.0);
         self.tasks.push(task);
         self.show_app(now);
     }
@@ -507,10 +590,13 @@ impl Shell {
             return;
         };
         let target = self.icon_target(app);
+        let q = self.card_progress(self.tasks.last().map_or(0.0, |t| t.rect.value(now)[2]));
         let task = self.tasks.last_mut().expect("前台应用存在");
         let current = task.rect.value(now);
         task.homing = true;
         task.rect = rect_anim(Spring::APP_CLOSE, current, target, velocity, now);
+        // 收墨：从此刻的卡片大小开始，内容随卡片缩回图标逆向收拢（不跳变）。
+        task.spread_from = Some(q.max(0.05));
         self.mode = Mode::Home;
         self.home.set_spring(Spring::SMOOTH, now);
         self.home.retarget([1.0, 0.0], now);
@@ -649,6 +735,18 @@ impl Shell {
                 task.homing = false;
             }
         }
+        self.ink.update(now);
+        // 展卷：烟云层随翻页速度多飘一点，速度归零后由弹簧带回原位（速度连续）。
+        let drift = if self.reduced_motion {
+            0.0
+        } else {
+            (self.home_scroll_velocity(now) * MIST_DRIFT).clamp(-MIST_DRIFT_MAX, MIST_DRIFT_MAX)
+        };
+        // 小变化不必每帧改目标；但速度归零时一定回到 0（停稳后才能画预先合成的整页）。
+        let target = self.mist.target();
+        if (target - drift).abs() > 0.05 || (drift == 0.0 && target != 0.0) {
+            self.mist.retarget(drift, now);
+        }
         // 已退出的应用飞回主屏后移除。
         self.tasks.retain(|t| !t.exited || t.homing);
         // 从多任务打开的应用已经铺满屏幕：背后的多任务背景不再需要。
@@ -666,6 +764,18 @@ impl Shell {
         // 手指停住时触摸屏不再上报事件，停顿检测需要每帧进行。
         if matches!(self.gesture, Gesture::AppSwipe { .. }) {
             self.check_pause(now);
+        }
+    }
+
+    /// 主屏翻页的速度（点/秒，向后翻为正）：手指拖动时取手指速度（滚动位置被手指“按住”，
+    /// 弹簧速度为 0），否则取翻页弹簧的速度。
+    fn home_scroll_velocity(&self, now: f64) -> f64 {
+        match self.gesture {
+            Gesture::Home {
+                axis: Some(Axis::Horizontal),
+                ..
+            } => -self.tracker.velocity_at(now)[0],
+            _ => self.home_scroll.velocity(now),
         }
     }
 
@@ -717,6 +827,7 @@ impl Shell {
             };
             task.lift = offset_anim(Spring::SNAPPY, 0.0, 0.0, 0.0, now);
             task.homing = false;
+            task.spread_from = None;
         }
         self.mode = Mode::Switcher;
         self.switcher_progress.set_spring(Spring::SMOOTH, now);
@@ -792,6 +903,8 @@ impl Shell {
         let mut task = self.tasks.remove(i);
         let (value, velocity) = (task.rect.value(now), task.rect.velocity(now));
         task.rect = rect_anim(Spring::APP_OPEN, value, full, velocity, now);
+        // 卡片上本来就显示着内容，直接放大，不再晕染。
+        task.spread_from = None;
         self.tasks.push(task);
         self.show_app(now);
     }
@@ -868,6 +981,11 @@ impl Shell {
                         start: (x, y),
                         pause: PauseDetector::default(),
                     };
+                    // 手指拖着的卡片完整显示内容；笔迹从底边起笔。
+                    if let Some(task) = self.tasks.last_mut() {
+                        task.spread_from = None;
+                    }
+                    self.ink.stroke_to(x, y, 0.0, now);
                     return TouchRoute::Shell;
                 }
                 if settled {
@@ -884,16 +1002,21 @@ impl Shell {
                         slot,
                         start: (x, y),
                     };
+                    self.ink.stroke_to(x, y, 0.0, now);
                     return TouchRoute::Shell;
                 }
                 // 手指按下即“接住”正在滚动的列表：停在当前位置。
                 let shown = self.scroll.value(now);
                 pin(&mut self.scroll, shown, now);
+                let app = self.switcher_hit(x, y, now);
+                // 点墨：按在卡片上的墨滴大一些。
+                let radius = if app.is_some() { 34.0 } else { 26.0 };
+                self.ink.press(slot, InkLayer::Overlay, x, y, radius, now);
                 self.gesture = Gesture::Switcher {
                     slot,
                     start: (x, y),
                     t0: now,
-                    app: self.switcher_hit(x, y, now),
+                    app,
                     axis: None,
                     origin: (x, y),
                     base: 0.0,
@@ -906,11 +1029,13 @@ impl Shell {
                 let scroll = self.home_scroll.value(now);
                 pin(&mut self.home_scroll, scroll, now);
                 let page = (scroll / self.layout.page_width).round();
+                let icon = self.layout.hit(x, y, scroll);
+                self.press_home_ink(slot, x, y, icon, scroll, now);
                 self.gesture = Gesture::Home {
                     slot,
                     start: (x, y),
                     t0: now,
-                    icon: self.layout.hit(x, y, scroll),
+                    icon,
                     moved: false,
                     axis: None,
                     origin: (x, y),
@@ -920,6 +1045,42 @@ impl Shell {
                 TouchRoute::Shell
             }
         }
+    }
+
+    /// 主屏上的点墨：墨滴落在主屏纸面上（图标之上、卡片之下），随翻页移动（Dock 上的不随翻页）。
+    /// 主屏可能还没从后方完全迎上来（缩放 ≠ 1），这里把触点换算回主屏坐标。
+    fn press_home_ink(
+        &mut self,
+        slot: u32,
+        x: f64,
+        y: f64,
+        icon: Option<usize>,
+        scroll: f64,
+        now: f64,
+    ) {
+        let [zoom, _] = self.home.value(now);
+        let (cx, cy) = (self.w / 2.0, self.h / 2.0);
+        let z = zoom.max(0.1);
+        let (hx, hy) = (cx + (x - cx) / z, cy + (y - cy) / z);
+        let scrolls = icon.is_none_or(|i| self.layout.page_of[i].is_some());
+        let radius = if icon.is_some() {
+            self.layout.icon * 0.5
+        } else {
+            26.0
+        };
+        let hx = if scrolls { hx + scroll } else { hx };
+        self.ink
+            .press(slot, InkLayer::Home { scrolls }, hx, hy, radius, now);
+    }
+
+    /// 笔迹：系统手势中手指移动到 `(x, y)`。还没有起笔时从手势起点起笔。
+    fn trail_to(&mut self, start: (f64, f64), x: f64, y: f64, now: f64) {
+        let v = self.tracker.velocity_at(now);
+        let speed = v[0].hypot(v[1]);
+        if !self.ink.stroking() {
+            self.ink.stroke_to(start.0, start.1, speed, now);
+        }
+        self.ink.stroke_to(x, y, speed, now);
     }
 
     fn forward_route(&self) -> TouchRoute {
@@ -941,6 +1102,18 @@ impl Shell {
             Gesture::Home { slot: s, .. } if s == slot => {
                 self.track(now, x, y);
                 self.home_drag(x, y, now);
+                if let Gesture::Home {
+                    start, moved, axis, ..
+                } = self.gesture
+                {
+                    // 手指拖动起来：墨滴淡入纸中；翻页时留下笔迹。
+                    if moved {
+                        self.ink.release(slot, now);
+                    }
+                    if axis == Some(Axis::Horizontal) {
+                        self.trail_to(start, x, y, now);
+                    }
+                }
             }
             Gesture::AppSwipe { slot: s, start, .. } if s == slot => {
                 self.track(now, x, y);
@@ -951,6 +1124,7 @@ impl Shell {
                 let zoom = lerp(HOME_ZOOM_BEHIND_APP, 1.0, p);
                 let dim = lerp(HOME_DIM_BEHIND_APP, 0.12, p);
                 pin(&mut self.home, [zoom, dim], now);
+                self.trail_to(start, x, y, now);
                 self.check_pause(now);
             }
             Gesture::SwitcherEnter {
@@ -964,12 +1138,25 @@ impl Shell {
                     let slot_rect = self.switcher.slot(i, self.scroll.value(now));
                     pin(&mut self.tasks[i].rect, sub5(rect, slot_rect), now);
                 }
+                self.trail_to(start, x, y, now);
             }
             Gesture::Switcher { slot: s, .. } if s == slot => {
                 self.track(now, x, y);
                 self.switcher_drag(x, y, now);
+                if let Gesture::Switcher {
+                    start,
+                    axis: Some(_),
+                    ..
+                } = self.gesture
+                {
+                    self.ink.release(slot, now);
+                    self.trail_to(start, x, y, now);
+                }
             }
-            Gesture::SwitcherEdge { slot: s, .. } if s == slot => self.track(now, x, y),
+            Gesture::SwitcherEdge { slot: s, start } if s == slot => {
+                self.track(now, x, y);
+                self.trail_to(start, x, y, now);
+            }
             Gesture::Forward { slot: s } if s == slot => return self.forward_route(),
             _ => {}
         }
@@ -1119,6 +1306,11 @@ impl Shell {
             self.lock.touch_up(slot, now);
             return TouchRoute::Shell;
         }
+        // 手指离开纸面：墨滴淡入纸中，笔画结束（已画的笔迹继续淡去）。
+        self.ink.release(slot, now);
+        if self.gesture_slot() == Some(slot) {
+            self.ink.end_stroke();
+        }
         let gesture = std::mem::replace(&mut self.gesture, Gesture::Idle);
         match gesture {
             Gesture::Home {
@@ -1206,6 +1398,19 @@ impl Shell {
             other => self.gesture = other,
         }
         TouchRoute::Shell
+    }
+
+    /// 当前系统手势的手指。
+    fn gesture_slot(&self) -> Option<u32> {
+        match self.gesture {
+            Gesture::Idle => None,
+            Gesture::Home { slot, .. }
+            | Gesture::AppSwipe { slot, .. }
+            | Gesture::SwitcherEnter { slot, .. }
+            | Gesture::Forward { slot }
+            | Gesture::Switcher { slot, .. }
+            | Gesture::SwitcherEdge { slot, .. } => Some(slot),
+        }
     }
 
     /// 多任务中松手。
@@ -1323,6 +1528,7 @@ impl Shell {
                 alpha: backdrop,
                 radius: 0.0,
                 clip: None,
+                reveal: None,
             });
         }
 
@@ -1367,22 +1573,29 @@ impl Shell {
         }
         self.push_cards(&mut scene, &cards, progress, now);
 
-        // Home 指示条
+        // Home 指示条（墨色）
         if self.mode == Mode::App
             && let Some(task) = self.tasks.last()
         {
-            let w = task.rect.value(now)[2];
-            let q = ((w - self.layout.icon) / (self.w - self.layout.icon)).clamp(0.0, 1.0);
-            let alpha = (1.0 - smoothstep(0.0, 0.15, 1.0 - q)) * 0.85 * (1.0 - progress);
+            let q = self.card_progress(task.rect.value(now)[2]);
+            let alpha = (1.0 - smoothstep(0.0, 0.15, 1.0 - q)) * 0.7 * (1.0 - progress);
             if alpha > 0.01 {
                 let pill = RectF::centered(self.w / 2.0, self.h - 9.0, 140.0, 5.0);
                 scene.push(DrawItem::Solid {
                     rect: pill,
-                    color: [1.0, 1.0, 1.0, alpha as f32],
+                    color: self.ink_rgba(1, alpha),
                     radius: 2.5,
                 });
             }
         }
+
+        // 最上层的墨迹：多任务中的点墨、系统手势的笔迹。
+        for (layer, dab) in self.ink.drops(now) {
+            if layer == InkLayer::Overlay {
+                scene.push(DrawItem::Ink(dab));
+            }
+        }
+        scene.extend(self.ink.trail(now).map(DrawItem::Ink));
 
         // 锁屏
         if self.lock.is_visible(now) {
@@ -1409,16 +1622,39 @@ impl Shell {
         scene
     }
 
+    /// 主屏是否正停在某一页（图标与山水都在这一页的停稳位置，烟云不漂移）。
+    fn settled_page(&self, scroll: f64, landscape_scroll: f64, drift: f64) -> Option<usize> {
+        let w = self.layout.page_width;
+        let page = (scroll / w).round();
+        let at_page = |v: f64| (v - page * w).abs() < 1e-6;
+        (drift == 0.0 && page >= 0.0 && at_page(scroll) && at_page(landscape_scroll))
+            .then_some(page as usize)
+            .filter(|&p| p < self.layout.pages)
+    }
+
+    /// 第 `level` 级墨色（0 = 焦墨 … 4 = 清墨），非预乘 RGBA。
+    fn ink_rgba(&self, level: usize, alpha: f64) -> [f32; 4] {
+        rgba(self.theme.palette().ink[level.min(4)], alpha)
+    }
+
     fn push_home(&self, scene: &mut Scene, zoom: f64, dim: f64, now: f64) {
         let (cx, cy) = (self.w / 2.0, self.h / 2.0);
         let scroll = self.home_scroll.value(now);
         let full = RectF::new(0.0, 0.0, self.w, self.h);
-        scene.push(DrawItem::Texture {
-            key: TexKey::Wallpaper,
+        // 展卷：山水各层按视差随翻页平移；越界拖动（橡皮筋）时山水停在两端，不露出画外。
+        // 减少动态效果时山水不动。
+        let landscape_scroll = if self.reduced_motion {
+            0.0
+        } else {
+            scroll.clamp(0.0, self.layout.max_scroll())
+        };
+        let drift = self.mist.value(now);
+        let page = self.settled_page(scroll, landscape_scroll, drift);
+        scene.push(DrawItem::Landscape {
             rect: full.scaled_about(cx, cy, zoom.max(1.0)),
-            alpha: 1.0,
-            radius: 0.0,
-            clip: None,
+            scroll: landscape_scroll,
+            drift,
+            page,
         });
         scene.push(DrawItem::Texture {
             key: TexKey::Dock,
@@ -1426,6 +1662,7 @@ impl Shell {
             alpha: 1.0,
             radius: 0.0,
             clip: None,
+            reveal: None,
         });
         // 前台应用和正在飞回的应用的图标由卡片代替。
         let hidden_app = self
@@ -1441,25 +1678,38 @@ impl Shell {
                 continue;
             }
             let r = rect.scaled_about(cx, cy, zoom);
+            // 宣纸小笺落在纸上的墨影（停在某页时，网格图标的墨影已画在整页山水里）。
+            if page.is_none() || self.layout.page_of[i].is_none() {
+                let s = r.w * ICON_SHADOW_SPREAD;
+                scene.push(DrawItem::Texture {
+                    key: TexKey::IconShadow,
+                    rect: RectF::new(r.x - s, r.y - s, r.w + 2.0 * s, r.h + 2.0 * s),
+                    alpha: 1.0,
+                    radius: 0.0,
+                    clip: None,
+                    reveal: None,
+                });
+            }
             scene.push(DrawItem::Texture {
                 key: TexKey::Icon(i),
                 rect: r,
                 alpha: 1.0,
                 radius: 0.0,
                 clip: None,
+                reveal: None,
             });
             if self.layout.labeled[i] {
                 scene.push(DrawItem::Natural {
                     key: TexKey::Label(i),
                     x: r.x + r.w / 2.0,
-                    y: r.y + r.h + 4.0 * zoom,
+                    y: r.y + r.h + (4.0 - LABEL_HALO) * zoom,
                     align: Align::Center,
                     alpha: 1.0,
                     scale: zoom,
                 });
             }
         }
-        // 页面指示点（设计规范 8.4）：当前页不透明，其余 40%，随滚动连续过渡；只有一页时隐藏。
+        // 页面指示点：当前页为浓墨（暗色为泥金），其余为淡墨，随滚动连续交叉过渡；只有一页时隐藏。
         let pages = self.layout.pages;
         if pages > 1 {
             let total = pages as f64 * PAGE_DOT + (pages - 1) as f64 * PAGE_DOT_GAP;
@@ -1474,25 +1724,45 @@ impl Shell {
                     PAGE_DOT,
                 )
                 .scaled_about(cx, cy, zoom);
-                scene.push(DrawItem::Texture {
-                    key: TexKey::PageDot,
-                    rect: dot,
-                    alpha: lerp(0.4, 1.0, near),
-                    radius: 0.0,
-                    clip: None,
-                });
+                for (key, alpha) in [
+                    (TexKey::PageDot, 0.3 * (1.0 - near)),
+                    (TexKey::PageDotActive, 0.95 * near),
+                ] {
+                    scene.push(DrawItem::Texture {
+                        key,
+                        rect: dot,
+                        alpha,
+                        radius: 0.0,
+                        clip: None,
+                        reveal: None,
+                    });
+                }
+            }
+        }
+        // 点墨：落在主屏纸面上（图标之上），随翻页、随主屏缩放。
+        for (layer, dab) in self.ink.drops(now) {
+            if let InkLayer::Home { scrolls } = layer {
+                let dx = if scrolls { -scroll } else { 0.0 };
+                scene.push(DrawItem::Ink(
+                    dab.offset(dx, 0.0).scaled_about(cx, cy, zoom),
+                ));
             }
         }
         if dim > 0.001 {
+            // 主屏退到后方：罩一层墨（亮色）/ 夜色（暗色）。
+            let shade = match self.theme {
+                Theme::Light => self.ink_rgba(0, dim * 0.9),
+                Theme::Dark => [0.0, 0.0, 0.0, dim as f32],
+            };
             scene.push(DrawItem::Solid {
                 rect: full,
-                color: [0.0, 0.0, 0.0, dim as f32],
+                color: shade,
                 radius: 0.0,
             });
         }
     }
 
-    /// 画一组卡片（[`Task`]，屏幕矩形，不透明度）：先画全部阴影，再按顺序画卡片，
+    /// 画一组卡片（[`Task`]，屏幕矩形，不透明度）：先画全部墨影（墨影自带向下的偏移），再按顺序画卡片，
     /// 避免后一张卡片的阴影压在前一张卡片上。`chrome` 为标签与阴影的显现程度。
     fn push_cards(
         &self,
@@ -1507,15 +1777,11 @@ impl Shell {
                 let s = switcher::SHADOW_SPREAD * k;
                 scene.push(DrawItem::Texture {
                     key: TexKey::CardShadow,
-                    rect: RectF::new(
-                        x - s,
-                        y - s + switcher::SHADOW_OFFSET_Y * k,
-                        w + 2.0 * s,
-                        h + 2.0 * s,
-                    ),
+                    rect: RectF::new(x - s, y - s, w + 2.0 * s, h + 2.0 * s),
                     alpha: chrome * alpha,
                     radius: 0.0,
                     clip: None,
+                    reveal: None,
                 });
             }
         }
@@ -1524,7 +1790,10 @@ impl Shell {
         }
     }
 
-    /// 画一张应用卡片：底色、图标（启动闪屏）、应用内容，以及上方的标签。
+    /// 画一张应用卡片：纸色底、图标（启动闪屏）、应用内容，以及上方的标签。
+    ///
+    /// 晕染开启 / 收墨：内容以卡片中心（图标所在处）为圆心，像墨在湿宣纸上一样晕开，
+    /// 半径由卡片大小进度换算；减少动态效果时退化为淡入淡出。
     fn push_card(
         &self,
         scene: &mut Scene,
@@ -1535,31 +1804,47 @@ impl Shell {
         now: f64,
     ) {
         let rect = RectF::new(x, y, w.max(1.0), h.max(1.0));
-        let icon = self.layout.icon;
-        let q = ((w - icon) / (self.w - icon)).clamp(0.0, 1.0);
+        let q = self.card_progress(w);
         // 飞行中保持圆角，接近全屏时才过渡到屏幕本身的圆角。
         let radius = radius.max(IN_FLIGHT_RADIUS * (1.0 - smoothstep(0.9, 1.0, q)));
-        let visible = task.content.value(now).clamp(0.0, 1.0) * smoothstep(0.02, 0.4, q);
-        let app = &self.apps[task.app];
-        let bg = loong_ui::theme::hex(app.colors.1, 1.0);
+        let ready = task.content.value(now).clamp(0.0, 1.0);
+        let (visible, reveal) = match task.spread_from {
+            Some(q_ref) if !self.reduced_motion => {
+                let p = ink::spread_progress(q, q_ref);
+                let seed = 1.0 + task.app as f32 * 7.31;
+                (
+                    ready * smoothstep(0.0, 0.02, p),
+                    ink::spread_reveal(rect, p, seed),
+                )
+            }
+            _ => (ready * smoothstep(0.02, 0.4, q), None),
+        };
+        let paper = rgba(self.theme.palette().paper_raised, alpha);
         scene.push(DrawItem::Solid {
             rect,
-            color: [bg.red(), bg.green(), bg.blue(), alpha as f32],
+            color: paper,
             radius,
         });
-        // 图标在卡片中央：卡片接近图标大小时图标铺满卡片，卡片变大时图标相对变小并淡出。
+        // 图标在卡片中央：卡片接近图标大小时图标铺满卡片，卡片变大时图标相对变小、
+        // 被晕开的内容盖住（或淡出）。
         let isz = w.min(h) * lerp(1.0, 0.3, smoothstep(0.0, 0.5, q));
         let (rcx, rcy) = rect.center();
+        let icon_alpha = match reveal {
+            Some(r) => 1.0 - ready * smoothstep(0.3, 1.0, r.amount / isz.max(1.0)),
+            None => 1.0 - visible,
+        };
         scene.push(DrawItem::Texture {
             key: TexKey::Icon(task.app),
             rect: RectF::centered(rcx, rcy, isz, isz),
-            alpha: (1.0 - visible) * alpha,
+            alpha: icon_alpha * alpha,
             radius: 0.0,
             clip: None,
+            reveal: None,
         });
         if visible > 0.001 {
             // 内容按屏幕比例铺满卡片（aspect fill），超出部分由着色器按卡片圆角裁掉。
             let content = rect.fill(self.w, self.h);
+            let app = &self.apps[task.app];
             match &task.window {
                 Some(window) => scene.push(DrawItem::Window {
                     window: window.clone(),
@@ -1567,6 +1852,7 @@ impl Shell {
                     alpha: visible * alpha,
                     radius,
                     clip: Some(rect),
+                    reveal,
                 }),
                 None if app.command.is_none() => scene.push(DrawItem::Texture {
                     key: TexKey::Placeholder(task.app),
@@ -1574,6 +1860,7 @@ impl Shell {
                     alpha: visible * alpha,
                     radius,
                     clip: Some(rect),
+                    reveal,
                 }),
                 None => {}
             }
@@ -1591,54 +1878,30 @@ impl Shell {
         }
     }
 
+    /// 锁屏：一整张合成好的“纸”，随手指上移；移开的过程中像墨入清水般向上散开（墨散），
+    /// 弹回时重新聚拢。
     fn push_lock(&self, scene: &mut Scene, unlock: f64, now: f64) {
         let off = self.lock.offset(now);
-        let sheet = RectF::new(0.0, off, self.w, self.h);
+        let reveal = if self.reduced_motion {
+            None
+        } else {
+            ink::dissolve_reveal(unlock, LOCK_SEED)
+        };
         scene.push(DrawItem::Texture {
-            key: TexKey::Wallpaper,
-            rect: sheet,
+            key: TexKey::LockSheet,
+            rect: RectF::new(0.0, off, self.w, self.h),
             alpha: 1.0,
             radius: 0.0,
             clip: None,
-        });
-        scene.push(DrawItem::Solid {
-            rect: sheet,
-            color: [0.0, 0.0, 0.0, 0.18],
-            radius: 0.0,
-        });
-        let cx = self.w / 2.0;
-        let top = self.h * 0.13 + off;
-        scene.push(DrawItem::Natural {
-            key: TexKey::LockDate,
-            x: cx,
-            y: top,
-            align: Align::Center,
-            alpha: 1.0,
-            scale: 1.0,
-        });
-        scene.push(DrawItem::Natural {
-            key: TexKey::LockTime,
-            x: cx,
-            y: top + 28.0,
-            align: Align::Center,
-            alpha: 1.0,
-            scale: 1.0,
-        });
-        let hint_alpha = 1.0 - smoothstep(0.0, 0.15, unlock);
-        scene.push(DrawItem::Natural {
-            key: TexKey::LockHint,
-            x: cx,
-            y: self.h - 46.0 + off,
-            align: Align::Center,
-            alpha: hint_alpha * 0.9,
-            scale: 1.0,
-        });
-        scene.push(DrawItem::Solid {
-            rect: RectF::centered(cx, self.h - 9.0 + off, 140.0, 5.0),
-            color: [1.0, 1.0, 1.0, 0.85],
-            radius: 2.5,
+            reveal,
         });
     }
+}
+
+/// 0xRRGGBB + 不透明度 → 非预乘 RGBA。
+fn rgba(rgb: u32, alpha: f64) -> [f32; 4] {
+    let c = loong_ui::theme::hex(rgb, 1.0);
+    [c.red(), c.green(), c.blue(), alpha.clamp(0.0, 1.0) as f32]
 }
 
 #[cfg(test)]

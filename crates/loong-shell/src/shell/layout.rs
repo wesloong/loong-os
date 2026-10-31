@@ -13,6 +13,10 @@ pub const BOTTOM_EDGE: f64 = 20.0;
 pub const PAGE_DOT: f64 = 8.0;
 /// 页面指示点间距（点）。
 pub const PAGE_DOT_GAP: f64 = 8.0;
+/// 图标墨影向四周扩展的距离（占图标边长的比例）。
+pub const ICON_SHADOW_SPREAD: f64 = 0.16;
+/// 图标名称的纸色光晕半径（点）：名称位图四周因此多出这么宽的边距，排版时扣掉。
+pub const LABEL_HALO: f64 = 5.0;
 
 /// 主屏各元素的位置。
 #[derive(Debug, Clone)]

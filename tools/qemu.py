@@ -3,9 +3,10 @@
 
   tools/qemu.py start  <镜像> [--arch x86_64|aarch64] [--size 1280x800] [--mem 2048] [--smp 4]
                        [--disk 文件]...               额外的只读 virtio 磁盘（/dev/vdb、vdc…，例如 OTA 更新包）
-  tools/qemu.py wait   <正则> [--timeout 秒]        等待串口日志出现某内容
+  tools/qemu.py wait   <正则> [--timeout 秒] [--count N]   等待串口日志出现某内容（至少 N 次）
   tools/qemu.py send   <文本>                       向串口输入一行（例如在 login: 提示后输入 root）
-  tools/qemu.py exec   <命令> [--timeout 秒]        在串口 shell 里运行命令（需已登录），打印输出，返回其退出码
+  tools/qemu.py exec   <命令|@脚本> [--timeout 秒]  在串口 shell 里运行命令或宿主机上的脚本（需已登录），
+                                                     打印输出，返回其退出码
   tools/qemu.py shot   <文件.png>                   截图
   tools/qemu.py tap    <x> <y>                       点按（逻辑坐标 = 屏幕像素）
   tools/qemu.py swipe  <x1> <y1> <x2> <y2> [毫秒] [--hold 毫秒]   滑动（可在终点停留）
@@ -159,7 +160,7 @@ def wait(args):
     while time.time() < deadline:
         if os.path.exists(SERIAL):
             with open(SERIAL, errors="replace") as f:
-                if pat.search(f.read()):
+                if len(pat.findall(f.read())) >= args.count:
                     print("已出现:", args.pattern)
                     return
         time.sleep(1)
@@ -171,7 +172,16 @@ def serial_write(text):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.connect(SERIAL_SOCK)
     s.sendall(text.encode())
-    time.sleep(0.2)
+    # 断开前留时间让虚拟机的串口把输入读完（客户端一断开，QEMU 就丢掉还没送进串口的数据）。
+    # 连接期间虚拟机的输出也会发到这个 socket：一直读掉，免得堵住（输出另有日志文件记录）。
+    s.setblocking(False)
+    deadline = time.time() + 0.5 + len(text) / 2000
+    while time.time() < deadline:
+        try:
+            if not s.recv(65536):
+                break
+        except BlockingIOError:
+            time.sleep(0.02)
     s.close()
 
 
@@ -187,9 +197,21 @@ def exec_(args):
     # 输出前后的标记由 shell 拼出来（"@@""@" → "@@@"），命令回显里没有连续的标记文本，
     # 不会被误认；ash 的行编辑在长命令换行时会把回显弄乱，所以不靠回显定位输出。
     token = f"{os.getpid()}-{int(time.time() * 1000)}"
-    start_at = serial_size()
-    serial_write(f'echo "@@""@ B {token}"; {args.command}; echo "@@""@ E {token} rc=$?"\n')
-    pat = re.compile(rf"@@@ B {re.escape(token)}\r?\n(.*?)@@@ E {re.escape(token)} rc=(\d+)", re.S)
+    command = args.command
+    if command.startswith("@"):
+        # @文件：把宿主机上的脚本经 here-document 传进虚拟机执行
+        with open(command[1:]) as f:
+            script = f.read()
+        command = f"sh -s <<'@@EOF{token}'\n{script.rstrip()}\n@@EOF{token}\n"
+        start_at = serial_size()
+        serial_write(f'echo "@@""@ B {token}"; ' + command)
+        serial_write(f'echo "@@""@ E {token} rc=$?"\n')
+    else:
+        start_at = serial_size()
+        serial_write(f'echo "@@""@ B {token}"; {command}; echo "@@""@ E {token} rc=$?"\n')
+    # QEMU 的串口日志偶尔会把一个字符记两次：标记行只认前缀，不逐字比对 token
+    # （同一时间只有一个 exec，从发送前的日志位置开始找，不会认错）
+    pat = re.compile(r"@@@ B [^\n]*\n(.*?)@@@ E [^\n]*?rc=(\d+)", re.S)
     deadline = time.time() + args.timeout
     while time.time() < deadline:
         with open(SERIAL, "rb") as f:
@@ -232,6 +254,7 @@ def main():
     s = sub.add_parser("wait")
     s.add_argument("pattern")
     s.add_argument("--timeout", type=int, default=300)
+    s.add_argument("--count", type=int, default=1, help="至少出现几次（多次重启后用）")
     s.set_defaults(fn=wait)
     s = sub.add_parser("shot")
     s.add_argument("file")

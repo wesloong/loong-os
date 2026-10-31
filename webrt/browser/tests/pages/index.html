@@ -30,6 +30,7 @@
   <input id="text" placeholder="在这里输入">
   <select id="sel"><option>宣纸</option><option>夜墨</option><option>熟宣</option></select>
   <button id="alert">弹出对话框</button>
+  <button id="fs">全屏</button>
   <a href="page2.html">下一页 →</a>
   <a href="page2.html" target="_blank">新标签页打开</a>
 </div>
@@ -42,6 +43,8 @@
   document.getElementById('text').addEventListener('input', (e) => log('输入：' + e.target.value));
   document.getElementById('sel').addEventListener('change', (e) => log('选择：' + e.target.value));
   document.getElementById('alert').addEventListener('click', () => { const ok = confirm('要把这页收进书房吗？'); log('确认：' + ok); });
+  document.getElementById('fs').addEventListener('click', () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen());
+  addEventListener('fullscreenchange', () => log('全屏：' + !!document.fullscreenElement));
   addEventListener('pointerdown', (e) => log(`pointerdown ${e.pointerType} (${Math.round(e.clientX)}, ${Math.round(e.clientY)})`));
   addEventListener('touchstart', (e) => log(`touchstart (${Math.round(e.touches[0].clientX)}, ${Math.round(e.touches[0].clientY)})`), { passive: true });
   addEventListener('keydown', (e) => log('keydown ' + e.key));

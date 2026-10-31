@@ -64,7 +64,9 @@ export SWAYSOCK=$(ls "$XDG_RUNTIME_DIR"/sway-ipc.* | head -1)
 w=${SIZE%x*}
 h=${SIZE#*x}
 mkfifo "$XDG_RUNTIME_DIR/vinput"
-"$BUILD/browser/loong-vinput" $((w / SCALE)) $((h / SCALE)) < "$XDG_RUNTIME_DIR/vinput" > "$out/vinput.log" 2>&1 &
+lw=$(awk "BEGIN { printf \"%d\", $w / $SCALE }")
+lh=$(awk "BEGIN { printf \"%d\", $h / $SCALE }")
+"$BUILD/browser/loong-vinput" "$lw" "$lh" < "$XDG_RUNTIME_DIR/vinput" > "$out/vinput.log" 2>&1 &
 vinput_pid=$!
 exec 3> "$XDG_RUNTIME_DIR/vinput"
 
@@ -72,7 +74,7 @@ exec 3> "$XDG_RUNTIME_DIR/vinput"
 PORT=${PORT:-8765}
 server_pid=
 if [ "${SERVE:-$(dirname "$0")/pages}" != none ]; then
-	python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "${SERVE:-$(dirname "$0")/pages}" > "$out/http.log" 2>&1 &
+	python3 "$(dirname "$0")/serve.py" "$PORT" "${SERVE:-$(dirname "$0")/pages}" > "$out/http.log" 2>&1 &
 	server_pid=$!
 fi
 

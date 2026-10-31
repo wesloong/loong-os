@@ -21,7 +21,7 @@ export XDG_RUNTIME_DIR=$(mktemp -d /tmp/loong-shell-test.XXXXXX)
 chmod 700 "$XDG_RUNTIME_DIR"
 export HOME=$XDG_RUNTIME_DIR/home XDG_DATA_HOME=$XDG_RUNTIME_DIR/home/.local/share XDG_CACHE_HOME=$XDG_RUNTIME_DIR/home/.cache
 mkdir -p "$HOME"
-python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$(dirname "$0")/pages" > "$out/http.log" 2>&1 &
+python3 "$(dirname "$0")/serve.py" "$PORT" "$(dirname "$0")/pages" > "$out/http.log" 2>&1 &
 server_pid=$!
 trap 'kill $server_pid 2>/dev/null; rm -rf "$XDG_RUNTIME_DIR"' EXIT INT TERM
 

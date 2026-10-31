@@ -148,6 +148,13 @@ impl LoongState {
         for (dmabuf, notifier) in std::mem::take(&mut self.dmabuf.pending) {
             match renderer.import_dmabuf(&dmabuf, None) {
                 Ok(_) => {
+                    tracing::debug!(
+                        "导入 dmabuf：{:?} {}x{}，{} 个平面",
+                        dmabuf.format(),
+                        dmabuf.width(),
+                        dmabuf.height(),
+                        dmabuf.num_planes()
+                    );
                     let _ = notifier.successful::<LoongState>();
                 }
                 Err(e) => {

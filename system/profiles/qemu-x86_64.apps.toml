@@ -1,3 +1,4 @@
 # 主屏图标对应的启动命令（安装到 /usr/share/loong/apps.toml）。未列出的应用显示演示占位画面。
 [commands]
-browser = "loong-webapp --id browser --name 浏览器 file:///usr/share/loong/web/demo/index.html"
+# 系统浏览器：界面与网页内容同屏（loong WPEPlatform 后端，见 webrt/browser/）
+browser = "loong-browser"

@@ -150,6 +150,12 @@ if [ -n "${WITH_WPE:-}" ]; then
 	install -Dm755 "$WEBAPP_BIN" "$ROOT/usr/bin/loong-webapp"
 	mkdir -p "$ROOT/usr/share/loong/web"
 	cp -a "$SRC/webrt/loongkit" "$SRC/webrt/demo" "$ROOT/usr/share/loong/web/"
+	# 系统浏览器：程序 + 界面（界面与 LoongKit 的相对位置同源码树：web/browser/ui ↔ web/loongkit）
+	BROWSER_BIN="$SRC/build/webrt/browser/loong-browser"
+	[ -x "$BROWSER_BIN" ] || { echo "缺少 $BROWSER_BIN，请先构建 webrt（见 README）" >&2; exit 1; }
+	install -Dm755 "$BROWSER_BIN" "$ROOT/usr/bin/loong-browser"
+	mkdir -p "$ROOT/usr/share/loong/web/browser"
+	cp -a "$SRC/webrt/browser/ui" "$ROOT/usr/share/loong/web/browser/"
 	[ -f "$SRC/system/profiles/$PROFILE.apps.toml" ] && \
 		install -Dm644 "$SRC/system/profiles/$PROFILE.apps.toml" "$ROOT/usr/share/loong/apps.toml"
 fi

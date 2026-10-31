@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 新标签页：一张宣纸，一句诗，几张常去的小笺。地址栏显示为空（loong-browser 认得这一页）。 -->
+<title>新标签页</title>
+<link rel="stylesheet" href="../../loongkit/loongkit.css">
+<script src="../../loongkit/loongkit.js" defer></script>
+<style>
+  html, body { min-height: 100%; }
+  main {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: clamp(40px, 12vh, 120px) 32px 64px;
+    display: grid;
+    justify-items: center;
+    gap: 40px;
+  }
+  /* 题款：竖排的一句诗，落一方朱砂印。 */
+  .verse {
+    display: flex;
+    flex-direction: column; /* 竖排时 column 是从右往左的列 */
+    align-items: flex-start;
+    gap: 18px;
+    writing-mode: vertical-rl;
+    font: 400 30px/1.5 var(--loong-font-display-family);
+    letter-spacing: 0.16em;
+    color: var(--loong-color-title);
+    min-height: 260px;
+  }
+  .verse span + span { color: var(--loong-color-secondary-label); }
+  .verse .loong-seal { align-self: flex-end; font-size: 15px; letter-spacing: 0.04em; }
+  .shortcuts { width: 100%; }
+  .shortcuts .loong-section-header { justify-content: center; }
+  .grid {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px 28px;
+    padding: 0;
+    margin: 0;
+    list-style: none;
+  }
+  .shortcut {
+    width: 132px;
+    display: grid;
+    justify-items: center;
+    gap: 10px;
+    padding: 18px 8px 14px;
+    border-radius: var(--loong-radius-card);
+    color: var(--loong-color-label);
+    text-decoration: none;
+    font: var(--loong-font-subhead);
+    transition: transform var(--loong-spring-snappy-duration) var(--loong-spring-snappy-easing);
+  }
+  .shortcut:active { transform: scale(0.96); }
+  .hint { font: var(--loong-font-footnote); color: var(--loong-color-tertiary-label); text-align: center; }
+</style>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+  <!-- 符号：Lucide（ISC），见 crates/loong-ui/assets/icons/LICENSE -->
+  <symbol id="i-palette" viewBox="0 0 24 24"><path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/></symbol>
+</svg>
+<main class="loong-bloom">
+  <div class="verse" id="verse" aria-label="题诗"><span>行到水穷处</span><span>坐看云起时</span><span class="loong-seal loong-seal--vertical">墨韵</span></div>
+
+  <section class="shortcuts loong-section">
+    <h2 class="loong-section-header">常去</h2>
+    <ul class="grid">
+      <li><a class="shortcut" data-ink href="../../demo/index.html"><span class="loong-tile loong-tile--large" style="--loong-pigment: var(--loong-color-shiqing)"><svg class="loong-symbol"><use href="#i-palette"/></svg></span>LoongKit 演示</a></li>
+      <li><a class="shortcut" data-ink href="../../demo/settings.html"><span class="loong-tile loong-tile--large" style="--loong-pigment: var(--loong-color-zheshi)"><svg class="loong-symbol"><use href="#i-settings"/></svg></span>设置样机</a></li>
+    </ul>
+  </section>
+  <p class="hint">在上方输入网址，或直接输入要搜索的内容。</p>
+</main>
+<script>
+  // 每次打开换一句（王维、李白、杜甫……），竖排题在纸上。
+  const verses = [
+    ['行到水穷处', '坐看云起时'],
+    ['明月松间照', '清泉石上流'],
+    ['人闲桂花落', '夜静春山空'],
+    ['相看两不厌', '只有敬亭山'],
+    ['野径云俱黑', '江船火独明'],
+    ['江流天地外', '山色有无中'],
+  ];
+  const v = verses[Math.floor(Math.random() * verses.length)];
+  const spans = document.querySelectorAll('#verse span:not(.loong-seal)');
+  spans[0].textContent = v[0];
+  spans[1].textContent = v[1];
+</script>
+</body>
+</html>

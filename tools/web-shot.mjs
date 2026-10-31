@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// LoongKit 页面截图：用宿主机的 Playwright + Chromium 渲染 webrt/demo 下的页面，
+// LoongKit 页面截图：用宿主机的 Playwright + Chromium 渲染 webrt/demo 与 webrt/apps 下的页面
+// （设置用 ?mock 演示数据，见 webrt/apps/settings/mock.js），
 // 输出亮色/暗色、1x（1280×800 逻辑点，QEMU）与 2x（2560×1600，小米平板 5）截图，
 // 供视觉评审与文档使用。
 //
@@ -40,15 +41,27 @@ const scalesArg = arg('scales', '');
 const themes = arg('themes', 'light,dark').split(',');
 
 // 每个画面：名字、页面、默认缩放、可选的准备动作（在截图前执行，可返回 clip）。
+const SETTINGS = 'webrt/apps/settings/index.html?mock=1';
 const shots = [
   { name: 'demo', page: 'webrt/demo/index.html', scales: [1, 2] },
-  { name: 'settings-display', page: 'webrt/demo/settings.html#display', scales: [1, 2] },
-  { name: 'settings-wifi', page: 'webrt/demo/settings.html#wifi', scales: [2] },
-  { name: 'settings-battery', page: 'webrt/demo/settings.html#battery', scales: [2] },
-  { name: 'settings-general', page: 'webrt/demo/settings.html#general', scales: [2] },
+  { name: 'settings-wifi', page: `${SETTINGS}#wifi`, scales: [2] },
+  { name: 'settings-display', page: `${SETTINGS}#display`, scales: [1, 2] },
+  { name: 'settings-battery', page: `${SETTINGS}#battery`, scales: [2] },
+  { name: 'settings-about', page: `${SETTINGS}#general/about`, scales: [2] },
+  {
+    // 加入加密网络：点网络行 → 密码 sheet，输入后截图。
+    name: 'settings-wifi-password',
+    page: `${SETTINGS}#wifi`,
+    scales: [2],
+    async before(page) {
+      await page.locator('#wifi-nets .net-row', { hasText: '茶寮-5G' }).click();
+      await page.locator('#pw-input').fill('loong1234');
+      await page.waitForTimeout(900);
+    },
+  },
   // 点墨：按住按钮 / 列表行，墨点晕开途中截图（只截附近）。
   pressShot('inkdrop-button', 'webrt/demo/index.html', '[data-shot="press"]', 0.38, 0.55, 60, 40),
-  pressShot('inkdrop-row', 'webrt/demo/settings.html#display', '.sidebar a[href="#wallpaper"]', 0.42, 0.5, 20, 60),
+  pressShot('inkdrop-row', `${SETTINGS}#display`, '.sidebar a[href="#battery"]', 0.42, 0.5, 20, 60),
 ];
 
 function pressShot(name, pageUrl, selector, fx, fy, padX, padY) {
@@ -118,8 +131,9 @@ for (const shot of shots) {
       const page = await ctx.newPage();
       page.on('pageerror', (e) => console.error(`[${shot.name}] page error:`, e.message));
       page.on('console', (m) => m.type() === 'error' && console.error(`[${shot.name}] console:`, m.text()));
-      const [path, hash] = shot.page.split('#');
-      await page.goto(pathToFileURL(join(repo, path)).href + (hash ? `#${hash}` : ''));
+      const [pathQuery, hash] = shot.page.split('#');
+      const [path, query] = pathQuery.split('?');
+      await page.goto(pathToFileURL(join(repo, path)).href + (query ? `?${query}` : '') + (hash ? `#${hash}` : ''));
       if (wenkaiCss) await page.addStyleTag({ url: pathToFileURL(resolve(wenkaiCss)).href });
       await page.evaluate(() => document.fonts.ready);
       // 等入场动画（晕染开启、弹簧小球）停稳。

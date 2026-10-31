@@ -44,15 +44,15 @@ const themes = arg('themes', 'light,dark').split(',');
 const SETTINGS = 'webrt/apps/settings/index.html?mock=1';
 const shots = [
   { name: 'demo', page: 'webrt/demo/index.html', scales: [1, 2] },
-  { name: 'settings-wifi', page: `${SETTINGS}#wifi`, scales: [1, 2] },
+  { name: 'settings-wifi', page: `${SETTINGS}#wifi`, scales: [2] },
   { name: 'settings-display', page: `${SETTINGS}#display`, scales: [1, 2] },
-  { name: 'settings-battery', page: `${SETTINGS}#battery`, scales: [1, 2] },
-  { name: 'settings-about', page: `${SETTINGS}#general/about`, scales: [1, 2] },
+  { name: 'settings-battery', page: `${SETTINGS}#battery`, scales: [2] },
+  { name: 'settings-about', page: `${SETTINGS}#general/about`, scales: [2] },
   {
     // 加入加密网络：点网络行 → 密码 sheet，输入后截图。
     name: 'settings-wifi-password',
     page: `${SETTINGS}#wifi`,
-    scales: [1],
+    scales: [2],
     async before(page) {
       await page.locator('#wifi-nets .net-row', { hasText: '茶寮-5G' }).click();
       await page.locator('#pw-input').fill('loong1234');

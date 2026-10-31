@@ -28,6 +28,12 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 |---|---|---|
 | ![多任务](docs/images/switcher.png) | ![上滑关闭应用](docs/images/switcher-close.png) | ![主屏翻页](docs/images/home-paging.png) |
 
+“设置”是 Web 应用：WPE WebKit 在 `loong-shell` 里渲染，经 [JS bridge](docs/api/loong-js-bridge.md) 读写 loong-sysd（下图的背光、电池来自假 sysfs，Wi‑Fi 来自假 iwd，见 `webrt/tests/settings-headless.sh`）：
+
+| 显示与亮度（滑块直接调节背光） | 夜墨 · 电池 | 无线局域网 |
+|---|---|---|
+| ![设置：显示与亮度](docs/images/web/settings-wpe-display.jpg) | ![设置：电池（夜墨）](docs/images/web/settings-wpe-battery-dark.jpg) | ![设置：无线局域网](docs/images/web/settings-wpe-wifi.jpg) |
+
 完整系统在 QEMU 中启动后的画面（UEFI → systemd-boot → UKI → initramfs → 只读 erofs → OpenRC → `loong-shell` 走 DRM/KMS）：
 
 ![QEMU 中的 Loong OS](docs/images/qemu-home.png)

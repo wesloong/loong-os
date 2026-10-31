@@ -1,5 +1,5 @@
 /*
- * LoongKit「墨韵」交互：点墨、滑块与分段控件、外观切换、落印。无依赖，约 3 KB。
+ * LoongKit「墨韵」交互：点墨、滑块与分段控件、外观切换、落印、JS 弹簧。无依赖，约 4 KB。
  *
  *   <link rel="stylesheet" href="loongkit.css">
  *   <script src="loongkit.js" defer></script>

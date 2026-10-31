@@ -617,7 +617,7 @@ impl Shell {
             .retarget([HOME_ZOOM_BEHIND_APP, HOME_DIM_BEHIND_APP], now);
     }
 
-    /// 新窗口出现：交给正在打开的应用卡片。
+    /// 新窗口出现（第一次提交，app_id 已设置）：交给正在打开的应用卡片。
     pub fn on_new_window(&mut self, window: Window, now: f64) {
         let app_id = window.toplevel().and_then(|t| {
             smithay::wayland::compositor::with_states(t.wl_surface(), |states| {
@@ -627,17 +627,18 @@ impl Shell {
                     .and_then(|d| d.lock().ok().and_then(|d| d.app_id.clone()))
             })
         });
-        // loong-webapp 的 app_id 形如 loong.webapp.<id>（id 中的 '-' 被替换为 '_'）。
-        let matched = app_id.as_deref().and_then(|raw| {
-            let id = raw
-                .strip_prefix("loong.webapp.")
-                .unwrap_or(raw)
-                .replace('_', "-");
-            self.apps.iter().position(|a| a.id == id)
-        });
+        let matched = app_id
+            .as_deref()
+            .and_then(|id| apps::app_for_app_id(&self.apps, id));
+        tracing::debug!(
+            "新窗口 app_id={app_id:?} → {:?}",
+            matched.map(|i| &self.apps[i].id)
+        );
+        // 正在打开的应用（app_id 对不上的窗口不抢它的卡片）。
         if self.mode == Mode::App
             && let Some(task) = self.tasks.last_mut()
             && task.window.is_none()
+            && matched.is_none_or(|app| app == task.app)
         {
             task.window = Some(window);
             task.content = SpringAnimation::at_rest(Spring::SMOOTH, 0.0, now);

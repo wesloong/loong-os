@@ -148,8 +148,10 @@ if [ -n "${WITH_WPE:-}" ]; then
 	WEBAPP_BIN="$SRC/build/webrt/loong-webapp"
 	[ -x "$WEBAPP_BIN" ] || { echo "缺少 $WEBAPP_BIN，请先构建 webrt（见 README）" >&2; exit 1; }
 	install -Dm755 "$WEBAPP_BIN" "$ROOT/usr/bin/loong-webapp"
+	# /usr/share/loong/web 是 JS bridge 的受信任目录（只读根分区）：系统 Web 应用（apps/，例如设置）
+	# 以 --bridge=system 启动时，起始页必须在这里面。见 docs/api/loong-js-bridge.md。
 	mkdir -p "$ROOT/usr/share/loong/web"
-	cp -a "$SRC/webrt/loongkit" "$SRC/webrt/demo" "$ROOT/usr/share/loong/web/"
+	cp -a "$SRC/webrt/loongkit" "$SRC/webrt/demo" "$SRC/webrt/apps" "$ROOT/usr/share/loong/web/"
 	[ -f "$SRC/system/profiles/$PROFILE.apps.toml" ] && \
 		install -Dm644 "$SRC/system/profiles/$PROFILE.apps.toml" "$ROOT/usr/share/loong/apps.toml"
 fi

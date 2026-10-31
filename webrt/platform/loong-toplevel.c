@@ -603,7 +603,12 @@ loong_toplevel_dispose(GObject *object)
     g_clear_pointer(&self->xdg_surface, xdg_surface_destroy);
     g_clear_pointer(&self->bg_buffer, wl_buffer_destroy);
     g_clear_pointer(&self->bg_retired, wl_buffer_destroy);
-    g_clear_pointer(&self->surface, wl_surface_destroy);
+    if (self->surface) {
+        LoongDisplay *display = toplevel_display(self);
+        if (display)
+            loong_seat_surface_destroyed(display, self->surface);
+        g_clear_pointer(&self->surface, wl_surface_destroy);
+    }
     g_clear_pointer(&self->app_id, g_free);
     G_OBJECT_CLASS(loong_toplevel_parent_class)->dispose(object);
 }

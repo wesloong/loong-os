@@ -144,6 +144,7 @@ struct wl_shm *loong_display_get_shm(LoongDisplay *display);
 
 /* loong-im-context.c：合成器不支持 text-input-v3 时返回 NULL（WPE 退回到无输入法）。 */
 WPEInputMethodContext *loong_im_context_new(LoongDisplay *display, WPEView *view);
+void loong_im_surface_destroyed(LoongDisplay *display, struct wl_surface *surface);
 
 /* loong-screen.c */
 LoongScreen *loong_screen_new(guint32 name, struct wl_output *output);
@@ -154,6 +155,8 @@ void loong_seat_finalize(LoongDisplay *display);
 WPEModifiers loong_seat_modifiers(LoongDisplay *display);
 /* view 被移走或隐藏时，清掉输入状态中对它的引用。 */
 void loong_seat_view_gone(LoongDisplay *display, WPEView *view);
+/* 表面即将销毁：清掉指针与输入法记住的表面。 */
+void loong_seat_surface_destroyed(LoongDisplay *display, struct wl_surface *surface);
 
 /* loong-toplevel.c */
 void loong_toplevel_add_view(LoongToplevel *toplevel, LoongView *view);

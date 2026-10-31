@@ -486,6 +486,14 @@ loong_im_context_class_init(LoongIMContextClass *klass)
     im_class->reset = loong_im_context_reset;
 }
 
+void
+loong_im_surface_destroyed(LoongDisplay *display, struct wl_surface *surface)
+{
+    IMState *state = g_object_get_data(G_OBJECT(display), "loong-im-state");
+    if (state && state->surface == surface)
+        state->surface = NULL;
+}
+
 WPEInputMethodContext *
 loong_im_context_new(LoongDisplay *display, WPEView *view)
 {

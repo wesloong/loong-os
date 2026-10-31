@@ -729,7 +729,12 @@ loong_view_dispose(GObject *object)
     self->current = NULL;
     g_clear_pointer(&self->viewport, wp_viewport_destroy);
     g_clear_pointer(&self->subsurface, wl_subsurface_destroy);
-    g_clear_pointer(&self->surface, wl_surface_destroy);
+    if (self->surface) {
+        LoongDisplay *display = view_display(self);
+        if (display)
+            loong_seat_surface_destroyed(display, self->surface);
+        g_clear_pointer(&self->surface, wl_surface_destroy);
+    }
     G_OBJECT_CLASS(loong_view_parent_class)->dispose(object);
 }
 

@@ -152,8 +152,7 @@ pointer_leave(void *data, struct wl_pointer *pointer, uint32_t serial, struct wl
 {
     LoongDisplay *display = data;
     LoongSeat *seat = &display->seat;
-    if (surface != seat->pointer_surface)
-        return;
+    /* 不比较 surface：表面已被销毁时这里收到的是 NULL。指针同时只在一个表面上。 */
     seat->pointer_surface = NULL;
     g_clear_weak_pointer(&seat->grab_view);
     set_pointer_view(display, NULL, 0, 0);
@@ -720,6 +719,18 @@ loong_seat_finalize(LoongDisplay *display)
     g_clear_pointer(&seat->touch, wl_touch_destroy);
     g_clear_pointer(&seat->wl_seat, wl_seat_destroy);
     g_clear_object(&seat->keymap);
+}
+
+void
+loong_seat_surface_destroyed(LoongDisplay *display, struct wl_surface *surface)
+{
+    LoongSeat *seat = &display->seat;
+    if (seat->pointer_surface == surface) {
+        seat->pointer_surface = NULL;
+        g_clear_weak_pointer(&seat->pointer_view);
+        g_clear_weak_pointer(&seat->grab_view);
+    }
+    loong_im_surface_destroyed(display, surface);
 }
 
 void

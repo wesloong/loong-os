@@ -821,7 +821,7 @@ tab_free(Tab *tab)
 {
     g_signal_handlers_disconnect_by_data(tab->web_view, tab->browser);
     g_signal_handlers_disconnect_by_data(webkit_web_view_get_back_forward_list(tab->web_view), tab->browser);
-    webkit_web_view_terminate_web_process(tab->web_view);
+    /* 不要 terminate_web_process：window.open 打开的标签页与打开它的页面共用一个 Web 进程。 */
     wpe_view_set_toplevel(WPE_VIEW(tab->view), NULL);
     g_object_unref(tab->web_view);
     g_free(tab->favicon);

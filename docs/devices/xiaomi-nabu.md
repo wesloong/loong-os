@@ -116,7 +116,7 @@ fastboot --disable-verity --disable-verification flash vbmeta_b vbmeta-disabled.
 
 高通 ABL 把每个 slot 的状态存在 `boot_a`/`boot_b` 的 GPT 分区属性里：active（当前启动哪个）、successful（是否确认过）、unbootable 以及重试次数。没有被标记为 successful 的 slot，ABL 每次启动都会减少它的重试次数；次数用完后把它标为 unbootable，改为启动另一个 slot。
 
-- Loong OS 不启用 qbootctl 自带的 OpenRC 服务（它在开机早期就标记成功）。改由 `loong-boot-ok` 在 `loong-session`（系统界面）启动后执行 `qbootctl -m`，与 UEFI 后端去掉启动计数的时机相同。
+- Loong OS 不启用 qbootctl 自带的 OpenRC 服务（它在开机早期就标记成功）。改由 `loong-boot-ok` 在系统界面连续运行 15 秒后执行 `loong-update mark-good`（即 `qbootctl -m`），与 UEFI 后端去掉启动计数的时机相同；系统界面起不来时重启，消耗一次重试次数。
 - 常用命令（在设备上以 root 运行）：
 
 ```sh
@@ -128,7 +128,7 @@ qbootctl -u a       # 把 slot a 标记为不可启动
 ```
 
 - 在 fastboot 中也可以切换：`fastboot --set-active=b`。
-- 以后的 OTA（M5）流程：把新系统写入 `/dev/mapper/system_<另一个 slot>`，把新 boot.img 写入 `boot_<另一个 slot>`，再 `qbootctl -s <另一个 slot>` 并重启。新系统如果没能启动到系统界面，ABL 用完重试次数后会自动回到旧 slot。重试次数的具体值和 ABL 的行为需要在真机上确认。
+- OTA（M5，`loong-update apply`，见 [loong-update](../api/loong-update.md)）：先 `qbootctl -u <另一个 slot>` 作废它，把新系统写入 `/dev/mapper/system_<另一个 slot>`、新 boot.img 写入 `boot_<另一个 slot>`，回读校验后 `qbootctl -s <另一个 slot>`，重启生效。新系统如果没能启动到系统界面，ABL 用完重试次数后会自动回到旧 slot。**这条流程只用假设备和模拟的 qbootctl 做过单元测试，尚未在真机上运行**；重试次数的具体值、`qbootctl -s` 对 successful 标志的处理等 ABL 行为需要在真机上确认。更新包：`UPDATE_BUNDLE=1 system/mkimage/mkimage.sh xiaomi-nabu`。
 
 ## 已验证的内容（离线，在 x86_64 沙箱中）
 

@@ -67,6 +67,8 @@ struct _Browser {
     guint next_tab_id;
     int chrome_height;
     gboolean expanded;
+    gboolean fullscreen; /* 网页全屏（视频等）：内容铺满窗口，界面隐藏 */
+    gboolean quitting;
     gboolean chrome_ready;
     guint push_idle;
 
@@ -227,10 +229,32 @@ layout(Browser *b)
     wpe_toplevel_get_size(b->toplevel, &width, &height);
     int chrome_h = CLAMP(b->chrome_height, 1, height);
     loong_view_set_geometry(b->chrome_view, 0, 0, width, b->expanded ? height : chrome_h);
+    wpe_view_set_visible(WPE_VIEW(b->chrome_view), !b->fullscreen);
     for (guint i = 0; i < b->tabs->len; i++) {
         Tab *tab = g_ptr_array_index(b->tabs, i);
-        loong_view_set_geometry(tab->view, 0, chrome_h, width, MAX(1, height - chrome_h));
+        if (b->fullscreen && tab == b->active)
+            loong_view_set_geometry(tab->view, 0, 0, width, height);
+        else
+            loong_view_set_geometry(tab->view, 0, chrome_h, width, MAX(1, height - chrome_h));
     }
+}
+
+static gboolean
+on_enter_fullscreen(WebKitWebView *web_view, Browser *b)
+{
+    if (!b->active || b->active->web_view != web_view)
+        return TRUE; /* 后台标签页不许全屏 */
+    b->fullscreen = TRUE;
+    layout(b);
+    return FALSE; /* 继续默认处理：WebKit 让窗口全屏（平板上本来就是） */
+}
+
+static gboolean
+on_leave_fullscreen(WebKitWebView *web_view, Browser *b)
+{
+    b->fullscreen = FALSE;
+    layout(b);
+    return FALSE;
 }
 
 static void
@@ -544,8 +568,10 @@ on_show_option_menu(WebKitWebView *web_view, WebKitOptionMenu *menu, WebKitRecta
     b->menu = g_object_ref(menu);
     b->modal_id++;
     GString *s = g_string_new(NULL);
-    g_string_append_printf(s, "{\"id\":%u,\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d,\"items\":[", b->modal_id, rect->x,
-                           rect->y + b->chrome_height, rect->width, rect->height);
+    int window_width, window_height;
+    wpe_toplevel_get_size(b->toplevel, &window_width, &window_height);
+    g_string_append_printf(s, "{\"id\":%u,\"x\":%d,\"y\":%d,\"width\":%d,\"height\":%d,\"windowWidth\":%d,\"windowHeight\":%d,\"items\":[",
+                           b->modal_id, rect->x, rect->y + b->chrome_height, rect->width, rect->height, window_width, window_height);
     guint n = webkit_option_menu_get_n_items(menu);
     for (guint i = 0; i < n; i++) {
         WebKitOptionMenuItem *item = webkit_option_menu_get_item(menu, i);
@@ -710,6 +736,8 @@ static void tab_close(Browser *b, Tab *tab);
 static void
 on_close(WebKitWebView *web_view, Browser *b)
 {
+    if (b->quitting)
+        return;
     Tab *tab = tab_for_view(b, web_view);
     if (tab)
         tab_close(b, tab);
@@ -751,6 +779,8 @@ tab_new(Browser *b, WebKitWebView *related, const char *url, gboolean activate)
     g_signal_connect(tab->web_view, "close", G_CALLBACK(on_close), b);
     g_signal_connect(tab->web_view, "script-dialog", G_CALLBACK(on_script_dialog), b);
     g_signal_connect(tab->web_view, "show-option-menu", G_CALLBACK(on_show_option_menu), b);
+    g_signal_connect(tab->web_view, "enter-fullscreen", G_CALLBACK(on_enter_fullscreen), b);
+    g_signal_connect(tab->web_view, "leave-fullscreen", G_CALLBACK(on_leave_fullscreen), b);
 
     /* 新标签页排在当前标签页之后。 */
     guint index = b->tabs->len;
@@ -940,6 +970,14 @@ on_chrome_terminated(WebKitWebView *web_view, WebKitWebProcessTerminationReason 
 static void
 on_chrome_close(WebKitWebView *web_view, Browser *b)
 {
+    b->quitting = TRUE;
+    g_application_quit(b->app);
+}
+
+static void
+on_window_closed(WPEView *view, Browser *b)
+{
+    b->quitting = TRUE;
     g_application_quit(b->app);
 }
 
@@ -964,6 +1002,8 @@ create_chrome(Browser *b)
     g_signal_connect(b->chrome, "decide-policy", G_CALLBACK(on_chrome_decide_policy), b);
     g_signal_connect(b->chrome, "web-process-terminated", G_CALLBACK(on_chrome_terminated), b);
     g_signal_connect(b->chrome, "close", G_CALLBACK(on_chrome_close), b);
+    /* 合成器要求关闭窗口（xdg_toplevel.close → 所有 view 的 closed）：整个浏览器退出。 */
+    g_signal_connect(b->chrome_view, "closed", G_CALLBACK(on_window_closed), b);
     webkit_web_view_load_uri(b->chrome, b->chrome_url);
 }
 
@@ -1071,6 +1111,13 @@ find_ui_dir(const char *argv0)
         char *parent = g_path_get_dirname(dir);
         g_free(dir);
         dir = parent;
+    }
+    /* 安装位置：编译时的前缀；镜像里固定在 /usr/share（mkimage.sh 直接拷贝，不走 meson install）。 */
+    static const char *const installed[] = { LOONG_BROWSER_UI_DIR, "/usr/share/loong/web/browser/ui" };
+    for (guint i = 0; i < G_N_ELEMENTS(installed); i++) {
+        g_autofree char *index = g_build_filename(installed[i], "index.html", NULL);
+        if (g_file_test(index, G_FILE_TEST_EXISTS))
+            return g_strdup(installed[i]);
     }
     return g_strdup(LOONG_BROWSER_UI_DIR);
 }

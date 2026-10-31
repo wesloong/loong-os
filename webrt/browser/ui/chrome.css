@@ -451,7 +451,7 @@ body {
   position: fixed;
   z-index: 3;
   min-width: 200px;
-  max-height: 50vh;
+  max-height: 400px; /* chrome.js 按窗口高度改写 */
   overflow-y: auto;
   padding: 6px 0;
   border-radius: var(--loong-radius-card);

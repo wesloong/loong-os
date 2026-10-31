@@ -395,18 +395,19 @@
       selectMenu.append(row);
     });
     selectMenu.style.minWidth = `${Math.max(200, m.width)}px`;
+    selectMenu.style.maxHeight = `${Math.round((m.windowHeight || window.innerHeight) * 0.5)}px`;
     selectMenu.style.left = `${Math.max(8, m.x)}px`;
     selectMenu.style.top = `${m.y + m.height + 4}px`;
     selectMenu.hidden = false;
     showScrim(false, () => finishMenu(-1));
     expand('menu', true);
-    // 铺满窗口之后再按实际高度调整：放不下就翻到下拉框上方。
-    requestAnimationFrame(() => {
-      const r = selectMenu.getBoundingClientRect();
-      if (r.bottom > window.innerHeight - 8 && m.y - r.height - 4 > 8) selectMenu.style.top = `${m.y - r.height - 4}px`;
-      if (r.right > window.innerWidth - 8) selectMenu.style.left = `${Math.max(8, window.innerWidth - r.width - 8)}px`;
-      selectMenu.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
-    });
+    // 放不下就翻到下拉框上方。用窗口尺寸（本进程给出）判断：此刻界面可能还没被拉到整个窗口。
+    const r = selectMenu.getBoundingClientRect();
+    const winW = m.windowWidth || window.innerWidth;
+    const winH = m.windowHeight || window.innerHeight;
+    if (r.bottom > winH - 8 && m.y - r.height - 4 > 8) selectMenu.style.top = `${m.y - r.height - 4}px`;
+    if (r.right > winW - 8) selectMenu.style.left = `${Math.max(8, winW - r.width - 8)}px`;
+    selectMenu.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
   }
 
   function finishMenu(index) {

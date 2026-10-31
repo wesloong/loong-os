@@ -28,6 +28,12 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 |---|---|---|
 | ![多任务](docs/images/switcher.png) | ![暗色主屏](docs/images/home-dark.png) | ![暗色锁屏](docs/images/lock-dark.png) |
 
+“设置”是 Web 应用：WPE WebKit 在 `loong-shell` 里渲染，经 [JS bridge](docs/api/loong-js-bridge.md) 读写 loong-sysd（下图的背光、电池来自假 sysfs，Wi‑Fi 来自假 iwd，见 `webrt/tests/settings-headless.sh`）：
+
+| 显示与亮度（滑块直接调节背光） | 夜墨 · 电池 | 无线局域网 |
+|---|---|---|
+| ![设置：显示与亮度](docs/images/web/settings-wpe-display.jpg) | ![设置：电池（夜墨）](docs/images/web/settings-wpe-battery-dark.jpg) | ![设置：无线局域网](docs/images/web/settings-wpe-wifi.jpg) |
+
 完整系统在 QEMU 中启动后的画面（UEFI → systemd-boot → UKI → initramfs → 只读 erofs → OpenRC → `loong-shell` 走 DRM/KMS）：
 
 ![QEMU 中的 Loong OS](docs/images/qemu-home.png)
@@ -50,6 +56,7 @@ ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-she
 | aarch64：qemu-user binfmt（`tools/setup-binfmt.sh`）、交叉编译（`tools/build-aarch64.sh`）、`qemu-aarch64` 镜像 | ✅ 在 QEMU virt（TCG）中启动到锁屏 |
 | 小米平板 5：`android-abl` 启动后端（boot.img、super 动态分区 A/B、userdata、qbootctl 回滚），见[适配说明](docs/devices/xiaomi-nabu.md) | 🚧 镜像可构建并通过离线自检，尚未上真机 |
 | `crates/loong-ime`：librime 拼音引擎（简体，词库 8MB）、iPad 式屏幕键盘模型（布局、命中测试、触摸状态机） | ✅ 已完成（含真实 librime 测试）；绘制与 text-input-v3 对接待接入 loong-shell（M4） |
+| `webrt/`：`loong-webapp`（每个应用一个进程、跟随系统外观）、系统应用的受限 JS bridge（`window.loong` → loong-sysd，见[说明](docs/api/loong-js-bridge.md)）、**设置**（无线局域网、显示与亮度、电池、关于本机） | ✅ 在无屏幕 loong-shell + WPE WebKit 中端到端验证（亮度滑块写入背光、电池读自 sysfs）；Wi‑Fi 用假 iwd 验证（还没有在真实网卡上试过） |
 
 完整路线图（M0–M7）见[技术规划](docs/技术规划.md#五路线图)。
 
@@ -63,7 +70,7 @@ ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-she
 | `crates/loong-shell/` | Wayland 合成器、系统 UI、手势识别 | 已有（M1 进行中） |
 | `crates/loong-ime/` | 中文拼音输入法：librime 绑定、屏幕键盘模型 | 已有（M4） |
 | `crates/loong-sysd/` | 系统服务（D-Bus `org.loong.System1`）：背光、电源、Wi‑Fi（iwd）；OTA 待做。接口见 [docs/api/loong-sysd.md](docs/api/loong-sysd.md) | 已有（M4 进行中） |
-| `webrt/` | C/meson：`webapp/`、`browser/`、`platform/`（`loong` WPEPlatform 后端）、`loongkit/` | 计划（M2） |
+| `webrt/` | C/meson：`webapp/`（loong-webapp 与 JS bridge）、`apps/`（系统 Web 应用：设置）、`loongkit/`；计划中：`browser/`、`platform/`（`loong` WPEPlatform 后端） | 已有（M2 进行中） |
 | `system/packages/wpewebkit/` | WPE WebKit 的 APKBUILD | 已有 |
 | `system/packages/loong-*/` | `loong-shell`、`loong-webrt`、`loong-base`、`loong-initramfs`、`loong-device-*` | 计划 |
 | `system/rootfs/` | OpenRC 服务：`loong-session`（系统界面）、`loong-boot-ok`（A/B 启动确认） | 已有 |
@@ -114,6 +121,13 @@ sudo tools/dev-chroot.sh run sh -c 'tools/build-aarch64.sh && system/mkimage/mki
   python3 tools/qemu.py start build/image/qemu-aarch64/loong-qemu-aarch64.img --arch aarch64'
 #    小米平板 5：system/mkimage/mkimage.sh xiaomi-nabu，刷机见 docs/devices/xiaomi-nabu.md
 
+# 7. Web 运行时：构建 loong-webapp 并运行单元测试（需要 chroot 中的 wpewebkit-dev）；
+#    设置的端到端检查：假 sysfs + 私有总线上的 loong-sysd + 无屏幕 loong-shell + WPE WebKit（脚本开头有构建说明）
+sudo tools/dev-chroot.sh run sh -c 'meson setup build/webrt webrt && ninja -C build/webrt && meson test -C build/webrt'
+sudo tools/dev-chroot.sh run webrt/tests/settings-headless.sh out/settings              # 亮度、外观、电池、关于本机
+sudo tools/dev-chroot.sh run env FAKE_IWD=1 webrt/tests/settings-headless.sh out/wifi  # Wi‑Fi（假 iwd）
+#    在桌面浏览器里改设置的界面（演示数据）：打开 webrt/apps/settings/index.html，或 node tools/web-shot.mjs --only settings
+
 # 其他命令
 sudo tools/dev-chroot.sh shell     # 进入 chroot
 sudo tools/dev-chroot.sh umount    # 卸载 chroot 的挂载点
@@ -127,6 +141,7 @@ sudo tools/dev-chroot.sh umount    # 卸载 chroot 的挂载点
 - [架构决策记录（ADR）](docs/adr/README.md)：基础发行版、Shell、Web 内核、启动与 OTA
 - [设计规范（Loong HIG）](docs/design/设计规范.md)：颜色、字体、圆角、材质、动效、布局、手势、LoongKit 令牌
 - [loong-ime](docs/api/loong-ime.md)：输入法架构、text-input-v3 对接、词库体积与延迟
+- [loong-sysd](docs/api/loong-sysd.md)：系统服务的 D-Bus 接口；[JS bridge](docs/api/loong-js-bridge.md)：系统 Web 应用如何调用它、安全模型、系统外观文件的约定
 
 ## 许可证
 

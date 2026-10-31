@@ -1,0 +1,4 @@
+# 受信任目录：只有起始页在这里面的应用才能用 --bridge=system 拿到 window.loong。
+# 产品构建保持默认（只读根分区）；开发时可以指向源码树，例如 -Dweb_root=/src/webrt。
+option('web_root', type: 'string', value: '/usr/share/loong/web',
+       description: '系统 Web 应用的受信任目录（JS bridge 只对其中的页面开放）')

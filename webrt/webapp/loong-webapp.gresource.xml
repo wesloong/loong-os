@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 编译进 loong-webapp 的资源：系统应用的 JS bridge（loong-bridge.js）。 -->
+<gresources>
+  <gresource prefix="/org/loong/webapp">
+    <file>loong-bridge.js</file>
+  </gresource>
+</gresources>

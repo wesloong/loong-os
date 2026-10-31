@@ -229,7 +229,7 @@ body { display: grid; grid-template-columns: 340px 1fr; }
 .alert.is-closing { animation: fade-out 180ms ease-out both; }
 @keyframes alert-in { from { transform: translate(-50%, -50%) scale(1.08); opacity: 0; } }
 .alert-title { margin: 0 20px 6px; font: 400 19px/26px var(--loong-font-display-family); color: var(--loong-color-title); word-break: break-all; }
-.alert-message { margin: 0 20px 18px; font: var(--loong-font-footnote); color: var(--loong-color-secondary-label); }
+.alert-message { margin: 0 20px 18px; font: var(--loong-font-footnote); color: var(--loong-color-secondary-label); text-wrap: balance; }
 .alert-buttons { display: flex; border-top: 1px solid var(--loong-color-separator); }
 .alert-buttons button {
   flex: 1; min-height: 46px; border: 0; background: none; position: relative; overflow: hidden; isolation: isolate;

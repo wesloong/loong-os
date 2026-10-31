@@ -593,7 +593,7 @@
     $('net-info').replaceChildren(
       ...(net
         ? [
-            infoRow('信号强度', `${strengthLabel(net.strength)} · ${net.signalDbm} dBm`),
+            infoRow('信号强度', `${strengthLabel(net.strength)} · ${String(net.signalDbm).replace('-', '−')} dBm`),
             infoRow('安全性', SECURITY[net.security] || net.security),
             infoRow('自动加入', net.known ? '是' : '否'),
           ]

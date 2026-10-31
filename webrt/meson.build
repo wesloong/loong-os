@@ -49,3 +49,7 @@ test('bridge-core',
     include_directories: include_directories('webapp'),
   ),
 )
+
+# 开发用的假 iwd（不安装）：没有无线网卡时也能跑通 设置 → bridge → loong-sysd → iwd，
+# 见 webrt/tests/settings-headless.sh（FAKE_IWD=1）。
+executable('fake-iwd', 'tests/fake-iwd.c', dependencies: gio)

@@ -5,7 +5,7 @@ use smithay::{
         Renderer, Texture,
         element::{
             Element, Id, Kind, RenderElement, UnderlyingStorage,
-            surface::WaylandSurfaceRenderElement,
+            surface::WaylandSurfaceRenderElement, utils::RescaleRenderElement,
         },
         gles::{
             GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture,
@@ -149,11 +149,17 @@ impl RenderElement<GlesRenderer> for LayerElement {
     }
 }
 
-/// 应用窗口表面：给默认着色器换成带圆角（和可选水墨遮罩）的版本。
+/// 应用窗口的一个表面（根表面、子表面或弹出菜单）：给默认着色器换成带圆角（和可选水墨
+/// 遮罩）的版本。
+///
+/// 圆角与裁剪按**整个窗口**计算：`clip` 是窗口的可见矩形（屏幕物理坐标），同一窗口的所有
+/// 表面共用。着色器把每个像素换算到 `clip` 中判断，因此贴着窗口边缘的子表面带上窗口的圆角，
+/// 窗口内部的子表面完全不受影响，超出窗口的部分被裁掉。
 pub struct RoundedSurface {
-    pub inner: WaylandSurfaceRenderElement<GlesRenderer>,
+    /// 表面（已随窗口整体缩放到卡片大小）。
+    pub inner: RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
     pub radius: f32,
-    pub clip: Option<Rectangle<i32, Physical>>,
+    pub clip: Rectangle<i32, Physical>,
     pub reveal: RevealUniforms,
     /// 遮罩在变化（或刚刚结束）：整个表面都要重画，客户端没有提交新画面也一样。
     pub force_damage: bool,
@@ -213,7 +219,7 @@ impl RenderElement<GlesRenderer> for RoundedSurface {
             self.program.clone(),
             vec![
                 Uniform::new("size", (dst.size.w as f32, dst.size.h as f32)),
-                Uniform::new("clip", local_clip(self.clip, dst)),
+                Uniform::new("clip", local_clip(Some(self.clip), dst)),
                 Uniform::new("radius", self.radius),
                 Uniform::new("color_mul", [1.0f32, 1.0, 1.0, 1.0]),
                 origin,
@@ -360,3 +366,67 @@ pub fn compile_ink_program(renderer: &mut GlesRenderer) -> Result<GlesPixelProgr
 
 #[allow(dead_code)]
 fn _assert_renderer<R: Renderer>() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `shader.frag` 中 `corner_mask` 的 CPU 版（同一公式）：`p` 相对裁剪矩形左上角。
+    fn corner_mask(p: (f32, f32), clip: [f32; 4], radius: f32) -> f32 {
+        let half = (clip[2] * 0.5, clip[3] * 0.5);
+        let a = (radius * 1.28).min(half.0.min(half.1));
+        if a < 0.5 {
+            let inside = |v: f32, max: f32| f32::from(u8::from(v >= 0.0 && v <= max));
+            return inside(p.0, clip[2]) * inside(p.1, clip[3]);
+        }
+        let q = (
+            (p.0 - half.0).abs() - (half.0 - a),
+            (p.1 - half.1).abs() - (half.1 - a),
+        );
+        let d = if q.0 > 0.0 && q.1 > 0.0 {
+            let n = ((q.0 / a).powi(2), (q.1 / a).powi(2));
+            ((n.0 * n.0 + n.1 * n.1).sqrt().sqrt() - 1.0) * a
+        } else {
+            q.0.max(q.1) - a
+        };
+        (0.5 - d).clamp(0.0, 1.0)
+    }
+
+    /// 着色器对目标矩形 `dst` 中局部坐标 `local` 处像素算出的圆角遮罩（与 `main()` 的换算一致）。
+    fn mask_at(
+        dst: Rectangle<i32, Physical>,
+        clip: Rectangle<i32, Physical>,
+        radius: f32,
+        local: (f32, f32),
+    ) -> f32 {
+        let c = local_clip(Some(clip), dst);
+        corner_mask((local.0 - c[0], local.1 - c[1]), c, radius)
+    }
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn subsurface_corners_follow_the_window() {
+        let window = rect(100, 50, 1000, 600);
+        let r = 40.0;
+        // 贴着窗口顶边的工具栏子表面：左上角被窗口的圆角裁掉，中间完整。
+        let toolbar = rect(100, 50, 1000, 64);
+        assert_eq!(mask_at(toolbar, window, r, (0.5, 0.5)), 0.0);
+        assert_eq!(mask_at(toolbar, window, r, (999.5, 0.5)), 0.0);
+        assert_eq!(mask_at(toolbar, window, r, (500.0, 32.0)), 1.0);
+        // 窗口内部的子表面：自己的四个角都不受影响。
+        let inner = rect(400, 250, 300, 200);
+        for corner in [(0.5, 0.5), (299.5, 0.5), (0.5, 199.5), (299.5, 199.5)] {
+            assert_eq!(mask_at(inner, window, r, corner), 1.0, "{corner:?}");
+        }
+        // 超出窗口的部分被裁掉。
+        let overflow = rect(1050, 300, 100, 100);
+        assert_eq!(mask_at(overflow, window, r, (75.0, 50.0)), 0.0);
+        assert_eq!(mask_at(overflow, window, r, (25.0, 50.0)), 1.0);
+        // 没有圆角时只裁剪。
+        assert_eq!(mask_at(toolbar, window, 0.0, (0.5, 0.5)), 1.0);
+        assert_eq!(mask_at(overflow, window, 0.0, (75.0, 50.0)), 0.0);
+    }
+}

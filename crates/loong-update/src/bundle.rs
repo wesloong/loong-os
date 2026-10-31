@@ -115,6 +115,8 @@ pub enum Input {
     Stdin(io::Stdin),
     /// 下载进程与它的标准输出。
     Download(Child, std::process::ChildStdout),
+    /// 其他数据流（测试、嵌入方自己提供的来源）。
+    Reader(Box<dyn Read + Send>),
 }
 
 impl Read for Input {
@@ -123,6 +125,7 @@ impl Read for Input {
             Input::File(f) => f.read(buf),
             Input::Stdin(s) => s.read(buf),
             Input::Download(_, out) => out.read(buf),
+            Input::Reader(r) => r.read(buf),
         }
     }
 }

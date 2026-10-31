@@ -6,9 +6,12 @@
 //!
 //! 设计说明见 `docs/adr/0006-ota-更新包与-loong-update.md`，接口见 `docs/api/loong-update.md`。
 
+pub mod backend;
 pub mod bundle;
 pub mod error;
 pub mod manifest;
+pub mod ops;
+pub mod pe;
 pub mod sign;
 pub mod storage;
 pub mod system;
@@ -18,6 +21,13 @@ pub mod version;
 #[cfg(test)]
 pub(crate) mod testutil;
 
+pub use backend::{BootState, SlotInfo, SlotState};
+pub use bundle::Source;
 pub use error::{Error, ErrorKind, Result};
 pub use manifest::{BootBackend, Manifest, Payload, PayloadKind, Slot};
+pub use ops::{
+    Applied, ApplyOptions, Inspection, Observer, Phase, Status, apply, inspect, mark_good,
+    rollback, status,
+};
+pub use system::System;
 pub use version::Version;

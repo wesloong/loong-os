@@ -143,6 +143,8 @@ pointer_enter(void *data, struct wl_pointer *pointer, uint32_t serial, struct wl
     seat->pointer_sy = wl_fixed_to_double(sy);
     seat->pointer_enter_serial = serial;
     update_pointer_target(display);
+    g_debug("指针进入%s表面 (%.0f, %.0f) → view %p", LOONG_IS_TOPLEVEL(loong_surface_owner(surface)) ? "根" : "子",
+            seat->pointer_sx, seat->pointer_sy, (void *)seat->pointer_view);
 }
 
 static void
@@ -222,6 +224,7 @@ pointer_button(void *data, struct wl_pointer *pointer, uint32_t serial, uint32_t
         seat->pointer_modifiers &= ~mask;
 
     WPEView *view = seat->grab_view ? seat->grab_view : seat->pointer_view;
+    g_debug("指针按键 %u %s → view %p (%.0f, %.0f)", wpe_button, pressed ? "按下" : "松开", (void *)view, seat->view_x, seat->view_y);
     if (view) {
         guint count = pressed ? wpe_view_compute_press_count(view, seat->view_x, seat->view_y, wpe_button, time) : 0;
         emit(view, wpe_event_pointer_button_new(pressed ? WPE_EVENT_POINTER_DOWN : WPE_EVENT_POINTER_UP, view, WPE_INPUT_SOURCE_MOUSE,
@@ -544,6 +547,8 @@ touch_down(void *data, struct wl_touch *touch, uint32_t serial, uint32_t time, s
     g_hash_table_replace(seat->touch_points, GINT_TO_POINTER(id), point);
     if (toplevel)
         loong_toplevel_set_focused_view(toplevel, view);
+    g_debug("触摸按下 #%d %s表面 (%.0f, %.0f) → view %p (%.0f, %.0f)", id, LOONG_IS_TOPLEVEL(loong_surface_owner(surface)) ? "根" : "子", sx,
+            sy, (void *)view, vx, vy);
     emit(view, wpe_event_touch_new(WPE_EVENT_TOUCH_DOWN, view, WPE_INPUT_SOURCE_TOUCHSCREEN, time, loong_seat_modifiers(display), id, vx, vy));
 }
 
@@ -636,6 +641,8 @@ seat_capabilities(void *data, struct wl_seat *wl_seat, uint32_t caps)
     LoongDisplay *display = data;
     LoongSeat *seat = &display->seat;
     seat->capabilities = caps;
+    g_debug("seat 能力：指针=%d 键盘=%d 触摸=%d", !!(caps & WL_SEAT_CAPABILITY_POINTER), !!(caps & WL_SEAT_CAPABILITY_KEYBOARD),
+            !!(caps & WL_SEAT_CAPABILITY_TOUCH));
 
     if ((caps & WL_SEAT_CAPABILITY_POINTER) && !seat->pointer) {
         seat->pointer = wl_seat_get_pointer(wl_seat);

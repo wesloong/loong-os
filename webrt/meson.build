@@ -53,3 +53,7 @@ test('bridge-core',
 # 开发用的假 iwd（不安装）：没有无线网卡时也能跑通 设置 → bridge → loong-sysd → iwd，
 # 见 webrt/tests/settings-headless.sh（FAKE_IWD=1）。
 executable('fake-iwd', 'tests/fake-iwd.c', dependencies: gio)
+
+# loong WPEPlatform 后端（每个 view 一个 wl_subsurface）与系统浏览器
+subdir('platform')
+subdir('browser')

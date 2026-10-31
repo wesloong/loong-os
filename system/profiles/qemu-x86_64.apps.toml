@@ -2,5 +2,6 @@
 # 系统应用（设置等）带 --bridge=system，可以通过 window.loong 调用 loong-sysd；只有
 # /usr/share/loong/web 下的页面才允许这样启动（docs/api/loong-js-bridge.md）。
 [commands]
-browser = "loong-webapp --id browser --name 浏览器 file:///usr/share/loong/web/demo/index.html"
+# 系统浏览器：界面与网页内容同屏（loong WPEPlatform 后端，见 webrt/browser/）
+browser = "loong-browser"
 settings = "loong-webapp --id settings --name 设置 --bridge=system file:///usr/share/loong/web/apps/settings/index.html"

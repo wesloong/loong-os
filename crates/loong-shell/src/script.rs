@@ -13,8 +13,29 @@
 //! }
 //! ```
 //! 坐标单位为逻辑点，时间单位为毫秒。
+//!
+//! 屏幕键盘（键的位置在运行时按当前布局求出，脚本不写坐标）：
+//!
+//! ```json
+//! { "at": 1200, "text_input": "normal" }
+//! { "at": 2000, "type": "nihao", "interval": 250 }
+//! { "at": 3500, "candidate": 0 }
+//! { "at": 4000, "key": "lang" }
+//! ```
+//!
+//! - `text_input`：模拟应用的输入框获得焦点（内容用途，如 `normal`、`url`、`number`），`off` 为失去焦点。
+//!   真实客户端（WPE WebKit）经 text-input-v3 激活键盘，不需要它；
+//! - `type`：依次点按这些字符所在的键（`" "` 空格，`"\n"` 换行，`"\b"` 退格），间隔 `interval` 毫秒；
+//! - `candidate`：点按候选栏本页第 i 个候选；
+//! - `key`：点按功能键：`shift` / `lang` / `123` / `symbols` / `abc` / `hide` / `space` / `return` / `backspace`。
 
+use loong_ime::{
+    ContentPurpose,
+    keyboard::{KeyKind, Layer},
+};
 use serde::Deserialize;
+
+use crate::shell::keyboard::ScreenKeyboard;
 
 fn default_fps() -> u32 {
     60
@@ -63,6 +84,36 @@ pub struct Event {
     /// 直接打开某个应用（按 id）。
     #[serde(default)]
     pub launch: Option<String>,
+    /// 模拟输入框获得焦点（内容用途，如 `"normal"`、`"url"`、`"number"`），`"off"` 为失去焦点。
+    #[serde(default)]
+    pub text_input: Option<String>,
+    /// 在屏幕键盘上依次点按这些字符所在的键。
+    #[serde(default, rename = "type")]
+    pub type_text: Option<String>,
+    /// `type` 中相邻两次点按的间隔（毫秒）。
+    #[serde(default = "default_type_interval")]
+    pub interval: u64,
+    /// 点按候选栏本页第 i 个候选。
+    #[serde(default)]
+    pub candidate: Option<usize>,
+    /// 点按屏幕键盘的功能键。
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+fn default_type_interval() -> u64 {
+    200
+}
+
+/// 屏幕键盘上要点按的目标（位置在运行时按当前布局求出）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeyTarget {
+    /// 打出这个字符的键。
+    Char(char),
+    /// 功能键（shift / lang / 123 / symbols / abc / hide / space / return / backspace）。
+    Named(String),
+    /// 候选栏本页第 i 个候选。
+    Candidate(usize),
 }
 
 /// 滑动。
@@ -91,10 +142,27 @@ pub struct Record {
 /// 展开后的底层动作。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    Down { slot: u32, x: f64, y: f64 },
-    Move { slot: u32, x: f64, y: f64 },
-    Up { slot: u32 },
+    Down {
+        slot: u32,
+        x: f64,
+        y: f64,
+    },
+    Move {
+        slot: u32,
+        x: f64,
+        y: f64,
+    },
+    Up {
+        slot: u32,
+    },
     Launch(String),
+    /// 模拟输入框获得焦点（内容用途）/ 失去焦点（`None`）。
+    TextInput(Option<String>),
+    /// 手指按在屏幕键盘的某个目标上。
+    KeyDown {
+        slot: u32,
+        target: KeyTarget,
+    },
 }
 
 impl Script {
@@ -153,9 +221,77 @@ impl Script {
             if let Some(app) = &e.launch {
                 out.push((t0, Action::Launch(app.clone())));
             }
+            if let Some(purpose) = &e.text_input {
+                let purpose = (purpose != "off").then(|| purpose.clone());
+                out.push((t0, Action::TextInput(purpose)));
+            }
+            let mut tap_key = |t: f64, target: KeyTarget| {
+                out.push((t, Action::KeyDown { slot, target }));
+                out.push((t + 0.06, Action::Up { slot }));
+            };
+            if let Some(text) = &e.type_text {
+                let step = e.interval.max(80) as f64 / 1000.0;
+                for (k, c) in text.chars().enumerate() {
+                    tap_key(t0 + k as f64 * step, KeyTarget::Char(c));
+                }
+            }
+            if let Some(i) = e.candidate {
+                tap_key(t0, KeyTarget::Candidate(i));
+            }
+            if let Some(name) = &e.key {
+                tap_key(t0, KeyTarget::Named(name.clone()));
+            }
         }
         out.sort_by(|a, b| a.0.total_cmp(&b.0));
         out
+    }
+}
+
+/// 输入框用途的名称（与 `zwp_text_input_v3.content_purpose` 的枚举名相同，小写）。
+pub fn content_purpose(name: &str) -> Option<ContentPurpose> {
+    use ContentPurpose::*;
+    Some(match name {
+        "normal" => Normal,
+        "alpha" => Alpha,
+        "digits" => Digits,
+        "number" => Number,
+        "phone" => Phone,
+        "url" => Url,
+        "email" => Email,
+        "name" => Name,
+        "password" => Password,
+        "pin" => Pin,
+        "date" => Date,
+        "time" => Time,
+        "datetime" => Datetime,
+        "terminal" => Terminal,
+        _ => return None,
+    })
+}
+
+/// 屏幕键盘上某个目标此刻在屏幕上的位置（键盘没显示、当前层上没有时为 `None`）。
+pub fn key_position(kb: &ScreenKeyboard, target: &KeyTarget, now: f64) -> Option<(f64, f64)> {
+    if !kb.is_shown() {
+        return None;
+    }
+    match target {
+        KeyTarget::Char(c) => kb.key_center(*c, now),
+        KeyTarget::Candidate(i) => kb.candidate_center(*i, now),
+        KeyTarget::Named(name) => {
+            let kind = match name.as_str() {
+                "shift" => KeyKind::Shift,
+                "lang" => KeyKind::Language,
+                "123" => KeyKind::Layer(Layer::Numbers),
+                "symbols" => KeyKind::Layer(Layer::Symbols),
+                "abc" => KeyKind::Layer(Layer::Letters),
+                "hide" => KeyKind::Hide,
+                "space" => KeyKind::Space,
+                "return" => KeyKind::Return,
+                "backspace" => KeyKind::Backspace,
+                _ => return None,
+            };
+            kb.kind_center(kind, now)
+        }
     }
 }
 
@@ -181,5 +317,45 @@ mod tests {
         assert_eq!(a.last().unwrap().1, Action::Up { slot: 0 });
         assert_eq!(a.len(), 2 + 12);
         assert!(a.windows(2).all(|w| w[0].0 <= w[1].0));
+    }
+
+    #[test]
+    fn keyboard_events_expand_to_key_taps() {
+        let s = Script::parse(
+            r#"{"duration_ms": 3000, "events": [
+                {"at": 100, "text_input": "url"},
+                {"at": 500, "type": "ni\b", "interval": 300},
+                {"at": 2000, "candidate": 1},
+                {"at": 2500, "key": "lang"},
+                {"at": 2900, "text_input": "off"}
+            ]}"#,
+        )
+        .unwrap();
+        let a = s.expand();
+        assert_eq!(a[0], (0.1, Action::TextInput(Some("url".into()))));
+        let downs: Vec<(f64, KeyTarget)> = a
+            .iter()
+            .filter_map(|(t, act)| match act {
+                Action::KeyDown { target, .. } => Some((*t, target.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            downs,
+            vec![
+                (0.5, KeyTarget::Char('n')),
+                (0.8, KeyTarget::Char('i')),
+                (1.1, KeyTarget::Char('\u{8}')),
+                (2.0, KeyTarget::Candidate(1)),
+                (2.5, KeyTarget::Named("lang".into())),
+            ]
+        );
+        // 每次按下 60ms 后抬起。
+        let ups = a
+            .iter()
+            .filter(|(_, act)| matches!(act, Action::Up { .. }))
+            .count();
+        assert_eq!(ups, 5);
+        assert_eq!(a.last().unwrap().1, Action::TextInput(None));
     }
 }

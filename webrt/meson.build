@@ -15,3 +15,6 @@ executable('loong-webapp',
   dependencies: [wpe_webkit, wpe_platform],
   install: true,
 )
+
+# loong WPEPlatform 后端（每个 view 一个 wl_subsurface）与系统浏览器
+subdir('platform')

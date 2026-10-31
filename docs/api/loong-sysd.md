@@ -161,7 +161,9 @@ tools/dev-chroot.sh run sh -c 'cargo test -p loong-sysd'   # 单元测试 + 私�
 
 集成测试（`crates/loong-sysd/tests/dbus.rs`）需要 `dbus-daemon` 与 `dbus-send`（`apk add dbus`，没有时自动跳过）；以 root 运行时还会用 nobody 身份验证权限检查，并加载真正的策略文件，另有一个假 iwd 用来验证 `Connect` → Agent 取密码的完整流程。
 
-## 设置应用如何调用（设计说明，尚未实现）
+## 设置应用如何调用
+
+> 已实现，完整的 API、白名单与安全模型见 [loong-js-bridge.md](loong-js-bridge.md)。与下面的设计说明相比，实现时有两处调整：系统应用用启动参数 `--bridge=system`（只写在只读根分区的 `apps.toml` 中）而不是 `system = true` 标记；同一个 bridge 还负责系统外观（`~/.config/loong/appearance.toml`）。
 
 设置等系统应用是 Web 应用，运行在 `loong-webapp` 进程里（每个应用一个进程，都以 `loong` 运行）。它们通过 `loong-webapp` 提供的**特权 JS bridge** 调用 loong-sysd，普通 PWA 拿不到这个 bridge。
 

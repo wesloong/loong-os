@@ -61,6 +61,9 @@ pub struct LayerElement {
     pub clip: Option<Rectangle<i32, Physical>>,
     pub color: [f32; 4],
     pub reveal: RevealUniforms,
+    /// 整个图层完全不透明（纹理不透明、没有圆角/裁剪/遮罩、alpha = 1）：Smithay 可以跳过
+    /// 被它完全挡住的元素和清屏。
+    pub opaque: bool,
     pub program: GlesTexProgram,
 }
 
@@ -92,6 +95,14 @@ impl Element for LayerElement {
 
     fn geometry(&self, _scale: Scale<f64>) -> Rectangle<i32, Physical> {
         self.geometry
+    }
+
+    fn opaque_regions(&self, _scale: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+        if self.opaque && self.alpha >= 1.0 && !self.reveal.is_active() {
+            OpaqueRegions::from_slice(&[Rectangle::from_size(self.geometry.size)])
+        } else {
+            OpaqueRegions::default()
+        }
     }
 
     fn alpha(&self) -> f32 {

@@ -21,10 +21,8 @@ pub const LABEL_ICON: f64 = 24.0;
 pub const LABEL_HEIGHT: f64 = 32.0;
 /// 标签图标底边到卡片顶边的距离。
 pub const LABEL_GAP: f64 = 8.0;
-/// 卡片阴影（`shadowHigh`）：模糊向四周扩展的距离。
+/// 卡片墨影向四周扩展的距离（墨影本身略向下偏，见 `loong_ui::ink::ink_shadow`）。
 pub const SHADOW_SPREAD: f64 = 48.0;
-/// 卡片阴影向下的偏移。
-pub const SHADOW_OFFSET_Y: f64 = 16.0;
 
 /// 停顿进入多任务：速度低于该值（点/秒）视为停顿。
 pub const PAUSE_SPEED: f64 = 100.0;

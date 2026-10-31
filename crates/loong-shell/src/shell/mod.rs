@@ -25,7 +25,7 @@ use self::{
     geometry::{RectF, lerp, smoothstep},
     gesture::{Axis, lock_axis, rubber_clamp, rubber_clamp_inverse},
     ink::{InkLayer, InkState},
-    layout::{BOTTOM_EDGE, Layout, PAGE_DOT, PAGE_DOT_GAP},
+    layout::{BOTTOM_EDGE, ICON_SHADOW_SPREAD, LABEL_HALO, Layout, PAGE_DOT, PAGE_DOT_GAP},
     lock::LockScreen,
     switcher::{PauseDetector, SwitcherLayout},
 };
@@ -49,6 +49,8 @@ const SWITCHER_EXIT_SCALE: f64 = 0.92;
 /// 展卷：烟云层随翻页速度额外漂移的系数（秒）与上限（点）。
 const MIST_DRIFT: f64 = 0.035;
 const MIST_DRIFT_MAX: f64 = 56.0;
+/// 烟云漂移的弹簧：临界阻尼（不来回晃），翻页停下后约 0.3 秒归位。
+const MIST_SPRING: Spring = Spring::new(0.35, 1.0);
 /// 墨散遮罩的种子。
 const LOCK_SEED: f32 = 5.0;
 
@@ -57,8 +59,12 @@ const LOCK_SEED: f32 = 5.0;
 pub enum TexKey {
     /// 山水长卷的第 i 层（从远到近），见 [`DrawItem::Landscape`]。
     WallpaperLayer(usize),
+    /// 主屏第 p 页停稳时的整幅山水（各层预先合成）：不翻页时只画这一张，而不是逐层混合。
+    LandscapePage(usize),
     Dock,
     Icon(usize),
+    /// 图标下方的墨影（所有图标共用，四周各留 [`ICON_SHADOW_SPREAD`] × 边长）。
+    IconShadow,
     Label(usize),
     StatusTime,
     StatusIcons,
@@ -73,8 +79,10 @@ pub enum TexKey {
     CardLabel(usize),
     /// 多任务卡片的墨影，按标准卡片尺寸生成，绘制时拉伸。
     CardShadow,
-    /// 主屏页面指示点（墨点）。
+    /// 主屏页面指示点：淡墨点（其余页）。
     PageDot,
+    /// 主屏页面指示点：当前页（亮色为浓墨，暗色为泥金）。
+    PageDotActive,
 }
 
 /// 画面中的一个元素。
@@ -115,10 +123,14 @@ pub enum DrawItem {
     /// 山水长卷：各层（[`TexKey::WallpaperLayer`]）按自己的视差系数 p 平移 `-p × scroll`。
     /// `rect` 为屏幕可视区域（随主屏缩放），`scroll` 为主屏横向滚动位置（点，已限制在页面范围内），
     /// `drift` 为烟云层随翻页速度的额外漂移（点）。
+    ///
+    /// `page` 为 `Some(p)` 时主屏正停在第 p 页、烟云不漂移：直接画预先合成好的整页
+    /// （[`TexKey::LandscapePage`]，网格图标的墨影也已画在里面，场景中不再单独给出）。
     Landscape {
         rect: RectF,
         scroll: f64,
         drift: f64,
+        page: Option<usize>,
     },
     /// 水墨印记：点墨或一段笔迹（屏幕坐标）。
     Ink(InkDab),
@@ -379,7 +391,7 @@ impl Shell {
             theme: Theme::default(),
             reduced_motion: false,
             ink: InkState::new(),
-            mist: offset_anim(Spring::SNAPPY, 0.0, 0.0, 0.0, 0.0),
+            mist: SpringAnimation::at_rest(MIST_SPRING, 0.0, 0.0).with_rest_thresholds(0.2, 2.0),
         }
     }
 
@@ -452,6 +464,18 @@ impl Shell {
     #[allow(dead_code, reason = "测试与后续的状态栏样式使用")]
     pub fn in_switcher(&self) -> bool {
         self.mode == Mode::Switcher
+    }
+
+    /// 手指正按在主屏的哪个图标上（还没有移动）：渲染端据此提前准备应用画面。
+    pub fn pressed_app(&self) -> Option<usize> {
+        match self.gesture {
+            Gesture::Home {
+                icon: Some(app),
+                moved: false,
+                ..
+            } => Some(app),
+            _ => None,
+        }
     }
 
     /// 运行中的应用（按最近使用排序，最后一个最近）。
@@ -718,7 +742,9 @@ impl Shell {
         } else {
             (self.home_scroll_velocity(now) * MIST_DRIFT).clamp(-MIST_DRIFT_MAX, MIST_DRIFT_MAX)
         };
-        if (self.mist.target() - drift).abs() > 0.05 {
+        // 小变化不必每帧改目标；但速度归零时一定回到 0（停稳后才能画预先合成的整页）。
+        let target = self.mist.target();
+        if (target - drift).abs() > 0.05 || (drift == 0.0 && target != 0.0) {
             self.mist.retarget(drift, now);
         }
         // 已退出的应用飞回主屏后移除。
@@ -1596,6 +1622,16 @@ impl Shell {
         scene
     }
 
+    /// 主屏是否正停在某一页（图标与山水都在这一页的停稳位置，烟云不漂移）。
+    fn settled_page(&self, scroll: f64, landscape_scroll: f64, drift: f64) -> Option<usize> {
+        let w = self.layout.page_width;
+        let page = (scroll / w).round();
+        let at_page = |v: f64| (v - page * w).abs() < 1e-6;
+        (drift == 0.0 && page >= 0.0 && at_page(scroll) && at_page(landscape_scroll))
+            .then_some(page as usize)
+            .filter(|&p| p < self.layout.pages)
+    }
+
     /// 第 `level` 级墨色（0 = 焦墨 … 4 = 清墨），非预乘 RGBA。
     fn ink_rgba(&self, level: usize, alpha: f64) -> [f32; 4] {
         rgba(self.theme.palette().ink[level.min(4)], alpha)
@@ -1612,10 +1648,13 @@ impl Shell {
         } else {
             scroll.clamp(0.0, self.layout.max_scroll())
         };
+        let drift = self.mist.value(now);
+        let page = self.settled_page(scroll, landscape_scroll, drift);
         scene.push(DrawItem::Landscape {
             rect: full.scaled_about(cx, cy, zoom.max(1.0)),
             scroll: landscape_scroll,
-            drift: self.mist.value(now),
+            drift,
+            page,
         });
         scene.push(DrawItem::Texture {
             key: TexKey::Dock,
@@ -1639,6 +1678,18 @@ impl Shell {
                 continue;
             }
             let r = rect.scaled_about(cx, cy, zoom);
+            // 宣纸小笺落在纸上的墨影（停在某页时，网格图标的墨影已画在整页山水里）。
+            if page.is_none() || self.layout.page_of[i].is_none() {
+                let s = r.w * ICON_SHADOW_SPREAD;
+                scene.push(DrawItem::Texture {
+                    key: TexKey::IconShadow,
+                    rect: RectF::new(r.x - s, r.y - s, r.w + 2.0 * s, r.h + 2.0 * s),
+                    alpha: 1.0,
+                    radius: 0.0,
+                    clip: None,
+                    reveal: None,
+                });
+            }
             scene.push(DrawItem::Texture {
                 key: TexKey::Icon(i),
                 rect: r,
@@ -1651,14 +1702,14 @@ impl Shell {
                 scene.push(DrawItem::Natural {
                     key: TexKey::Label(i),
                     x: r.x + r.w / 2.0,
-                    y: r.y + r.h + 4.0 * zoom,
+                    y: r.y + r.h + (4.0 - LABEL_HALO) * zoom,
                     align: Align::Center,
                     alpha: 1.0,
                     scale: zoom,
                 });
             }
         }
-        // 页面指示点：当前页为浓墨，其余为淡墨，随滚动连续过渡；只有一页时隐藏。
+        // 页面指示点：当前页为浓墨（暗色为泥金），其余为淡墨，随滚动连续交叉过渡；只有一页时隐藏。
         let pages = self.layout.pages;
         if pages > 1 {
             let total = pages as f64 * PAGE_DOT + (pages - 1) as f64 * PAGE_DOT_GAP;
@@ -1673,14 +1724,19 @@ impl Shell {
                     PAGE_DOT,
                 )
                 .scaled_about(cx, cy, zoom);
-                scene.push(DrawItem::Texture {
-                    key: TexKey::PageDot,
-                    rect: dot,
-                    alpha: lerp(0.28, 0.95, near),
-                    radius: 0.0,
-                    clip: None,
-                    reveal: None,
-                });
+                for (key, alpha) in [
+                    (TexKey::PageDot, 0.3 * (1.0 - near)),
+                    (TexKey::PageDotActive, 0.95 * near),
+                ] {
+                    scene.push(DrawItem::Texture {
+                        key,
+                        rect: dot,
+                        alpha,
+                        radius: 0.0,
+                        clip: None,
+                        reveal: None,
+                    });
+                }
             }
         }
         // 点墨：落在主屏纸面上（图标之上），随翻页、随主屏缩放。
@@ -1706,7 +1762,7 @@ impl Shell {
         }
     }
 
-    /// 画一组卡片（[`Task`]，屏幕矩形，不透明度）：先画全部墨影，再按顺序画卡片，
+    /// 画一组卡片（[`Task`]，屏幕矩形，不透明度）：先画全部墨影（墨影自带向下的偏移），再按顺序画卡片，
     /// 避免后一张卡片的阴影压在前一张卡片上。`chrome` 为标签与阴影的显现程度。
     fn push_cards(
         &self,
@@ -1721,12 +1777,7 @@ impl Shell {
                 let s = switcher::SHADOW_SPREAD * k;
                 scene.push(DrawItem::Texture {
                     key: TexKey::CardShadow,
-                    rect: RectF::new(
-                        x - s,
-                        y - s + switcher::SHADOW_OFFSET_Y * k,
-                        w + 2.0 * s,
-                        h + 2.0 * s,
-                    ),
+                    rect: RectF::new(x - s, y - s, w + 2.0 * s, h + 2.0 * s),
                     alpha: chrome * alpha,
                     radius: 0.0,
                     clip: None,

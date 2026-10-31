@@ -14,10 +14,7 @@ use loong_ui::{
     ink::{self, IconSpec},
     text::{FontRole, TextRenderer, TextStyle},
     theme::{self, Ink, Theme},
-    tiny_skia::{
-        Color, FillRule, GradientStop, Paint, PixmapPaint, Point as SkPoint, RadialGradient, Rect,
-        SpreadMode, Transform,
-    },
+    tiny_skia::{Color, FillRule, Paint, PixmapPaint, Rect, SpreadMode, Transform},
 };
 use smithay::{
     backend::{
@@ -39,6 +36,7 @@ use crate::shell::{
     apps::AppEntry,
     geometry::RectF,
     ink::DabKind,
+    layout::{ICON_SHADOW_SPREAD, LABEL_HALO},
     switcher::{self, SwitcherLayout},
 };
 
@@ -62,6 +60,9 @@ pub struct Assets {
     layers: Vec<LayerInfo>,
     /// 各层合成后的整屏山水（滚动位置 0），锁屏、Dock、多任务背景都由它而来。
     backdrop: Pixmap,
+    /// 正在后台线程中画的「册页」（应用下标 → 线程）。手指按下图标时就开始画，
+    /// 抬起打开应用时多半已经画好，首次打开不卡顿。
+    pending_sheets: HashMap<usize, std::thread::JoinHandle<Pixmap>>,
 }
 
 impl Assets {
@@ -77,6 +78,7 @@ impl Assets {
             date_text: String::new(),
             layers: Vec::new(),
             backdrop: loong_ui::pixmap(1, 1),
+            pending_sheets: HashMap::new(),
         };
         assets.build(shell);
         assets
@@ -99,6 +101,8 @@ impl Assets {
     fn build(&mut self, shell: &Shell) {
         // 旧外观的所有位图（含按需生成的占位画面）作废；版本号递增，纹理会重新上传。
         self.pixmaps.clear();
+        // 旧外观的册页作废（线程分离，结果丢弃）。
+        self.pending_sheets.clear();
         self.clock_text.clear();
         self.date_text.clear();
         self.theme = shell.theme;
@@ -108,7 +112,39 @@ impl Assets {
         let (pw, ph) = (px(w, scale), px(h, scale));
 
         let layers = ink::landscape(theme, pw, ph, shell.layout.pages, LANDSCAPE_SEED);
-        let backdrop = compose(&layers, pw, ph);
+        let backdrop = ink::composite(&layers, pw, ph, 0.0);
+        let icon_px = px(shell.layout.icon, scale);
+        let spread = px(shell.layout.icon * ICON_SHADOW_SPREAD, scale);
+        let icon_shadow = ink::ink_shadow(
+            theme,
+            icon_px,
+            icon_px,
+            icon_px as f32 * theme::radius::ICON_RATIO * 0.96,
+            spread,
+        );
+        // 每页停稳时的整幅画（山水 + 这一页网格图标的墨影）：主屏静止、开关应用、解锁时
+        // 只需画一张不透明纹理，而不是逐层混合、逐个画墨影。
+        for p in 0..shell.layout.pages {
+            let mut page = if p == 0 {
+                backdrop.clone()
+            } else {
+                ink::composite(&layers, pw, ph, p as f32 * pw as f32)
+            };
+            let l = &shell.layout;
+            let s = l.icon * ICON_SHADOW_SPREAD;
+            for (r, _) in l
+                .icons
+                .iter()
+                .zip(&l.page_of)
+                .filter(|(_, pg)| **pg == Some(p))
+            {
+                let x = ((r.x - p as f64 * l.page_width - s) * scale).round() as i32;
+                let y = ((r.y - s) * scale).round() as i32;
+                draw(&mut page, &icon_shadow, x, y);
+            }
+            self.put(TexKey::LandscapePage(p), page);
+        }
+        self.put(TexKey::IconShadow, icon_shadow);
         self.layers.clear();
         for (i, layer) in layers.into_iter().enumerate() {
             // 除最底下的天色外，各层上下大片透明（山在下半部、烟云是一条带）：只保留有墨的行，
@@ -148,20 +184,33 @@ impl Assets {
             TexKey::CardShadow,
             card_shadow(&shell.switcher, theme, scale),
         );
-        self.put(TexKey::PageDot, page_dot(theme, scale));
+        let pal = theme.palette();
+        self.put(TexKey::PageDot, page_dot(pal.ink[0], scale));
+        // 当前页：亮色浓墨，暗色泥金（暗色外观中“激活”的控件用泥金）。
+        let active = match theme {
+            Theme::Light => pal.ink[0],
+            Theme::Dark => theme::pigment::NIJIN,
+        };
+        self.put(TexKey::PageDotActive, page_dot(active, scale));
 
-        let icon_px = px(shell.layout.icon, scale);
+        // 图标名称：亮色浓墨、暗色月白，四周一圈纸色光晕（落在浓墨山体上也读得清）。
         let label_style = TextStyle {
             family: FontRole::Display,
             size: ((theme::font::ICON_LABEL + 1.0) as f64 * scale) as f32,
             weight: 400,
-            color: theme.palette().ink(Ink::Nong),
-            // 暗色山水上加一圈柔和的暗影；亮色是墨落在纸上，不要阴影。
-            shadow: theme == Theme::Dark,
+            color: match theme {
+                Theme::Light => pal.ink(Ink::Nong),
+                Theme::Dark => pal.ink(Ink::Jiao),
+            },
+            shadow: false,
         };
+        let halo = theme::hex(pal.paper, if theme == Theme::Light { 0.82 } else { 0.7 });
+        let halo_px = (LABEL_HALO * scale) as f32;
         for (i, app) in shell.apps.iter().enumerate() {
             self.put(TexKey::Icon(i), app_icon(app, theme, icon_px, i));
-            let label = self.text.render(&app.name, &label_style);
+            let label = self
+                .text
+                .render_halo(&app.name, &label_style, halo, halo_px);
             self.put(TexKey::Label(i), label);
             let card_label = self.card_label(app, i);
             self.put(TexKey::CardLabel(i), card_label);
@@ -194,15 +243,11 @@ impl Assets {
                 size: (16.0 * s) as f32,
                 weight: 500,
                 color: self.ink(Ink::Nong),
-                shadow: self.theme == Theme::Dark,
+                shadow: false,
             },
         );
-        // 文字位图四周留有边距（与 TextRenderer::render 一致），这里扣掉，保证视觉间距为 8pt。
-        let pad = if self.theme == Theme::Dark {
-            (16.0 * s as f32 * 0.25).ceil() as i32
-        } else {
-            1
-        };
+        // 文字位图四周留有 1 像素边距（与 TextRenderer::render 一致），这里扣掉，保证视觉间距为 8pt。
+        let pad = 1;
         let text_x = icon_px as i32 + (8.0 * s).round() as i32 - pad;
         let h = px(switcher::LABEL_HEIGHT, s);
         let w = (text_x + text.width() as i32).max(icon_px as i32) as u32;
@@ -337,6 +382,29 @@ impl Assets {
         pm
     }
 
+    /// 手指按在某个演示应用的图标上：在后台线程开始画它的「册页」。
+    pub fn prefetch(&mut self, shell: &Shell) {
+        let Some(app) = shell.pressed_app() else {
+            return;
+        };
+        let entry = &shell.apps[app];
+        if entry.command.is_some()
+            || self.pixmaps.contains_key(&TexKey::Placeholder(app))
+            || self.pending_sheets.contains_key(&app)
+        {
+            return;
+        }
+        let (theme, pigment) = (self.theme, entry.pigment);
+        let (w, h) = shell.screen_size();
+        let (pw, ph) = (px(w, self.scale), px(h, self.scale));
+        let svg = symbol_svg(&entry.symbol);
+        let seed = sheet_seed(app);
+        self.pending_sheets.insert(
+            app,
+            std::thread::spawn(move || ink::app_sheet(theme, pw, ph, svg, pigment, seed)),
+        );
+    }
+
     /// 取位图（占位画面按需生成）。
     pub fn get(&mut self, key: TexKey, shell: &Shell) -> Option<&(Pixmap, u64)> {
         if let TexKey::Placeholder(app) = key
@@ -348,8 +416,8 @@ impl Assets {
         self.pixmaps.get(&key)
     }
 
-    /// 演示应用的占位画面：一张宣纸，纸上一团颜料淡彩（没骨），其上一幅大笔触的符号画，
-    /// 下方文楷标题，标题旁落一方小印。
+    /// 演示应用的占位画面：「册页」（纸、大片淡彩、大幅笔触符号、远山、小印，见
+    /// [`ink::app_sheet`]），顶部留白处写文楷标题与一行小字。
     fn placeholder(&mut self, shell: &Shell, app: usize) -> Pixmap {
         let theme = self.theme;
         let pal = theme.palette();
@@ -357,84 +425,47 @@ impl Assets {
         let (w, h) = shell.screen_size();
         let (pw, ph) = (px(w, self.scale), px(h, self.scale));
         let entry = &shell.apps[app];
-        let mut pm = ink::paper(theme, pw, ph, 100 + app as u32);
-
-        let (cx, cy) = (pw as f32 / 2.0, ph as f32 * 0.37);
-        let wash_r = 190.0 * s;
-        let tint = |a: f32| theme::hex(entry.pigment, a);
-        if let Some(shader) = RadialGradient::new(
-            SkPoint::from_xy(cx, cy),
-            0.0,
-            SkPoint::from_xy(cx, cy),
-            wash_r,
-            vec![
-                GradientStop::new(0.0, tint(0.24)),
-                GradientStop::new(0.55, tint(0.12)),
-                GradientStop::new(1.0, tint(0.0)),
-            ],
-            SpreadMode::Pad,
-            // 横向略扁，像一笔泼开的颜料。
-            Transform::from_scale(1.25, 0.9).post_translate(-0.25 * cx, 0.1 * cy),
-        ) {
-            let paint = Paint {
-                shader,
-                ..Paint::default()
-            };
-            pm.fill_rect(
-                Rect::from_xywh(0.0, 0.0, pw as f32, ph as f32).expect("尺寸有效"),
-                &paint,
-                Transform::identity(),
-                None,
-            );
-        }
-
-        let glyph = (176.0 * s).round();
-        let svg = icon::builtin_symbol(&entry.symbol)
-            .unwrap_or(icon::builtin_symbol("compass").expect("内置图标"));
-        ink::brush_symbol(
-            &mut pm,
-            svg,
-            Rect::from_xywh(cx - glyph / 2.0, cy - glyph / 2.0, glyph, glyph).expect("尺寸有效"),
-            pal.ink(Ink::Jiao),
-            1.6,
-            app as u32,
-        );
-
+        // 后台已经在画就等它画完（通常已完成）；线程出错或没有预取时就地画。
+        let mut pm = match self.pending_sheets.remove(&app).map(|t| t.join()) {
+            Some(Ok(sheet)) => sheet,
+            _ => ink::app_sheet(
+                theme,
+                pw,
+                ph,
+                symbol_svg(&entry.symbol),
+                entry.pigment,
+                sheet_seed(app),
+            ),
+        };
         let title = self.text.render(
             &entry.name,
             &TextStyle {
                 family: FontRole::Display,
-                size: 44.0 * s,
+                size: 40.0 * s,
                 weight: 500,
                 color: pal.ink(Ink::Jiao),
                 shadow: false,
             },
         );
-        let ty = cy + glyph / 2.0 + 40.0 * s;
-        let tx = (pw as f32 - title.width() as f32) / 2.0;
-        draw(&mut pm, &title, tx as i32, ty as i32);
-        let seal = ink::seal(theme, (30.0 * s).round() as u32, &entry.name, app as u32);
-        draw(
-            &mut pm,
-            &seal,
-            (tx + title.width() as f32 + 12.0 * s) as i32,
-            (ty + title.height() as f32 - seal.height() as f32 - 4.0 * s) as i32,
-        );
         let sub = self.text.render(
             "Loong OS · 演示应用",
             &TextStyle {
                 family: FontRole::Body,
-                size: theme::font::BODY * s,
+                size: 14.0 * s,
                 weight: 400,
                 color: pal.ink(Ink::Dan),
                 shadow: false,
             },
         );
+        // 标题与小字一起在顶部 22% 的留白中垂直居中。
+        let block = title.height() as f32 + 4.0 * s + sub.height() as f32;
+        let top = (ph as f32 * 0.22 - block) / 2.0 + 6.0 * s;
+        draw_centered(&mut pm, &title, pw as f32 / 2.0, top);
         draw_centered(
             &mut pm,
             &sub,
             pw as f32 / 2.0,
-            ty + title.height() as f32 + 10.0 * s,
+            top + title.height() as f32 + 4.0 * s,
         );
         pm
     }
@@ -461,10 +492,19 @@ fn draw_centered(dst: &mut Pixmap, src: &Pixmap, cx: f32, y: f32) {
     draw(dst, src, (cx - src.width() as f32 / 2.0) as i32, y as i32);
 }
 
+/// 内置符号（找不到时用罗盘）。
+fn symbol_svg(name: &str) -> &'static str {
+    icon::builtin_symbol(name).unwrap_or(icon::builtin_symbol("compass").expect("内置图标"))
+}
+
+/// 第 `app` 个应用的册页种子。
+fn sheet_seed(app: usize) -> u32 {
+    100 + app as u32
+}
+
 /// 宣纸小笺图标。
 fn app_icon(app: &AppEntry, theme: Theme, size: u32, index: usize) -> Pixmap {
-    let svg = icon::builtin_symbol(&app.symbol)
-        .unwrap_or(icon::builtin_symbol("compass").expect("内置图标"));
+    let svg = symbol_svg(&app.symbol);
     ink::app_icon(
         size,
         &IconSpec {
@@ -504,20 +544,11 @@ fn crop_rows(pixmap: Pixmap) -> (Pixmap, u32) {
     (out, top as u32)
 }
 
-/// 把山水各层（滚动位置 0）合成为一张整屏画面。
-fn compose(layers: &[ink::Layer], w: u32, h: u32) -> Pixmap {
-    let mut pm = loong_ui::pixmap(w, h);
-    for layer in layers {
-        draw(&mut pm, &layer.pixmap, 0, 0);
-    }
-    pm
-}
-
-/// 主屏页面指示点：一点墨，边缘略有起伏。
-fn page_dot(theme: Theme, scale: f64) -> Pixmap {
+/// 主屏页面指示点：一点墨（颜色 `rgb`），边缘略有起伏。
+fn page_dot(rgb: u32, scale: f64) -> Pixmap {
     let d = px(crate::shell::layout::PAGE_DOT, scale);
     let mut pm = loong_ui::pixmap(d, d);
-    let c = theme::hex(theme.palette().ink[0], 1.0);
+    let c = theme::hex(rgb, 1.0);
     let r0 = d as f32 * 0.44;
     let mid = d as f32 / 2.0;
     let data = pm.data_mut();
@@ -736,7 +767,7 @@ impl Painter {
             RevealMode::Spread => (1.0, if theme == Theme::Light { 0.55 } else { 0.4 }),
             RevealMode::Dissolve => (2.0, if theme == Theme::Light { 0.16 } else { 0.12 }),
         };
-        let ink = premul(theme.palette().ink[0], 1.0);
+        let ink = premul(ink::stroke_ink(theme), 1.0);
         RevealUniforms {
             reveal: [
                 r.center.0 as f32 * s,
@@ -789,7 +820,7 @@ impl Painter {
                 s as f32,
             ],
             params: [kind, dab.density as f32, dab.dry as f32, dab.seed],
-            ink: premul(theme.palette().ink[0], 1.0),
+            ink: premul(ink::stroke_ink(theme), 1.0),
             caps: [
                 f32::from(u8::from(dab.caps.0)),
                 f32::from(u8::from(dab.caps.1)),
@@ -807,6 +838,7 @@ impl Painter {
         shell: &Shell,
     ) -> Result<Vec<ShellElement>, GlesError> {
         assets.sync(shell);
+        assets.prefetch(shell);
         self.frame = self.frame.wrapping_add(1);
         let theme = shell.theme;
         let scale = self.scale;
@@ -839,6 +871,8 @@ impl Painter {
                         );
                         layer.clip = clip.map(|c| to_physical(c, scale));
                         layer.reveal = uniforms;
+                        // 锁屏是一整张不透明的纸（墨散时除外）。
+                        layer.opaque = *key == TexKey::LockSheet && *radius == 0.0;
                         layer.commit = self.reveal_commit(*key, uniforms.is_active());
                         out.push(ShellElement::Layer(layer));
                     }
@@ -847,8 +881,20 @@ impl Painter {
                     rect,
                     scroll,
                     drift,
+                    page,
                 } => {
                     let (sw, _) = shell.screen_size();
+                    // 停在某一页：画预先合成好的整页（不透明，其下不必再画）。
+                    if let Some(p) = page
+                        && let Some((texture, id)) =
+                            self.texture(renderer, TexKey::LandscapePage(*p), assets, shell)?
+                    {
+                        let mut layer =
+                            self.layer(id, texture, to_physical(*rect, scale), 1.0, 0.0, [1.0; 4]);
+                        layer.opaque = true;
+                        out.push(ShellElement::Layer(layer));
+                        continue;
+                    }
                     let layers = assets.layers().to_vec();
                     for (i, info) in layers.into_iter().enumerate() {
                         let key = TexKey::WallpaperLayer(i);
@@ -856,14 +902,11 @@ impl Painter {
                             let size = texture.size();
                             let layer_size = (size.w as f64 / scale, size.h as f64 / scale);
                             let r = layer_rect(*rect, *scroll, *drift, info, layer_size, sw);
-                            out.push(ShellElement::Layer(self.layer(
-                                id,
-                                texture,
-                                to_physical(r, scale),
-                                1.0,
-                                0.0,
-                                [1.0; 4],
-                            )));
+                            let mut layer =
+                                self.layer(id, texture, to_physical(r, scale), 1.0, 0.0, [1.0; 4]);
+                            // 最底下的天色层不透明。
+                            layer.opaque = i == 0;
+                            out.push(ShellElement::Layer(layer));
                         }
                     }
                 }
@@ -989,6 +1032,7 @@ impl Painter {
             clip: None,
             color,
             reveal: RevealUniforms::NONE,
+            opaque: false,
             program: self.program.clone(),
         }
     }

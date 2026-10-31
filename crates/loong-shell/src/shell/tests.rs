@@ -514,3 +514,205 @@ fn pause_seen_only_at_release_still_enters_switcher() {
     s.wait(1.5);
     assert!(s.shell.in_switcher());
 }
+
+// ───────────────────────── 墨韵：水墨动效 ─────────────────────────
+
+impl Sim {
+    fn scene(&self) -> Scene {
+        self.shell.scene(self.now)
+    }
+
+    /// 场景中的水墨印记（墨滴、笔段）数量。
+    fn ink_items(&self) -> usize {
+        self.scene()
+            .iter()
+            .filter(|i| matches!(i, DrawItem::Ink(_)))
+            .count()
+    }
+
+    /// 山水长卷的（是否停在某页，滚动位置）。
+    fn landscape(&self) -> (Option<usize>, f64) {
+        self.scene()
+            .into_iter()
+            .find_map(|i| match i {
+                DrawItem::Landscape { page, scroll, .. } => Some((page, scroll)),
+                _ => None,
+            })
+            .expect("主屏画了山水")
+    }
+
+    /// 单独画出的图标墨影数量。
+    fn icon_shadows(&self) -> usize {
+        self.scene()
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i,
+                    DrawItem::Texture {
+                        key: TexKey::IconShadow,
+                        ..
+                    }
+                )
+            })
+            .count()
+    }
+
+    /// 某个应用的占位画面上的遮罩（`None` 表示占位画面没有画）。
+    fn placeholder_reveal(&self, id: &str) -> Option<Option<Reveal>> {
+        let app = self.app(id);
+        self.scene().into_iter().find_map(|i| match i {
+            DrawItem::Texture {
+                key: TexKey::Placeholder(a),
+                reveal,
+                ..
+            } if a == app => Some(reveal),
+            _ => None,
+        })
+    }
+
+    /// 锁屏上的遮罩（`None` 表示锁屏没有画）。
+    fn lock_reveal(&self) -> Option<Option<Reveal>> {
+        self.scene().into_iter().find_map(|i| match i {
+            DrawItem::Texture {
+                key: TexKey::LockSheet,
+                reveal,
+                ..
+            } => Some(reveal),
+            _ => None,
+        })
+    }
+}
+
+#[test]
+fn press_blooms_an_ink_drop_that_fades_after_release() {
+    let mut s = Sim::new();
+    assert_eq!(s.ink_items(), 0);
+    // 按在主屏空白处（不是图标）。
+    s.shell.touch_down(0, 1150.0, 480.0, s.now);
+    s.wait(0.3);
+    assert_eq!(s.ink_items(), 1);
+    assert!(!s.shell.is_idle(s.now), "按住时一直在画");
+    s.shell.touch_up(0, s.now);
+    s.wait(0.2);
+    assert_eq!(s.ink_items(), 1, "抬起后墨还在淡去");
+    s.wait(1.0);
+    assert_eq!(s.ink_items(), 0);
+    assert!(s.shell.is_idle(s.now), "墨淡尽后不再重画");
+}
+
+#[test]
+fn paging_leaves_a_brush_trail_and_unrolls_the_landscape() {
+    let mut s = Sim::new();
+    // 停在第一页：画预先合成的整页，网格图标的墨影已在其中，只单独画 Dock 图标的墨影。
+    assert_eq!(s.landscape(), (Some(0), 0.0));
+    let dock = s
+        .shell
+        .layout
+        .page_of
+        .iter()
+        .filter(|p| p.is_none())
+        .count();
+    assert_eq!(s.icon_shadows(), dock);
+    // 拖动中：逐层视差 + 逐个墨影 + 指后的笔迹。
+    s.shell.touch_down(0, 1000.0, 400.0, s.now);
+    for k in 1..=20 {
+        s.now += FRAME;
+        s.shell
+            .touch_motion(0, 1000.0 - k as f64 * 35.0, 400.0, s.now);
+        s.shell.update(s.now);
+    }
+    let (page, scroll) = s.landscape();
+    assert_eq!(page, None);
+    assert!(scroll > 0.0);
+    assert!(s.icon_shadows() > dock);
+    assert!(s.ink_items() > 10, "笔迹由一串笔段组成");
+    s.shell.touch_up(0, s.now);
+    s.wait(1.5);
+    assert!(s.shell.is_idle(s.now));
+    assert_eq!(s.ink_items(), 0, "笔迹约半秒后淡尽");
+    assert_eq!(s.landscape(), (Some(1), W), "翻到第二页并停稳");
+    assert_eq!(s.icon_shadows(), dock);
+}
+
+#[test]
+fn opening_spreads_like_ink_and_going_home_gathers_it_back() {
+    let mut s = Sim::new();
+    let photos = s.app("photos");
+    s.shell.launch(photos, s.now);
+    s.wait(0.06);
+    let r = s
+        .placeholder_reveal("photos")
+        .expect("内容在画")
+        .expect("打开初期内容正在晕开");
+    assert_eq!(r.mode, RevealMode::Spread);
+    s.wait(0.05);
+    let later = s.placeholder_reveal("photos").unwrap().unwrap();
+    assert!(later.amount > r.amount, "晕染半径随卡片长大");
+    s.wait(1.0);
+    assert_eq!(s.placeholder_reveal("photos"), Some(None), "铺满后不再遮罩");
+    // 回主屏：手指拖动时内容完整显示，松手飞回图标时收墨。
+    s.shell.touch_down(0, 640.0, 795.0, s.now);
+    for k in 1..=12 {
+        s.now += FRAME;
+        s.shell
+            .touch_motion(0, 640.0, 795.0 - k as f64 * 25.0, s.now);
+        s.shell.update(s.now);
+        assert_eq!(s.placeholder_reveal("photos"), Some(None));
+    }
+    s.shell.touch_up(0, s.now);
+    s.wait(0.1);
+    let gathering = s.placeholder_reveal("photos").unwrap().expect("收墨");
+    s.wait(0.08);
+    match s.placeholder_reveal("photos") {
+        Some(Some(r)) => assert!(r.amount < gathering.amount),
+        // 内容已经完全收回（晕染进度为 0 时不画）。
+        other => assert_eq!(other, None),
+    }
+    s.wait(1.5);
+    assert!(s.shell.is_idle(s.now));
+}
+
+#[test]
+fn unlocking_dissolves_the_lock_sheet() {
+    let mut s = Sim::new();
+    s.shell.set_locked(true);
+    assert_eq!(s.lock_reveal(), Some(None), "盖满时不做遮罩");
+    s.shell.touch_down(0, 640.0, 760.0, s.now);
+    for k in 1..=10 {
+        s.now += FRAME;
+        s.shell
+            .touch_motion(0, 640.0, 760.0 - k as f64 * 20.0, s.now);
+    }
+    let r = s.lock_reveal().unwrap().expect("上移时墨散");
+    assert_eq!(r.mode, RevealMode::Dissolve);
+    assert!((r.amount - 200.0 / H).abs() < 1e-6, "散开的进度即解锁进度");
+    s.shell.touch_up(0, s.now);
+    s.wait(1.5);
+    assert_eq!(s.lock_reveal(), None, "解锁后锁屏不再绘制");
+    assert!(s.shell.is_idle(s.now));
+}
+
+#[test]
+fn reduced_motion_falls_back_to_crossfades() {
+    let mut s = Sim::new();
+    s.shell.set_reduced_motion(true);
+    s.shell.touch_down(0, 1150.0, 480.0, s.now);
+    s.wait(0.2);
+    assert_eq!(s.ink_items(), 0, "不画墨滴");
+    s.shell.touch_up(0, s.now);
+    // 翻页：山水不动，没有笔迹。
+    s.swipe((1000.0, 400.0), (300.0, 400.0), 0.3, 0.0);
+    assert_eq!(s.ink_items(), 0);
+    assert_eq!(s.landscape().1, 0.0);
+    s.wait(1.5);
+    assert!(s.shell.is_idle(s.now));
+    // 打开应用：内容淡入，不晕染。
+    let photos = s.app("photos");
+    s.shell.launch(photos, s.now);
+    for _ in 0..30 {
+        s.wait(FRAME);
+        if let Some(reveal) = s.placeholder_reveal("photos") {
+            assert_eq!(reveal, None);
+        }
+    }
+}

@@ -14,19 +14,19 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 
 ## 截图
 
-以下画面由 `loong-shell` 在无屏幕模式下渲染（Mesa llvmpipe，渲染路径与真机相同）：
+界面采用「墨韵」水墨设计语言（见 [设计规范](docs/design/设计规范.md)、[ADR 0005](docs/adr/0005-设计语言-墨韵.md)）：壁纸、图标、印章全部由程序绘制，动效是“墨在纸上动起来”。以下画面由 `loong-shell` 在无屏幕模式下渲染（Mesa llvmpipe，渲染路径与真机相同）：
 
-| 主屏 | 打开应用（图标弹出成窗口） | 回主屏手势（窗口跟手缩小） |
+| 主屏（山水长卷 + 宣纸小笺图标） | 打开应用（内容像墨在湿宣纸上晕开） | 回主屏手势（收墨，指后留下笔迹） |
 |---|---|---|
 | ![主屏](docs/images/home.png) | ![打开应用](docs/images/app-opening.png) | ![回主屏手势](docs/images/go-home-gesture.png) |
 
-| 锁屏 | 上滑解锁（锁屏跟手上移，主屏在后方迎上来） |
-|---|---|
-| ![锁屏](docs/images/lock.png) | ![上滑解锁](docs/images/unlocking.png) |
-
-| 多任务（底边上滑后停顿进入，最近的应用在右侧） | 上滑关闭应用（卡片带着手指速度飞出，其余卡片补位） | 主屏翻页（1:1 跟手，首末页橡皮筋） |
+| 锁屏（文楷时间、农历日期、朱砂印） | 上滑解锁（墨散：锁屏像墨入清水般散开） | 主屏翻页（展卷：山水分层视差，慢滑留下湿笔迹） |
 |---|---|---|
-| ![多任务](docs/images/switcher.png) | ![上滑关闭应用](docs/images/switcher-close.png) | ![主屏翻页](docs/images/home-paging.png) |
+| ![锁屏](docs/images/lock.png) | ![上滑解锁](docs/images/unlocking.png) | ![主屏翻页](docs/images/home-paging.png) |
+
+| 多任务（册页卡片 + 墨影） | 暗色「夜墨」主屏 | 暗色锁屏 |
+|---|---|---|
+| ![多任务](docs/images/switcher.png) | ![暗色主屏](docs/images/home-dark.png) | ![暗色锁屏](docs/images/lock-dark.png) |
 
 完整系统在 QEMU 中启动后的画面（UEFI → systemd-boot → UKI → initramfs → 只读 erofs → OpenRC → `loong-shell` 走 DRM/KMS）：
 

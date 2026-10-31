@@ -46,7 +46,7 @@ features = [
 [dev-dependencies]
 # 集成测试中的 Wayland 测试客户端（tests/subsurface.rs）。
 wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
 
 [[test]]
 # 测试程序本身兼作测试客户端（--client），需要自己的 main。

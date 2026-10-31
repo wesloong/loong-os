@@ -12,6 +12,7 @@ mod dmabuf;
 mod handlers;
 mod input;
 mod lunar;
+mod protocols;
 mod render;
 mod script;
 mod shell;

@@ -5,7 +5,8 @@ use smithay::{
         Renderer, Texture,
         element::{
             Element, Id, Kind, RenderElement, UnderlyingStorage,
-            surface::WaylandSurfaceRenderElement, utils::RescaleRenderElement,
+            surface::{WaylandSurfaceRenderElement, WaylandSurfaceTexture},
+            utils::RescaleRenderElement,
         },
         gles::{
             GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture,
@@ -47,6 +48,83 @@ impl RevealUniforms {
             Uniform::new("reveal_ink", self.ink),
         ]
     }
+}
+
+/// 2×3 仿射矩阵 `[a, b, c, d, e, f]`：x' = a·x + b·y + c，y' = d·x + e·y + f。
+type Affine = [f64; 6];
+
+fn affine_mul(m: Affine, n: Affine) -> Affine {
+    [
+        m[0] * n[0] + m[1] * n[3],
+        m[0] * n[1] + m[1] * n[4],
+        m[0] * n[2] + m[1] * n[5] + m[2],
+        m[3] * n[0] + m[4] * n[3],
+        m[3] * n[1] + m[4] * n[4],
+        m[3] * n[2] + m[4] * n[5] + m[5],
+    ]
+}
+
+fn affine_invert(m: Affine) -> Affine {
+    let det = m[0] * m[4] - m[1] * m[3];
+    if det.abs() < 1e-12 {
+        return [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+    }
+    let (a, b, d, e) = (m[4] / det, -m[1] / det, -m[3] / det, m[0] / det);
+    [a, b, -(a * m[2] + b * m[5]), d, e, -(d * m[2] + e * m[5])]
+}
+
+/// 着色器里的纹理坐标（`v_coords`，UV）→ 目标矩形内的像素坐标，按行给出（`local_x`、`local_y`）。
+///
+/// Smithay 的 GLES 渲染器把目标矩形内的像素坐标经过“源矩形裁剪（viewporter）、缓冲变换、
+/// 上下颠倒”换算成 UV（`build_texture_mat`），这里按同样的步骤构造再求逆。圆角遮罩与晕染
+/// 都在像素坐标中计算，所以不受这些换算影响。
+fn uv_to_local(
+    src: Rectangle<f64, Buffer>,
+    dst: Size<i32, Physical>,
+    texture: Size<i32, Buffer>,
+    transform: Transform,
+    y_inverted: bool,
+) -> ([f32; 3], [f32; 3]) {
+    let dss = transform.transform_size(src.size);
+    let scale = |sx: f64, sy: f64| [sx, 0.0, 0.0, 0.0, sy, 0.0];
+    let translate = |tx: f64, ty: f64| [1.0, 0.0, tx, 0.0, 1.0, ty];
+    let (rotate, (tx, ty)) = match transform {
+        Transform::Normal => ([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], (0.0, 0.0)),
+        Transform::_90 => ([0.0, 1.0, 0.0, -1.0, 0.0, 0.0], (0.0, dss.w)),
+        Transform::_180 => ([-1.0, 0.0, 0.0, 0.0, -1.0, 0.0], (dss.w, dss.h)),
+        Transform::_270 => ([0.0, -1.0, 0.0, 1.0, 0.0, 0.0], (dss.h, 0.0)),
+        Transform::Flipped => ([-1.0, 0.0, 0.0, 0.0, 1.0, 0.0], (dss.w, 0.0)),
+        Transform::Flipped90 => ([0.0, 1.0, 0.0, 1.0, 0.0, 0.0], (0.0, 0.0)),
+        Transform::Flipped180 => ([1.0, 0.0, 0.0, 0.0, -1.0, 0.0], (0.0, dss.h)),
+        Transform::Flipped270 => ([0.0, -1.0, 0.0, -1.0, 0.0, 0.0], (dss.h, dss.w)),
+    };
+    let mut m = scale(
+        dss.w / f64::from(dst.w.max(1)),
+        dss.h / f64::from(dst.h.max(1)),
+    );
+    m = affine_mul(rotate, m);
+    m = affine_mul(translate(tx, ty), m);
+    m = affine_mul(translate(src.loc.x, src.loc.y), m);
+    m = affine_mul(
+        scale(
+            1.0 / f64::from(texture.w.max(1)),
+            1.0 / f64::from(texture.h.max(1)),
+        ),
+        m,
+    );
+    if y_inverted {
+        m = affine_mul([1.0, 0.0, 0.0, 0.0, -1.0, 1.0], m);
+    }
+    let inv = affine_invert(m);
+    (
+        [inv[0] as f32, inv[1] as f32, inv[2] as f32],
+        [inv[3] as f32, inv[4] as f32, inv[5] as f32],
+    )
+}
+
+/// 纹理铺满目标矩形（没有裁剪、没有变换）时的 UV → 像素坐标。
+fn full_uv_to_local(dst: Size<i32, Physical>) -> ([f32; 3], [f32; 3]) {
+    ([dst.w as f32, 0.0, 0.0], [0.0, dst.h as f32, 0.0])
 }
 
 /// 一个纹理图层：任意位置/大小、透明度、连续圆角、颜色乘子、可选的水墨遮罩。
@@ -125,8 +203,11 @@ impl RenderElement<GlesRenderer> for LayerElement {
         _cache: Option<&smithay::utils::user_data::UserDataMap>,
     ) -> Result<(), GlesError> {
         let [origin, reveal, mode, ink] = self.reveal.uniforms(dst);
+        let (local_x, local_y) = full_uv_to_local(dst.size);
         let uniforms = [
             Uniform::new("size", (dst.size.w as f32, dst.size.h as f32)),
+            Uniform::new("local_x", local_x),
+            Uniform::new("local_y", local_y),
             Uniform::new("clip", local_clip(self.clip, dst)),
             Uniform::new("radius", self.radius),
             Uniform::new("color_mul", self.color),
@@ -149,6 +230,30 @@ impl RenderElement<GlesRenderer> for LayerElement {
     }
 }
 
+/// 表面的内容。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SurfaceContent {
+    /// 普通缓冲（shm / dmabuf）：纹理尺寸、是否上下颠倒。
+    Texture {
+        size: Size<i32, Buffer>,
+        y_inverted: bool,
+    },
+    /// 单像素缓冲（wp_single_pixel_buffer_v1，通常配合 wp_viewporter 拉伸）：预乘颜色。
+    Solid([f32; 4]),
+}
+
+impl SurfaceContent {
+    pub fn of(surface: &WaylandSurfaceRenderElement<GlesRenderer>) -> Self {
+        match surface.texture() {
+            WaylandSurfaceTexture::Texture(texture) => SurfaceContent::Texture {
+                size: texture.size(),
+                y_inverted: texture.is_y_inverted(),
+            },
+            WaylandSurfaceTexture::SolidColor(color) => SurfaceContent::Solid(color.components()),
+        }
+    }
+}
+
 /// 应用窗口的一个表面（根表面、子表面或弹出菜单）：给默认着色器换成带圆角（和可选水墨
 /// 遮罩）的版本。
 ///
@@ -158,6 +263,9 @@ impl RenderElement<GlesRenderer> for LayerElement {
 pub struct RoundedSurface {
     /// 表面（已随窗口整体缩放到卡片大小）。
     pub inner: RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>,
+    pub content: SurfaceContent,
+    /// 1×1 白色纹理：纯色表面用它乘以颜色绘制。
+    pub white: GlesTexture,
     pub radius: f32,
     pub clip: Rectangle<i32, Physical>,
     pub reveal: RevealUniforms,
@@ -215,19 +323,41 @@ impl RenderElement<GlesRenderer> for RoundedSurface {
         cache: Option<&smithay::utils::user_data::UserDataMap>,
     ) -> Result<(), GlesError> {
         let [origin, reveal, mode, ink] = self.reveal.uniforms(dst);
-        frame.override_default_tex_program(
-            self.program.clone(),
-            vec![
-                Uniform::new("size", (dst.size.w as f32, dst.size.h as f32)),
-                Uniform::new("clip", local_clip(Some(self.clip), dst)),
-                Uniform::new("radius", self.radius),
-                Uniform::new("color_mul", [1.0f32, 1.0, 1.0, 1.0]),
-                origin,
-                reveal,
-                mode,
-                ink,
-            ],
-        );
+        let ((local_x, local_y), color) = match self.content {
+            SurfaceContent::Texture { size, y_inverted } => (
+                uv_to_local(src, dst.size, size, self.inner.transform(), y_inverted),
+                [1.0; 4],
+            ),
+            SurfaceContent::Solid(color) => (full_uv_to_local(dst.size), color),
+        };
+        let uniforms = vec![
+            Uniform::new("size", (dst.size.w as f32, dst.size.h as f32)),
+            Uniform::new("local_x", local_x),
+            Uniform::new("local_y", local_y),
+            Uniform::new("clip", local_clip(Some(self.clip), dst)),
+            Uniform::new("radius", self.radius),
+            Uniform::new("color_mul", color),
+            origin,
+            reveal,
+            mode,
+            ink,
+        ];
+        if let SurfaceContent::Solid(_) = self.content {
+            // 单像素缓冲：Smithay 默认用 draw_solid 画（不经过纹理着色器，没有圆角），
+            // 这里改用白色纹理 × 颜色，走同一个着色器。
+            return frame.render_texture_from_to(
+                &self.white,
+                Rectangle::from_size(self.white.size()).to_f64(),
+                dst,
+                damage,
+                &[],
+                Transform::Normal,
+                self.inner.alpha(),
+                Some(&self.program),
+                &uniforms,
+            );
+        }
+        frame.override_default_tex_program(self.program.clone(), uniforms);
         let result = RenderElement::<GlesRenderer>::draw(
             &self.inner,
             frame,
@@ -339,6 +469,8 @@ pub fn compile_program(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gl
         include_str!("shader.frag"),
         &[
             UniformName::new("size", UniformType::_2f),
+            UniformName::new("local_x", UniformType::_3f),
+            UniformName::new("local_y", UniformType::_3f),
             UniformName::new("clip", UniformType::_4f),
             UniformName::new("radius", UniformType::_1f),
             UniformName::new("color_mul", UniformType::_4f),
@@ -405,6 +537,45 @@ mod tests {
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
         Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    fn apply((x, y): ([f32; 3], [f32; 3]), u: f32, v: f32) -> (f32, f32) {
+        (x[0] * u + x[1] * v + x[2], y[0] * u + y[1] * v + y[2])
+    }
+
+    fn close((a, b): (f32, f32), (c, d): (f32, f32)) -> bool {
+        (a - c).abs() < 1e-3 && (b - d).abs() < 1e-3
+    }
+
+    #[test]
+    fn texture_coords_map_back_to_target_pixels() {
+        let dst = Size::<i32, Physical>::from((400, 200));
+        let tex = Size::<i32, Buffer>::from((200, 100));
+        let full = Rectangle::from_size(tex).to_f64();
+        // 铺满：与图层元素的映射相同。
+        let m = uv_to_local(full, dst, tex, Transform::Normal, false);
+        assert_eq!(m, full_uv_to_local(dst));
+        // viewporter 裁剪：源矩形 (10, 20, 100, 50) 的四角对应目标矩形的四角。
+        let crop = Rectangle::new((10.0, 20.0).into(), (100.0, 50.0).into());
+        let m = uv_to_local(crop, dst, tex, Transform::Normal, false);
+        assert!(close(apply(m, 0.05, 0.2), (0.0, 0.0)));
+        assert!(close(apply(m, 0.55, 0.7), (400.0, 200.0)));
+        // 上下颠倒的缓冲（dmabuf 的 Y_INVERT）。
+        let m = uv_to_local(crop, dst, tex, Transform::Normal, true);
+        assert!(close(apply(m, 0.05, 0.8), (0.0, 0.0)));
+        // 旋转 90° 的缓冲（100×50，显示为 50×100）：缓冲左下角是目标的左上角。
+        let tex = Size::<i32, Buffer>::from((100, 50));
+        let dst = Size::<i32, Physical>::from((50, 100));
+        let m = uv_to_local(
+            Rectangle::from_size(tex).to_f64(),
+            dst,
+            tex,
+            Transform::_90,
+            false,
+        );
+        assert!(close(apply(m, 0.0, 1.0), (0.0, 0.0)));
+        assert!(close(apply(m, 0.0, 0.0), (50.0, 0.0)));
+        assert!(close(apply(m, 1.0, 0.0), (50.0, 100.0)));
     }
 
     #[test]

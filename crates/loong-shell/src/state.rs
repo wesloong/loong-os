@@ -23,7 +23,9 @@ use smithay::{
     },
 };
 
-use crate::{device::DeviceConfig, dmabuf::DmabufSupport, shell::Shell};
+use crate::{
+    device::DeviceConfig, dmabuf::DmabufSupport, protocols::SurfaceProtocols, shell::Shell,
+};
 
 /// 合成器状态。
 pub struct LoongState {
@@ -46,6 +48,8 @@ pub struct LoongState {
     pub seat: Seat<LoongState>,
     /// linux-dmabuf（由后端在渲染器就绪后调用 [`LoongState::init_dmabuf`] 创建全局对象）。
     pub dmabuf: DmabufSupport,
+    /// viewporter、单像素缓冲、分数缩放（只需持有）。
+    _surface_protocols: SurfaceProtocols,
 
     /// 所有客户端窗口（含后台应用）。
     pub windows: Vec<Window>,
@@ -79,6 +83,7 @@ impl LoongState {
         let shm_state = ShmState::new::<Self>(&dh, vec![]);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
+        let surface_protocols = SurfaceProtocols::new(&dh);
 
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");
@@ -107,6 +112,7 @@ impl LoongState {
             popups: PopupManager::default(),
             seat,
             dmabuf: DmabufSupport::default(),
+            _surface_protocols: surface_protocols,
             windows: Vec::new(),
             client_touches: Vec::new(),
             output: None,

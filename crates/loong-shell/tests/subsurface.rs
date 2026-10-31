@@ -4,14 +4,15 @@
 //! 根表面（紫）之上有工具栏子表面（红，贴窗口顶边）、页面子表面（绿），页面里再嵌一个
 //! 内部子表面（蓝）；每次触摸记一行日志（表面名与表面局部坐标）。`--dmabuf` 时工具栏的
 //! 画面通过 linux-dmabuf 提交（memfd，线性布局；Mesa llvmpipe 可以导入），合成器不支持时
-//! 退回 wl_shm。
+//! 退回 wl_shm。根表面与浏览器一样用单像素缓冲（wp_single_pixel_buffer_v1）经 wp_viewporter
+//! 拉伸成整窗纯色底。
 //!
 //! 检查：
 //! - 每个表面收到落在它上面的点按，坐标相对该表面（含嵌套子表面的偏移）；
 //! - 在工具栏上按下后拖到页面区域，移动事件仍然交给工具栏（隐式抓取），坐标超出工具栏；
 //! - 上滑回主屏的过程中（窗口正随手指缩小）第二根手指的点按，按窗口此刻的缩放落到画面上
 //!   对应的表面、对应的位置（与同一帧的截图比对）；
-//! - 全屏时窗口四角的圆角裁掉贴边子表面的角，内部子表面的直角保持完整。
+//! - 全屏时窗口四角的圆角裁掉贴边子表面（包括纯色的根表面）的角，内部子表面的直角保持完整。
 //!
 //! 没有可用的 EGL（例如没有安装 Mesa）时跳过；`LOONG_SHELL_REQUIRE_EGL=1` 时视为失败。
 //! 截图与日志保存在 `$CARGO_TARGET_TMPDIR/subsurface/`。
@@ -40,9 +41,13 @@ use wayland_client::{
     },
 };
 use wayland_protocols::{
-    wp::linux_dmabuf::zv1::client::{
-        zwp_linux_buffer_params_v1::{self, ZwpLinuxBufferParamsV1},
-        zwp_linux_dmabuf_v1::{self, ZwpLinuxDmabufV1},
+    wp::{
+        linux_dmabuf::zv1::client::{
+            zwp_linux_buffer_params_v1::{self, ZwpLinuxBufferParamsV1},
+            zwp_linux_dmabuf_v1::{self, ZwpLinuxDmabufV1},
+        },
+        single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1,
+        viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter},
     },
     xdg::shell::client::{
         xdg_surface::{self, XdgSurface},
@@ -190,15 +195,20 @@ mod driver {
         }
 
         let events = parse_log(&std::fs::read_to_string(&log).expect("客户端日志"));
-        let (w, h, toolbar_path) = events
+        let (w, h, toolbar_path, root_path) = events
             .iter()
             .find_map(|e| match e {
-                Ev::Ready { w, h, toolbar } => Some((*w, *h, toolbar.clone())),
+                Ev::Ready {
+                    w,
+                    h,
+                    toolbar,
+                    root,
+                } => Some((*w, *h, toolbar.clone(), root.clone())),
                 _ => None,
             })
             .expect("客户端没有完成首次提交");
         assert_eq!((w, h), SCREEN, "全屏窗口尺寸");
-        println!("工具栏缓冲：{toolbar_path}");
+        println!("工具栏缓冲：{toolbar_path}；根表面缓冲：{root_path}");
         let layout = Layout::new(w, h);
         let downs: Vec<&Ev> = events
             .iter()
@@ -316,9 +326,22 @@ mod driver {
 
     #[derive(Debug)]
     enum Ev {
-        Ready { w: i32, h: i32, toolbar: String },
-        Down { surface: String, x: f64, y: f64 },
-        Motion { surface: String, x: f64, y: f64 },
+        Ready {
+            w: i32,
+            h: i32,
+            toolbar: String,
+            root: String,
+        },
+        Down {
+            surface: String,
+            x: f64,
+            y: f64,
+        },
+        Motion {
+            surface: String,
+            x: f64,
+            y: f64,
+        },
         Up,
     }
 
@@ -332,6 +355,7 @@ mod driver {
                         w: f[1].parse().unwrap(),
                         h: f[2].parse().unwrap(),
                         toolbar: f[3].to_string(),
+                        root: f[4].to_string(),
                     },
                     "down" => Ev::Down {
                         surface: f[1].into(),
@@ -439,6 +463,8 @@ mod client {
         dmabuf: Option<ZwpLinuxDmabufV1>,
         dmabuf_formats: Vec<(u32, u64)>,
         dmabuf_result: Option<Option<WlBuffer>>,
+        viewporter: Option<WpViewporter>,
+        single_pixel: Option<WpSinglePixelBufferManagerV1>,
         touch: Option<WlTouch>,
         /// 收到的 toplevel 尺寸；xdg_surface.configure 之后才算配置完成。
         size: (i32, i32),
@@ -537,16 +563,50 @@ mod client {
         let page_buffer = shm_buffer(&app, &qh, layout.page.2, layout.page.3, PAGE_COLOR);
         attach(&page, &page_buffer, layout.page.2, layout.page.3);
         attach(&toolbar, &toolbar_buffer, tw, th);
-        let root_buffer = shm_buffer(&app, &qh, w, h, ROOT_COLOR);
-        attach(&root, &root_buffer, w, h);
+        // 根表面：与浏览器一样用单像素缓冲 + viewport 拉伸成整窗的纯色底（合成器支持时）。
+        let mut root_path = "shm";
+        let root_buffer = match (app.single_pixel.clone(), app.viewporter.clone()) {
+            (Some(spb), Some(viewporter)) => {
+                root_path = "single-pixel";
+                let viewport = viewporter.get_viewport(&root, &qh, ());
+                viewport.set_destination(w, h);
+                let channel = |shift: u32| {
+                    let c = (ROOT_COLOR >> shift) & 0xFF;
+                    (u64::from(c) * u64::from(u32::MAX) / 255) as u32
+                };
+                let buffer = spb.create_u32_rgba_buffer(
+                    channel(16),
+                    channel(8),
+                    channel(0),
+                    u32::MAX,
+                    &qh,
+                    (),
+                );
+                surface_attach_full(&root, &buffer);
+                buffer
+            }
+            _ => {
+                let buffer = shm_buffer(&app, &qh, w, h, ROOT_COLOR);
+                attach(&root, &buffer, w, h);
+                buffer
+            }
+        };
         queue.roundtrip(&mut app).unwrap();
-        app.log(format!("ready {w} {h} {toolbar_path}"));
+        app.log(format!("ready {w} {h} {toolbar_path} {root_path}"));
+        let _keep = root_buffer;
 
         while !app.closed {
             if queue.blocking_dispatch(&mut app).is_err() {
                 break;
             }
         }
+    }
+
+    /// 挂上缓冲并整个标脏后提交（缓冲尺寸由 viewport 决定时用）。
+    fn surface_attach_full(surface: &WlSurface, buffer: &WlBuffer) {
+        surface.attach(Some(buffer), 0, 0);
+        surface.damage_buffer(0, 0, i32::MAX, i32::MAX);
+        surface.commit();
     }
 
     fn memfd(size: usize, color: u32) -> OwnedFd {
@@ -637,6 +697,10 @@ mod client {
                 "xdg_wm_base" => app.wm_base = Some(registry.bind(name, 1, qh, ())),
                 "wl_seat" => app.seat = Some(registry.bind(name, version.min(5), qh, ())),
                 // v3：格式表随 modifier 事件下发（v4 的 feedback 由 WebKit 等使用）。
+                "wp_viewporter" => app.viewporter = Some(registry.bind(name, 1, qh, ())),
+                "wp_single_pixel_buffer_manager_v1" => {
+                    app.single_pixel = Some(registry.bind(name, 1, qh, ()));
+                }
                 "zwp_linux_dmabuf_v1" if version >= 3 => {
                     app.dmabuf = Some(registry.bind(name, 3, qh, ()));
                 }
@@ -808,4 +872,7 @@ mod client {
     delegate_noop!(App: ignore WlShm);
     delegate_noop!(App: ignore WlShmPool);
     delegate_noop!(App: ignore WlBuffer);
+    delegate_noop!(App: ignore WpViewporter);
+    delegate_noop!(App: ignore WpViewport);
+    delegate_noop!(App: ignore WpSinglePixelBufferManagerV1);
 }

@@ -33,7 +33,9 @@ use smithay::{
     utils::{Physical, Point, Rectangle, Scale, Size},
 };
 
-use self::element::{InkElement, LayerElement, RevealUniforms, RoundedSurface, ShellElement};
+use self::element::{
+    InkElement, LayerElement, RevealUniforms, RoundedSurface, ShellElement, SurfaceContent,
+};
 use crate::shell::{
     Align, DrawItem, InkDab, Reveal, RevealMode, Scene, Shell, TexKey,
     apps::AppEntry,
@@ -1002,6 +1004,8 @@ impl Painter {
                     // render_elements 返回“上层在前”，这里先反转成“下层在前”，最后统一再反转。
                     for surface in surfaces.into_iter().rev() {
                         out.push(ShellElement::Surface(RoundedSurface {
+                            content: SurfaceContent::of(&surface),
+                            white: self.white.clone(),
                             inner: RescaleRenderElement::from_element(
                                 surface,
                                 loc,

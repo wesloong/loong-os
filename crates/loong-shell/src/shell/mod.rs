@@ -22,7 +22,7 @@ use smithay::{desktop::Window, reexports::wayland_server::protocol::wl_surface::
 pub use self::ink::{InkDab, Reveal, RevealMode};
 use self::{
     apps::AppEntry,
-    geometry::{RectF, lerp, smoothstep},
+    geometry::{RectF, WindowPlacement, lerp, smoothstep},
     gesture::{Axis, lock_axis, rubber_clamp, rubber_clamp_inverse},
     ink::{InkLayer, InkState},
     layout::{BOTTOM_EDGE, ICON_SHADOW_SPREAD, LABEL_HALO, Layout, PAGE_DOT, PAGE_DOT_GAP},
@@ -151,8 +151,8 @@ pub type Scene = Vec<DrawItem>;
 pub enum TouchRoute {
     /// 系统界面消费了这个触摸。
     Shell,
-    /// 转发给应用窗口（窗口左上角在屏幕上的位置）。
-    Client(Window, (f64, f64)),
+    /// 转发给应用窗口（窗口此刻在屏幕上的摆放，可能正随卡片缩放）。
+    Client(Window, WindowPlacement),
 }
 
 const ZERO5: [f64; 5] = [0.0; 5];
@@ -969,7 +969,7 @@ impl Shell {
         }
         if !matches!(self.gesture, Gesture::Idle) {
             // v1 只处理单指系统手势；多指交给应用。
-            return self.forward_route();
+            return self.forward_route(now);
         }
         match self.mode {
             Mode::App => {
@@ -990,7 +990,7 @@ impl Shell {
                 }
                 if settled {
                     self.gesture = Gesture::Forward { slot };
-                    return self.forward_route();
+                    return self.forward_route(now);
                 }
                 // 打开动画进行中：吞掉触摸。
                 TouchRoute::Shell
@@ -1083,14 +1083,23 @@ impl Shell {
         self.ink.stroke_to(x, y, speed, now);
     }
 
-    fn forward_route(&self) -> TouchRoute {
-        let front = (self.mode == Mode::App)
-            .then(|| self.tasks.last().and_then(|t| t.window.clone()))
-            .flatten();
-        match front {
-            Some(w) => TouchRoute::Client(w, (0.0, 0.0)),
+    fn forward_route(&self, now: f64) -> TouchRoute {
+        match self.front_window(now) {
+            Some((w, placement)) => TouchRoute::Client(w, placement),
             None => TouchRoute::Shell,
         }
+    }
+
+    /// 前台应用的窗口及其此刻的摆放（与 [`Shell::push_card`] 画内容的方式一致）。
+    pub fn front_window(&self, now: f64) -> Option<(Window, WindowPlacement)> {
+        if self.mode != Mode::App {
+            return None;
+        }
+        let task = self.tasks.last()?;
+        let window = task.window.clone()?;
+        let [x, y, w, h, _] = task.rect.value(now);
+        let content = RectF::new(x, y, w.max(1.0), h.max(1.0)).fill(self.w, self.h);
+        Some((window, WindowPlacement::new(content, self.w)))
     }
 
     pub fn touch_motion(&mut self, slot: u32, x: f64, y: f64, now: f64) -> TouchRoute {
@@ -1157,7 +1166,7 @@ impl Shell {
                 self.track(now, x, y);
                 self.trail_to(start, x, y, now);
             }
-            Gesture::Forward { slot: s } if s == slot => return self.forward_route(),
+            Gesture::Forward { slot: s } if s == slot => return self.forward_route(now),
             _ => {}
         }
         TouchRoute::Shell
@@ -1394,7 +1403,7 @@ impl Shell {
                     self.go_home_from_switcher(now);
                 }
             }
-            Gesture::Forward { slot: s } if s == slot => return self.forward_route(),
+            Gesture::Forward { slot: s } if s == slot => return self.forward_route(now),
             other => self.gesture = other,
         }
         TouchRoute::Shell

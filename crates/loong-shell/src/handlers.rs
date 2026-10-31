@@ -143,6 +143,8 @@ impl XdgShellHandler for LoongState {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.windows
             .retain(|w| w.toplevel().is_some_and(|t| t != &surface));
+        self.client_touches
+            .retain(|(_, w)| w.toplevel().is_some_and(|t| t != &surface));
         self.shell.on_window_closed(surface.wl_surface(), self.now);
     }
 

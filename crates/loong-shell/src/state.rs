@@ -49,6 +49,8 @@ pub struct LoongState {
 
     /// 所有客户端窗口（含后台应用）。
     pub windows: Vec<Window>,
+    /// 按下时交给了应用的手指（触摸槽位 → 窗口）：抬起之前的移动与抬起都交给它。
+    pub client_touches: Vec<(u32, Window)>,
     /// 唯一的输出（平板只有一块屏幕）。
     pub output: Option<Output>,
     /// 系统界面。
@@ -106,6 +108,7 @@ impl LoongState {
             seat,
             dmabuf: DmabufSupport::default(),
             windows: Vec::new(),
+            client_touches: Vec::new(),
             output: None,
             shell,
             now: 0.0,

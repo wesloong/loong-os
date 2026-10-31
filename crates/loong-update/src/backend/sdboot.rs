@@ -147,7 +147,11 @@ impl Drop for Esp {
     }
 }
 
-/// 设备 `dev` 挂载在哪里（`/proc/mounts`）。
+/// 我们自己的临时挂载点的前缀（`/run/loong/esp.<进程号>.<序号>`）。
+const MOUNT_PREFIX: &str = "/run/loong/esp.";
+
+/// 设备 `dev` 被系统挂载在哪里（`/proc/mounts`，例如 `/boot`、`/efi`）。
+/// 不算 loong-update 自己的临时挂载点：它们随时会被别的操作卸载。
 fn find_mountpoint(sys: &System, dev: &Path) -> Option<PathBuf> {
     let rdev = fs::metadata(dev)
         .ok()
@@ -157,6 +161,9 @@ fn find_mountpoint(sys: &System, dev: &Path) -> Option<PathBuf> {
     mounts.lines().find_map(|line| {
         let mut f = line.split_whitespace();
         let (src, target) = (f.next()?, f.next()?);
+        if target.starts_with(MOUNT_PREFIX) {
+            return None;
+        }
         let m = fs::metadata(src).ok()?;
         (m.file_type().is_block_device() && m.rdev() == rdev)
             .then(|| PathBuf::from(target.replace("\\040", " ")))
@@ -203,8 +210,11 @@ impl<'a> Sdboot<'a> {
                 "测试环境请在 update.conf 中设置 ESP_DIR"
             ));
         }
-        // 每个进程用自己的挂载点：同一个 FAT 可以同时挂载多次，互不影响卸载。
-        let dir = sys.path(&format!("/run/loong/esp.{}", std::process::id()));
+        // 每次挂载用自己的挂载点（loong-sysd 里状态查询和安装可能同时进行）：
+        // 同一个 FAT 可以同时挂载多次，各自卸载互不影响。
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = sys.path(&format!("{MOUNT_PREFIX}{}.{seq}", std::process::id()));
         fs::create_dir_all(&dir).ctx(dir.display())?;
         let _ = run("modprobe", &["-q", "vfat"]);
         run(

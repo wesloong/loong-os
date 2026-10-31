@@ -14,7 +14,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signature, Signer};
+pub use ed25519_dalek::{SigningKey, VerifyingKey};
 
 use crate::error::{IoContext, Result, err};
 

@@ -99,9 +99,9 @@ pub fn uki_version(path: &Path) -> Result<Option<String>> {
         .cloned())
 }
 
-/// 测试用：生成一个最小的 PE 文件，带给定的节。
-#[cfg(test)]
-pub(crate) fn fake_pe(sections: &[(&str, &[u8])]) -> Vec<u8> {
+/// 测试用（本 crate 与 loong-sysd 的集成测试）：生成一个最小的 PE 文件，带给定的节。
+#[doc(hidden)]
+pub fn fake_pe(sections: &[(&str, &[u8])]) -> Vec<u8> {
     let pe = 0x80usize;
     let opt_size = 0xf0usize;
     let table = pe + 24 + opt_size;

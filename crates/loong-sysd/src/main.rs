@@ -8,6 +8,8 @@
 //! | `/org/loong/System1/Power` | `org.loong.System1.Power` | 电池与电源 |
 //! | `/org/loong/System1/Wifi` | `org.loong.System1.Wifi` | Wi‑Fi（封装 iwd） |
 //!
+//! 另外占用 `org.loong.Update1`（对象 `/org/loong/Update1`）：A/B 系统更新，见 `docs/api/loong-update.md`。
+//!
 //! 属性对所有人可读；写操作只允许 root 与会话用户 loong（uid 1000）。
 //! 完整的接口说明见 `docs/api/loong-sysd.md`。
 //!
@@ -17,7 +19,7 @@
 //!
 //! 环境变量：`LOONG_SYSD_BUS`（同 `--bus`）、`LOONG_SYSFS_ROOT`（sysfs 根目录，默认 `/sys`）、
 //! `LOONG_BACKLIGHT`（指定背光设备）、`LOONG_BACKLIGHT_ALLOW_OFF=1`（允许亮度 0 关掉背光）、
-//! `RUST_LOG`（error/warn/info/debug/trace，默认 info）。
+//! `LOONG_UPDATE_ROOT`（系统更新用的根目录，测试用）、`RUST_LOG`（error/warn/info/debug/trace，默认 info）。
 
 mod access;
 mod backlight;
@@ -26,6 +28,7 @@ mod error;
 mod power;
 mod sysfs;
 mod uevent;
+mod update;
 mod wifi;
 
 use std::{process::ExitCode, sync::Arc};
@@ -39,6 +42,7 @@ use crate::{
     backlight::{Backlight, BacklightIface},
     power::{Power, PowerIface},
     sysfs::Sysfs,
+    update::{Update, UpdateIface},
     wifi::{Agent, Wifi, WifiIface},
 };
 
@@ -114,6 +118,7 @@ async fn run(bus: Bus) -> anyhow::Result<()> {
     let backlight = Arc::new(Backlight::new(&sysfs, &backlight::Options::from_env()));
     let power = Arc::new(Power::new(sysfs));
     let wifi = Arc::new(Wifi::default());
+    let update = Arc::new(Update::default());
 
     let builder = match &bus {
         Bus::System => Builder::system()?,
@@ -125,11 +130,19 @@ async fn run(bus: Bus) -> anyhow::Result<()> {
         .serve_at(power::PATH, PowerIface(power.clone()))?
         .serve_at(wifi::PATH, WifiIface(wifi.clone()))?
         .serve_at(wifi::AGENT_PATH, Agent(wifi.clone()))?
+        .serve_at(update::PATH, UpdateIface(update.clone()))?
         .name(bus::BUS_NAME)?
+        .name(update::BUS_NAME)?
         .build()
         .await
-        .with_context(|| format!("无法连接 D-Bus（{bus:?}）或占用 {}", bus::BUS_NAME))?;
-    tracing::info!("已在 D-Bus 上注册 {}", bus::BUS_NAME);
+        .with_context(|| {
+            format!(
+                "无法连接 D-Bus（{bus:?}）或占用 {} / {}",
+                bus::BUS_NAME,
+                update::BUS_NAME
+            )
+        })?;
+    tracing::info!("已在 D-Bus 上注册 {}、{}", bus::BUS_NAME, update::BUS_NAME);
 
     let ex = LocalExecutor::new();
     ex.spawn(backlight::run_animator(backlight.clone()))
@@ -139,6 +152,7 @@ async fn run(bus: Bus) -> anyhow::Result<()> {
     ex.spawn(uevent::run(backlight, power, conn.clone()))
         .detach();
     ex.spawn(wifi::run_watcher(wifi, conn.clone())).detach();
+    ex.spawn(update::init(update, conn.clone())).detach();
     // 总线断开（例如 dbus 重启）时退出，由 supervise-daemon 重新拉起。
     ex.run(conn.closed()).await;
     bail!("D-Bus 连接已断开")

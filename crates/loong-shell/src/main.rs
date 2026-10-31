@@ -8,6 +8,7 @@
 mod backend;
 mod clock;
 mod device;
+mod dmabuf;
 mod handlers;
 mod input;
 mod lunar;

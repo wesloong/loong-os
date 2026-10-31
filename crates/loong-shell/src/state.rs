@@ -14,7 +14,7 @@ use smithay::{
         },
     },
     wayland::{
-        compositor::{CompositorClientState, CompositorState},
+        compositor::{CompositorClientState, CompositorHandler, CompositorState},
         output::OutputManagerState,
         selection::data_device::DataDeviceState,
         shell::xdg::XdgShellState,
@@ -23,7 +23,7 @@ use smithay::{
     },
 };
 
-use crate::{device::DeviceConfig, shell::Shell};
+use crate::{device::DeviceConfig, dmabuf::DmabufSupport, shell::Shell};
 
 /// 合成器状态。
 pub struct LoongState {
@@ -44,6 +44,8 @@ pub struct LoongState {
     pub data_device_state: DataDeviceState,
     pub popups: PopupManager,
     pub seat: Seat<LoongState>,
+    /// linux-dmabuf（由后端在渲染器就绪后调用 [`LoongState::init_dmabuf`] 创建全局对象）。
+    pub dmabuf: DmabufSupport,
 
     /// 所有客户端窗口（含后台应用）。
     pub windows: Vec<Window>,
@@ -58,7 +60,7 @@ pub struct LoongState {
 impl LoongState {
     /// 创建状态并注册到以 `LoongState` 为数据的事件循环（headless 后端用）。
     pub fn new(
-        event_loop: &mut EventLoop<Self>,
+        event_loop: &mut EventLoop<'static, Self>,
         display: Display<Self>,
         device: &DeviceConfig,
     ) -> anyhow::Result<Self> {
@@ -102,6 +104,7 @@ impl LoongState {
             data_device_state,
             popups: PopupManager::default(),
             seat,
+            dmabuf: DmabufSupport::default(),
             windows: Vec::new(),
             output: None,
             shell,
@@ -110,11 +113,25 @@ impl LoongState {
     }
 
     /// 把 Wayland socket 与 display 注册到事件循环。`get` 从事件循环数据中取出 `LoongState`。
-    pub fn register_sources<'l, D: 'l>(
+    pub fn register_sources<D: 'static>(
         &mut self,
-        handle: &LoopHandle<'l, D>,
+        handle: &LoopHandle<'static, D>,
         get: fn(&mut D) -> &mut LoongState,
     ) -> anyhow::Result<()> {
+        // dmabuf 隐式同步：缓冲可读后，通知该客户端被挂起的提交可以生效。
+        let waiter_handle = handle.clone();
+        self.dmabuf.set_waiter(Box::new(move |source, client| {
+            waiter_handle
+                .insert_source(source, move |_, _, data| {
+                    let state = get(data);
+                    let dh = state.display_handle.clone();
+                    state
+                        .client_compositor_state(&client)
+                        .blocker_cleared(state, &dh);
+                    Ok(())
+                })
+                .is_ok()
+        }));
         let (display, socket) = self
             .pending
             .take()

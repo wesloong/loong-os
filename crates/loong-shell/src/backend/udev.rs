@@ -209,6 +209,9 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
     for (id, cmd) in &opts.app_commands {
         state.shell.set_command(id, Some(cmd.clone()));
     }
+    // linux-dmabuf：主设备为渲染所用 GPU 的 render node（没有 render node 的驱动用 primary
+    // node），WebKit 由此找到 GPU 并用 GBM 分配缓冲。
+    state.init_dmabuf(Some(render_node.unwrap_or(node)), renderer.dmabuf_formats());
     let _global = output.create_global::<LoongState>(&state.display_handle);
     output.change_current_state(
         Some(output_mode),
@@ -336,6 +339,7 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
 
     render(&mut data);
     event_loop.run(None, &mut data, |d| {
+        d.state.import_pending_dmabufs(&mut d.backend.renderer);
         // 每轮事件处理后：客户端有新提交或动画进行中 → 需要重画。
         if d.state.take_damage()
             || !d

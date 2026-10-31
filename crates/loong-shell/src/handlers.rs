@@ -51,6 +51,10 @@ impl CompositorHandler for LoongState {
             .compositor_state
     }
 
+    fn new_surface(&mut self, surface: &WlSurface) {
+        crate::dmabuf::add_ready_hook(surface);
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         self.mark_damaged();

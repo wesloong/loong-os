@@ -15,9 +15,9 @@ use anyhow::{Context, anyhow};
 use smithay::{
     backend::{
         allocator::Fourcc,
-        egl::{EGLContext, EGLDisplay, native::EGLSurfacelessDisplay},
+        egl::{EGLContext, EGLDevice, EGLDisplay, native::EGLSurfacelessDisplay},
         renderer::{
-            Bind, ExportMem, Offscreen,
+            Bind, ExportMem, ImportDma, Offscreen,
             damage::OutputDamageTracker,
             gles::{GlesRenderbuffer, GlesRenderer},
         },
@@ -47,7 +47,7 @@ pub struct HeadlessOptions {
 }
 
 pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
-    let mut event_loop: EventLoop<LoongState> = EventLoop::try_new()?;
+    let mut event_loop: EventLoop<'static, LoongState> = EventLoop::try_new()?;
     let display: Display<LoongState> = Display::new()?;
     let mut state = LoongState::new(&mut event_loop, display, device)?;
     for (id, cmd) in &opts.app_commands {
@@ -72,6 +72,13 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
     let context = EGLContext::new(&egl).context("创建 EGL 上下文失败")?;
     // SAFETY: 上下文只在本线程使用。
     let mut renderer = unsafe { GlesRenderer::new(context) }.context("创建 GLES 渲染器失败")?;
+    // linux-dmabuf：主设备为 EGL 设备的 render node（有 GPU 时）；llvmpipe 等软件渲染没有
+    // DRM 设备，只公布格式表。
+    let render_node = EGLDevice::device_for_display(renderer.egl_context().display())
+        .ok()
+        .filter(|d| !d.is_software())
+        .and_then(|d| d.try_get_render_node().ok().flatten());
+    state.init_dmabuf(render_node, renderer.dmabuf_formats());
 
     let scale = device.scale();
     let fps = opts.script.fps.max(1);
@@ -153,6 +160,7 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
                     Some(Duration::from_secs_f64(left.clamp(0.0, 0.005))),
                     &mut state,
                 )?;
+                state.import_pending_dmabufs(&mut renderer);
             }
         }
         state.now = now;
@@ -171,6 +179,7 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
             next_action += 1;
         }
         event_loop.dispatch(Some(Duration::ZERO), &mut state)?;
+        state.import_pending_dmabufs(&mut renderer);
         state.shell.update(now);
         for app in state.shell.take_pending_spawns() {
             if let Some(cmd) = state.shell.apps[app].command.clone() {

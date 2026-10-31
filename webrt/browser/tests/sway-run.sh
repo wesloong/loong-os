@@ -13,6 +13,8 @@
 #   wheel N                 滚轮 N 格（正数向下）
 #   type 文本               用虚拟键盘输入（ASCII）
 #   key 键名                按一个键，例如 Return、Escape、BackSpace
+#   preedit 文本 / commit 文本  模拟输入法（text-input-v3 ← input-method-v2）：预编辑 / 提交
+#   imestate                在 vinput.log 里记下输入法是否被激活
 #   run 命令…               在合成器环境里执行任意命令（例如再启动一次浏览器）
 # 指针与键盘来自 loong-vinput（常驻的虚拟设备，见 loong-vinput.c）。
 #
@@ -93,7 +95,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 	\#*) ;;
 	sleep) sleep "$2" ;;
 	shot) grim "$out/$2" ;;
-	click | drag | move | wheel | type | key) echo "$line" >&3 ;;
+	click | drag | move | wheel | type | key | preedit | commit | imestate) echo "$line" >&3 ;;
 	run) shift; "$@" ;;
 	*) echo "未知命令: $line" >&2 ;;
 	esac

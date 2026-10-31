@@ -13,9 +13,10 @@ executable('loong-browser',
 
 install_subdir('ui', install_dir: get_option('datadir') / 'loong' / 'web' / 'browser')
 
-# 测试工具：常驻的虚拟指针与虚拟键盘（只在 wlroots 合成器上用，见 tests/sway-run.sh），不安装。
+# 测试工具：常驻的虚拟指针、虚拟键盘与输入法（只在 wlroots 合成器上用，见 tests/sway-run.sh），不安装。
 vinput_sources = []
-foreach xml : ['tests/protocols/wlr-virtual-pointer-unstable-v1.xml', 'tests/protocols/virtual-keyboard-unstable-v1.xml']
+foreach xml : ['tests/protocols/wlr-virtual-pointer-unstable-v1.xml', 'tests/protocols/virtual-keyboard-unstable-v1.xml',
+            'tests/protocols/input-method-unstable-v2.xml']
   vinput_sources += custom_target(xml.split('/')[-1] + '-code', input: xml, output: '@BASENAME@-protocol.c',
     command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
   vinput_sources += custom_target(xml.split('/')[-1] + '-header', input: xml, output: '@BASENAME@-client-protocol.h',

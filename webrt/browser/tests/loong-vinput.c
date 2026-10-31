@@ -13,6 +13,9 @@
  *   wheel N             滚轮 N 格（正数向下）
  *   type 文本           逐字输入（ASCII，按美式键盘布局）
  *   key 键名            按一个键（xkb 键名，例如 Return、BackSpace、Escape）
+ *   preedit 文本        输入法：显示预编辑文字（zwp_input_method_v2，需要有输入框获得焦点）
+ *   commit 文本         输入法：提交文字（例如中文），并清掉预编辑
+ *   imestate            打印输入法状态（是否被激活、内容类型）
  *
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
@@ -27,6 +30,7 @@
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
 
+#include "input-method-unstable-v2-client-protocol.h"
 #include "virtual-keyboard-unstable-v1-client-protocol.h"
 #include "wlr-virtual-pointer-unstable-v1-client-protocol.h"
 
@@ -38,6 +42,10 @@ static struct zwp_virtual_keyboard_v1 *keyboard;
 static struct xkb_keymap *keymap;
 static unsigned width, height;
 static unsigned shift_mask;
+static struct zwp_input_method_manager_v2 *im_manager;
+static struct zwp_input_method_v2 *input_method;
+static int im_active, im_pending_active;
+static unsigned im_done, im_purpose, im_hint;
 
 static void
 global(void *data, struct wl_registry *registry, uint32_t name, const char *interface, uint32_t version)
@@ -48,6 +56,8 @@ global(void *data, struct wl_registry *registry, uint32_t name, const char *inte
         pointer_manager = wl_registry_bind(registry, name, &zwlr_virtual_pointer_manager_v1_interface, 1);
     else if (!strcmp(interface, zwp_virtual_keyboard_manager_v1_interface.name))
         keyboard_manager = wl_registry_bind(registry, name, &zwp_virtual_keyboard_manager_v1_interface, 1);
+    else if (!strcmp(interface, zwp_input_method_manager_v2_interface.name))
+        im_manager = wl_registry_bind(registry, name, &zwp_input_method_manager_v2_interface, 1);
 }
 
 static void
@@ -56,6 +66,30 @@ global_remove(void *data, struct wl_registry *registry, uint32_t name)
 }
 
 static const struct wl_registry_listener registry_listener = { global, global_remove };
+
+/* ───────── 输入法（zwp_input_method_v2）：模拟 loong-shell 的屏幕键盘 ───────── */
+
+static void im_activate(void *d, struct zwp_input_method_v2 *im) { im_pending_active = 1; }
+static void im_deactivate(void *d, struct zwp_input_method_v2 *im) { im_pending_active = 0; }
+static void im_surrounding(void *d, struct zwp_input_method_v2 *im, const char *t, uint32_t c, uint32_t a) { }
+static void im_cause(void *d, struct zwp_input_method_v2 *im, uint32_t cause) { }
+static void im_content_type(void *d, struct zwp_input_method_v2 *im, uint32_t hint, uint32_t purpose)
+{
+    im_hint = hint;
+    im_purpose = purpose;
+}
+static void im_done_cb(void *d, struct zwp_input_method_v2 *im)
+{
+    im_done++;
+    im_active = im_pending_active;
+}
+static void im_unavailable(void *d, struct zwp_input_method_v2 *im)
+{
+    fprintf(stderr, "loong-vinput: 已有别的输入法\n");
+}
+static const struct zwp_input_method_v2_listener im_listener = {
+    im_activate, im_deactivate, im_surrounding, im_cause, im_content_type, im_done_cb, im_unavailable,
+};
 
 static uint32_t
 now_ms(void)
@@ -162,11 +196,17 @@ main(int argc, char **argv)
     pointer = zwlr_virtual_pointer_manager_v1_create_virtual_pointer(pointer_manager, seat);
     keyboard = zwp_virtual_keyboard_manager_v1_create_virtual_keyboard(keyboard_manager, seat);
     upload_keymap();
+    if (im_manager) {
+        input_method = zwp_input_method_manager_v2_get_input_method(im_manager, seat);
+        zwp_input_method_v2_add_listener(input_method, &im_listener, NULL);
+    }
     wl_display_roundtrip(display);
 
     char line[4096];
     while (fgets(line, sizeof line, stdin)) {
         line[strcspn(line, "\n")] = '\0';
+        /* 先处理积压的事件（输入法的 done 计数决定 commit 的 serial）。 */
+        wl_display_roundtrip(display);
         double x, y, x2, y2;
         int n;
         if (sscanf(line, "click %lf %lf", &x, &y) == 2) {
@@ -210,6 +250,15 @@ main(int argc, char **argv)
             xkb_keysym_t sym = xkb_keysym_from_name(line + 4, XKB_KEYSYM_CASE_INSENSITIVE);
             if (sym != XKB_KEY_NoSymbol)
                 press_key(sym, display);
+        } else if (!strncmp(line, "preedit ", 8) && input_method) {
+            zwp_input_method_v2_set_preedit_string(input_method, line + 8, 0, (int)strlen(line + 8));
+            zwp_input_method_v2_commit(input_method, im_done);
+        } else if (!strncmp(line, "commit ", 7) && input_method) {
+            zwp_input_method_v2_set_preedit_string(input_method, "", 0, 0);
+            zwp_input_method_v2_commit_string(input_method, line + 7);
+            zwp_input_method_v2_commit(input_method, im_done);
+        } else if (!strcmp(line, "imestate")) {
+            fprintf(stderr, "loong-vinput: 输入法%s，content purpose=%u hint=0x%x\n", im_active ? "已激活" : "未激活", im_purpose, im_hint);
         } else if (*line) {
             fprintf(stderr, "loong-vinput: 未知命令 %s\n", line);
         }

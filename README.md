@@ -40,9 +40,15 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 |---|---|---|
 | ![屏幕键盘 · 组字中](docs/images/keyboard-light.png) | ![屏幕键盘 · 夜墨](docs/images/keyboard-committed-dark.png) | ![浏览器地址栏](docs/images/keyboard-browser-url.png) |
 
-完整系统在 QEMU 中启动后的画面（UEFI → systemd-boot → UKI → initramfs → 只读 erofs → OpenRC → `loong-shell` 走 DRM/KMS）：
+完整系统在 QEMU 中启动后的画面（UEFI → systemd-boot → UKI → initramfs → 只读 erofs → OpenRC → `loong-shell` 走 DRM/KMS；镜像带 WPE WebKit、霞鹜文楷与拼音词库）：
 
-![QEMU 中的 Loong OS](docs/images/qemu-home.png)
+| 主屏 | 设置（经 JS bridge 读 loong-sysd） | 在设置里切到「夜墨」，系统界面随之切换 |
+|---|---|---|
+| ![QEMU 中的 Loong OS](docs/images/qemu-home.png) | ![QEMU 中的设置](docs/images/qemu-settings.png) | ![QEMU 中的暗色主屏](docs/images/qemu-home-dark.png) |
+
+| 浏览器（跟随夜墨） | 在地址栏用屏幕键盘打拼音 | 选「你好」上屏 |
+|---|---|---|
+| ![QEMU 中的浏览器](docs/images/qemu-browser-dark.png) | ![QEMU 中的候选栏](docs/images/qemu-keyboard-candidates.png) | ![QEMU 中上屏](docs/images/qemu-keyboard-committed.png) |
 
 ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-shell 为交叉编译）：
 

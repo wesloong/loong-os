@@ -23,7 +23,7 @@ use smithay::{
             compositor::{DrmCompositor, FrameFlags, PrimaryPlaneElement},
             exporter::gbm::GbmFramebufferExporter,
         },
-        egl::{EGLContext, EGLDisplay},
+        egl::{EGLContext, EGLDevice, EGLDisplay},
         input::{
             AbsolutePositionEvent, ButtonState, Event, InputEvent, KeyboardKeyEvent,
             PointerButtonEvent, TouchEvent,
@@ -209,6 +209,15 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
     for (id, cmd) in &opts.app_commands {
         state.shell.set_command(id, Some(cmd.clone()));
     }
+    // linux-dmabuf：主设备为渲染所用 GPU 的 render node（没有 render node 的驱动用 primary
+    // node），WebKit 由此找到 GPU 并用 GBM 分配缓冲。合成器自己都是软件渲染时（QEMU 没有
+    // 3D 加速，LIBGL_ALWAYS_SOFTWARE）不公布设备：客户端在这块“GPU”上也只能软件渲染，
+    // 还得经 GBM 分配缓冲，不如直接走共享内存（与无屏幕后端的 llvmpipe 相同）。
+    let software = EGLDevice::device_for_display(renderer.egl_context().display())
+        .is_ok_and(|d| d.is_software())
+        || std::env::var("LIBGL_ALWAYS_SOFTWARE").is_ok_and(|v| !matches!(v.as_str(), "" | "0"));
+    let main_device = (!software).then(|| render_node.unwrap_or(node));
+    state.init_dmabuf(main_device, renderer.dmabuf_formats());
     let _global = output.create_global::<LoongState>(&state.display_handle);
     output.change_current_state(
         Some(output_mode),
@@ -338,6 +347,7 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
 
     render(&mut data);
     event_loop.run(None, &mut data, |d| {
+        d.state.import_pending_dmabufs(&mut d.backend.renderer);
         // 输入法：焦点跟随前台应用、发送上屏文字与合成按键、调整窗口高度。
         d.state.sync_ime();
         // 每轮事件处理后：客户端有新提交或动画进行中 → 需要重画。

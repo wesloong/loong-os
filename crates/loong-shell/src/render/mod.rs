@@ -22,7 +22,10 @@ use smithay::{
         allocator::Fourcc,
         renderer::{
             ImportMem, Texture,
-            element::{AsRenderElements, Id, surface::WaylandSurfaceRenderElement},
+            element::{
+                AsRenderElements, Id, surface::WaylandSurfaceRenderElement,
+                utils::RescaleRenderElement,
+            },
             gles::{GlesError, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture},
             utils::CommitCounter,
         },
@@ -31,11 +34,13 @@ use smithay::{
     utils::{Physical, Point, Rectangle, Scale, Size},
 };
 
-use self::element::{InkElement, LayerElement, RevealUniforms, RoundedSurface, ShellElement};
+use self::element::{
+    InkElement, LayerElement, RevealUniforms, RoundedSurface, ShellElement, SurfaceContent,
+};
 use crate::shell::{
     Align, DrawItem, InkDab, Reveal, RevealMode, Scene, Shell, TexKey,
     apps::AppEntry,
-    geometry::RectF,
+    geometry::{RectF, WindowPlacement},
     ink::DabKind,
     layout::{ICON_SHADOW_SPREAD, LABEL_HALO},
     switcher::{self, SwitcherLayout},
@@ -986,11 +991,12 @@ impl Painter {
                     reveal,
                 } => {
                     let (sw, _) = shell.screen_size();
-                    let content_scale = rect.w / sw;
+                    let placement = WindowPlacement::new(*rect, sw);
                     let geo = window.geometry();
+                    let (ox, oy) = placement.origin((geo.loc.x as f64, geo.loc.y as f64));
                     let loc = Point::<i32, Physical>::from((
-                        ((rect.x - geo.loc.x as f64 * content_scale) * scale).round() as i32,
-                        ((rect.y - geo.loc.y as f64 * content_scale) * scale).round() as i32,
+                        (ox * scale).round() as i32,
+                        (oy * scale).round() as i32,
                     ));
                     let uniforms = self.reveal_uniforms(reveal.as_ref(), theme);
                     let force_damage =
@@ -998,19 +1004,26 @@ impl Painter {
                     if uniforms.is_active() {
                         revealed_windows.push(window.clone());
                     }
-                    let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = window
-                        .render_elements(
-                            renderer,
-                            loc,
-                            Scale::from(scale * content_scale),
-                            *alpha as f32,
-                        );
+                    // 整个表面树按输出缩放生成，再以窗口原点为中心整体缩放到卡片大小。
+                    // （render_elements 的缩放参数只作用于子表面的位置，表面尺寸总是按输出
+                    // 缩放计算，不能用它缩放窗口。）
+                    let surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> =
+                        window.render_elements(renderer, loc, Scale::from(scale), *alpha as f32);
+                    // 圆角与裁剪按整个窗口算（窗口的可见矩形，屏幕坐标）：贴着窗口边缘的子表面
+                    // 带上窗口的圆角，窗口内部的子表面不受影响。
+                    let window_clip = to_physical(clip.unwrap_or(*rect), scale);
                     // render_elements 返回“上层在前”，这里先反转成“下层在前”，最后统一再反转。
                     for surface in surfaces.into_iter().rev() {
                         out.push(ShellElement::Surface(RoundedSurface {
-                            inner: surface,
+                            content: SurfaceContent::of(&surface),
+                            white: self.white.clone(),
+                            inner: RescaleRenderElement::from_element(
+                                surface,
+                                loc,
+                                placement.scale,
+                            ),
                             radius: (*radius * scale) as f32,
-                            clip: clip.map(|c| to_physical(c, scale)),
+                            clip: window_clip,
                             reveal: uniforms,
                             force_damage,
                             program: self.program.clone(),

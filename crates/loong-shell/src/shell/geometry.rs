@@ -48,6 +48,41 @@ impl RectF {
     }
 }
 
+/// 应用窗口在屏幕上的摆放：窗口的几何区域（xdg geometry）画在 `rect`，整个窗口（含子表面）
+/// 按 `scale = rect.w / 屏幕宽` 等比缩放（打开、回主屏、多任务时窗口随卡片缩放）。
+///
+/// “窗口坐标”以窗口根表面的左上角为原点（Smithay `Window` 的 (0, 0)），几何区域从
+/// `geometry_loc` 开始。渲染与触摸共用这一个换算，保证手指落在画面上的哪个表面就交给哪个表面。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WindowPlacement {
+    pub rect: RectF,
+    pub scale: f64,
+}
+
+impl WindowPlacement {
+    pub fn new(rect: RectF, screen_w: f64) -> Self {
+        WindowPlacement {
+            rect,
+            scale: rect.w / screen_w.max(1.0),
+        }
+    }
+
+    /// 窗口坐标原点（根表面左上角）在屏幕上的位置。
+    pub fn origin(&self, geometry_loc: (f64, f64)) -> (f64, f64) {
+        (
+            self.rect.x - geometry_loc.0 * self.scale,
+            self.rect.y - geometry_loc.1 * self.scale,
+        )
+    }
+
+    /// 屏幕上的点 → 窗口坐标。
+    pub fn to_window(self, (x, y): (f64, f64), geometry_loc: (f64, f64)) -> (f64, f64) {
+        let (ox, oy) = self.origin(geometry_loc);
+        let k = self.scale.max(1e-6);
+        ((x - ox) / k, (y - oy) / k)
+    }
+}
+
 /// 线性插值。
 pub fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
@@ -73,5 +108,23 @@ mod tests {
     fn scale_about_center() {
         let r = RectF::new(0.0, 0.0, 100.0, 50.0).scaled_about(50.0, 25.0, 0.5);
         assert_eq!(r, RectF::new(25.0, 12.5, 50.0, 25.0));
+    }
+
+    #[test]
+    fn window_placement_maps_screen_to_window() {
+        // 全屏：屏幕坐标 = 窗口坐标（几何区域从根表面原点开始时）。
+        let full = WindowPlacement::new(RectF::new(0.0, 0.0, 1280.0, 800.0), 1280.0);
+        assert_eq!(full.to_window((100.0, 30.0), (0.0, 0.0)), (100.0, 30.0));
+        // 卡片缩到一半、移到 (320, 200)：屏幕上卡片内的点按比例放大回窗口坐标。
+        let half = WindowPlacement::new(RectF::new(320.0, 200.0, 640.0, 400.0), 1280.0);
+        assert_eq!(half.scale, 0.5);
+        assert_eq!(half.to_window((320.0, 200.0), (0.0, 0.0)), (0.0, 0.0));
+        assert_eq!(half.to_window((640.0, 400.0), (0.0, 0.0)), (640.0, 400.0));
+        // 子表面 (490, 308) 处（窗口坐标）的一点，画在屏幕 (565, 354)。
+        assert_eq!(half.to_window((565.0, 354.0), (0.0, 0.0)), (490.0, 308.0));
+        // 几何区域不从根表面原点开始（例如客户端画了阴影）：几何区域的左上角对齐卡片。
+        let geo = (10.0, 20.0);
+        assert_eq!(half.origin(geo), (315.0, 190.0));
+        assert_eq!(half.to_window((320.0, 200.0), geo), (10.0, 20.0));
     }
 }

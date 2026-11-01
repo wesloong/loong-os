@@ -74,9 +74,37 @@ pub fn builtin_apps() -> Vec<AppEntry> {
     ]
 }
 
+/// 窗口的 Wayland app_id 对应哪个应用：
+/// - `loong.webapp.<id>`：loong-webapp 运行的 Web 应用（id 中的 `-` 在 app_id 里写作 `_`）；
+/// - `loong.<id>`：系统组件，例如系统浏览器 `loong.browser`；
+/// - 其余按应用 id 原样匹配。
+pub fn app_for_app_id(apps: &[AppEntry], app_id: &str) -> Option<usize> {
+    let id = app_id
+        .strip_prefix("loong.webapp.")
+        .map(|id| id.replace('_', "-"))
+        .or_else(|| app_id.strip_prefix("loong.").map(str::to_string))
+        .unwrap_or_else(|| app_id.to_string());
+    apps.iter().position(|a| a.id == id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_ids_map_to_apps() {
+        let apps = builtin_apps();
+        let index = |id: &str| apps.iter().position(|a| a.id == id);
+        assert_eq!(app_for_app_id(&apps, "loong.browser"), index("browser"));
+        assert_eq!(
+            app_for_app_id(&apps, "loong.webapp.settings"),
+            index("settings")
+        );
+        assert_eq!(app_for_app_id(&apps, "music"), index("music"));
+        assert!(index("settings") != index("browser"));
+        assert_eq!(app_for_app_id(&apps, "loong.webapp.unknown_app"), None);
+        assert_eq!(app_for_app_id(&apps, "foot"), None);
+    }
 
     #[test]
     fn every_app_has_a_traditional_pigment() {

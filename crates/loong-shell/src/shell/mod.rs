@@ -23,7 +23,7 @@ use smithay::{desktop::Window, reexports::wayland_server::protocol::wl_surface::
 pub use self::ink::{InkDab, Reveal, RevealMode};
 use self::{
     apps::AppEntry,
-    geometry::{RectF, lerp, smoothstep},
+    geometry::{RectF, WindowPlacement, lerp, smoothstep},
     gesture::{Axis, lock_axis, rubber_clamp, rubber_clamp_inverse},
     ink::{InkLayer, InkState},
     keyboard::ScreenKeyboard,
@@ -167,8 +167,8 @@ pub type Scene = Vec<DrawItem>;
 pub enum TouchRoute {
     /// 系统界面消费了这个触摸。
     Shell,
-    /// 转发给应用窗口（窗口左上角在屏幕上的位置）。
-    Client(Window, (f64, f64)),
+    /// 转发给应用窗口（窗口此刻在屏幕上的摆放，可能正随卡片缩放）。
+    Client(Window, WindowPlacement),
 }
 
 const ZERO5: [f64; 5] = [0.0; 5];
@@ -658,7 +658,7 @@ impl Shell {
             .retarget([HOME_ZOOM_BEHIND_APP, HOME_DIM_BEHIND_APP], now);
     }
 
-    /// 新窗口出现：交给正在打开的应用卡片。
+    /// 新窗口出现（第一次提交，app_id 已设置）：交给正在打开的应用卡片。
     pub fn on_new_window(&mut self, window: Window, now: f64) {
         let app_id = window.toplevel().and_then(|t| {
             smithay::wayland::compositor::with_states(t.wl_surface(), |states| {
@@ -668,17 +668,18 @@ impl Shell {
                     .and_then(|d| d.lock().ok().and_then(|d| d.app_id.clone()))
             })
         });
-        // loong-webapp 的 app_id 形如 loong.webapp.<id>（id 中的 '-' 被替换为 '_'）。
-        let matched = app_id.as_deref().and_then(|raw| {
-            let id = raw
-                .strip_prefix("loong.webapp.")
-                .unwrap_or(raw)
-                .replace('_', "-");
-            self.apps.iter().position(|a| a.id == id)
-        });
+        let matched = app_id
+            .as_deref()
+            .and_then(|id| apps::app_for_app_id(&self.apps, id));
+        tracing::debug!(
+            "新窗口 app_id={app_id:?} → {:?}",
+            matched.map(|i| &self.apps[i].id)
+        );
+        // 正在打开的应用（app_id 对不上的窗口不抢它的卡片）。
         if self.mode == Mode::App
             && let Some(task) = self.tasks.last_mut()
             && task.window.is_none()
+            && matched.is_none_or(|app| app == task.app)
         {
             task.window = Some(window);
             task.content = SpringAnimation::at_rest(Spring::SMOOTH, 0.0, now);
@@ -1021,7 +1022,7 @@ impl Shell {
         }
         if !matches!(self.gesture, Gesture::Idle) {
             // v1 只处理单指系统手势；多指交给应用。
-            return self.forward_route();
+            return self.forward_route(now);
         }
         match self.mode {
             Mode::App => {
@@ -1044,7 +1045,7 @@ impl Shell {
                 if settled {
                     self.gesture = Gesture::Forward { slot };
                     self.keyboard.app_touch_down(slot, x, y);
-                    return self.forward_route();
+                    return self.forward_route(now);
                 }
                 // 打开动画进行中：吞掉触摸。
                 TouchRoute::Shell
@@ -1137,14 +1138,19 @@ impl Shell {
         self.ink.stroke_to(x, y, speed, now);
     }
 
-    fn forward_route(&self) -> TouchRoute {
-        let front = (self.mode == Mode::App)
-            .then(|| self.tasks.last().and_then(|t| t.window.clone()))
-            .flatten();
-        match front {
-            Some(w) => TouchRoute::Client(w, (0.0, 0.0)),
+    fn forward_route(&self, now: f64) -> TouchRoute {
+        match self.front_placement(now) {
+            Some((w, placement)) => TouchRoute::Client(w, placement),
             None => TouchRoute::Shell,
         }
+    }
+
+    /// 前台应用的窗口及其此刻的摆放（与 [`Shell::push_card`] 画内容的方式一致）。
+    pub fn front_placement(&self, now: f64) -> Option<(Window, WindowPlacement)> {
+        let window = self.front_window()?;
+        let [x, y, w, h, _] = self.tasks.last()?.rect.value(now);
+        let content = RectF::new(x, y, w.max(1.0), h.max(1.0)).fill(self.w, self.h);
+        Some((window, WindowPlacement::new(content, self.w)))
     }
 
     pub fn touch_motion(&mut self, slot: u32, x: f64, y: f64, now: f64) -> TouchRoute {
@@ -1220,7 +1226,7 @@ impl Shell {
             }
             Gesture::Forward { slot: s } if s == slot => {
                 self.keyboard.app_touch_motion(slot, x, y);
-                return self.forward_route();
+                return self.forward_route(now);
             }
             _ => {}
         }
@@ -1465,7 +1471,7 @@ impl Shell {
             }
             Gesture::Forward { slot: s } if s == slot => {
                 self.keyboard.app_touch_up(slot, now);
-                return self.forward_route();
+                return self.forward_route(now);
             }
             other => self.gesture = other,
         }

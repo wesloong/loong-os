@@ -30,6 +30,8 @@ uniform float tint;
 #endif
 
 uniform vec2 size;         // 目标矩形尺寸（物理像素）
+uniform vec3 local_x;      // 纹理坐标 → 目标矩形内像素坐标的仿射变换（两行），
+uniform vec3 local_y;      // 抵消 viewporter 裁剪、缓冲旋转与上下颠倒
 uniform vec4 clip;         // 裁剪矩形（相对目标矩形左上角，物理像素）：x, y, w, h
 uniform float radius;      // 裁剪矩形的名义圆角半径（物理像素）
 uniform vec4 color_mul;    // 预乘颜色乘子
@@ -83,7 +85,8 @@ float fbm(vec2 p) {
 }
 
 void main() {
-    vec2 local = v_coords * size;
+    vec3 uv = vec3(v_coords, 1.0);
+    vec2 local = vec2(dot(local_x, uv), dot(local_y, uv));
     vec2 tc = v_coords;
     float mask = 1.0;
     float front = 0.0;

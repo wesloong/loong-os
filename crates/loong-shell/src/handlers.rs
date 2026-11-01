@@ -51,6 +51,10 @@ impl CompositorHandler for LoongState {
             .compositor_state
     }
 
+    fn new_surface(&mut self, surface: &WlSurface) {
+        crate::dmabuf::add_ready_hook(surface);
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         self.mark_damaged();
@@ -78,12 +82,20 @@ impl CompositorHandler for LoongState {
     }
 }
 
+/// 窗口已交给系统界面的标记（存在窗口的 user data 里）。
+struct AnnouncedToShell;
+
 /// xdg-shell 要求在第一次 commit 后发送 configure。
+///
+/// 新窗口也在第一次提交时交给系统界面：创建 toplevel 时客户端还没来得及设置 app_id，
+/// 第一次提交之前一定已经设置好，系统界面据此把窗口对应到主屏上的应用。（不能用
+/// initial_configure_sent 判断是不是第一次提交：客户端请求全屏时 configure 会提前发出。）
 fn ensure_initial_configure(state: &mut LoongState, surface: &WlSurface) {
     if let Some(window) = state
         .windows
         .iter()
         .find(|w| w.toplevel().is_some_and(|t| t.wl_surface() == surface))
+        .cloned()
     {
         let toplevel = window.toplevel().expect("xdg 窗口");
         let initial_sent = with_states(surface, |states| {
@@ -95,6 +107,12 @@ fn ensure_initial_configure(state: &mut LoongState, surface: &WlSurface) {
         });
         if !initial_sent {
             toplevel.send_configure();
+        }
+        if window.user_data().get::<AnnouncedToShell>().is_none() {
+            window
+                .user_data()
+                .insert_if_missing_threadsafe(|| AnnouncedToShell);
+            state.shell.on_new_window(window, state.now);
         }
         return;
     }
@@ -128,9 +146,9 @@ impl XdgShellHandler for LoongState {
             state.states.set(xdg_toplevel::State::Fullscreen);
             state.states.set(xdg_toplevel::State::Activated);
         });
-        let window = Window::new_wayland_window(surface.clone());
-        self.windows.push(window.clone());
-        self.shell.on_new_window(window, self.now);
+        // 窗口在第一次提交时才交给系统界面（见 ensure_initial_configure）。
+        self.windows
+            .push(Window::new_wayland_window(surface.clone()));
         if let Some(keyboard) = self.seat.get_keyboard() {
             keyboard.set_focus(self, Some(surface.wl_surface().clone()), Serial::from(0));
         }
@@ -139,6 +157,8 @@ impl XdgShellHandler for LoongState {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         self.windows
             .retain(|w| w.toplevel().is_some_and(|t| t != &surface));
+        self.client_touches
+            .retain(|(_, w)| w.toplevel().is_some_and(|t| t != &surface));
         self.shell.on_window_closed(surface.wl_surface(), self.now);
     }
 

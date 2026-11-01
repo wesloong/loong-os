@@ -169,14 +169,15 @@ loong-browser [--theme light|dark] [--search-url 'https://www.bing.com/search?q=
 - “添加到主屏幕”把网页的 manifest 规范化后写入 `~/.local/share/loong/webapps/<id>/manifest.json`。
 - 调试：`LOONG_BROWSER_DEBUG=1` 打印网页控制台消息；`G_MESSAGES_DEBUG=loong-webrt` 打印后端的输入与能力日志。
 
-**loong-shell 要为浏览器补的能力**（浏览器现在已能在 loong-shell 里显示和触摸操作，下面按重要性排列）：
+**loong-shell 为浏览器提供的能力**：
 
-1. **窗口变换要作用于整棵表面树**：多任务卡片、开 / 关应用动画缩放窗口时，客户端表面目前按 1:1 画出、只被卡片裁切（用 `shell-run.sh` 上滑进入多任务即可看到）。应当在输出缩放下渲染表面树，再以窗口原点用 `RescaleRenderElement` 整体缩放。
-2. **`zwp_linux_dmabuf_v1`**（v4，带默认 feedback / main_device）：没有它 WebKit 只能用共享内存，后端每帧拷贝整帧像素，也无法让 WebKit 用 GPU 渲染。
-3. **`wp_viewporter` + `wp_single_pixel_buffer_manager_v1`**（最好再加 `wp_fractional_scale_manager_v1`）：没有时根表面的纯色底只能是整窗大小的共享内存缓冲（nabu 上约 16MB）。
-4. **子表面命中测试**：触摸 / 指针目前一律发给根表面，后端会自己命中，能用；改为发给子表面（smithay `surface_under`）后坐标与焦点更准确。
-5. ~~**`zwp_text_input_manager_v3`** + 屏幕键盘（M4）~~：已实现，地址栏与页面输入框都能用屏幕键盘输入（`crates/loong-shell/tests/scripts/keyboard-browser.json`）。
-6. app_id `loong.browser` 对应主屏的 `browser` 图标（目前靠“正在启动的应用”或第一个应用兜底）。
+1. **整棵表面树一起缩放**：多任务卡片、开 / 关应用动画中，根表面与各子表面按输出缩放生成、再以窗口原点整体缩放（`RescaleRenderElement`）；圆角、裁剪与晕染遮罩按整个窗口计算，贴边的子表面带窗口圆角，内部子表面不受影响。
+2. **`zwp_linux_dmabuf_v1` v4**：默认 feedback 的 main_device 是合成器渲染所用 GPU 的 render node，WebKit 据此在 GPU 上分配缓冲；合成器本身软件渲染（无屏幕 llvmpipe、QEMU 无 3D）时只公布 v3 格式表，客户端走共享内存。
+3. **`wp_viewporter` + `wp_single_pixel_buffer_manager_v1` + `wp_fractional_scale_manager_v1`**：根表面的纯色底不占内存，同样带窗口圆角。
+4. **子表面命中测试**：触摸发给手指下的子表面（按窗口此刻的缩放换算坐标），按下的表面收到这根手指之后的移动与抬起（隐式抓取）。
+5. **`zwp_text_input_manager_v3`** + 屏幕键盘（M4）：地址栏与页面输入框都能用屏幕键盘输入（`crates/loong-shell/tests/scripts/keyboard-browser.json`）。
+6. app_id `loong.browser`（以及 `loong.webapp.<id>`）在窗口第一次提交时对应到主屏的应用。
+7. 还缺：GPU 上的 DMA-BUF 路径要在真机（nabu）上实测（开发环境没有 GPU）。
 
 ## 文档
 

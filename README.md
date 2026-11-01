@@ -48,16 +48,18 @@ ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-she
 
 ![QEMU aarch64 中的 Loong OS](docs/images/qemu-aarch64-home.png)
 
-## 当前状态：M0 基础设施
+## 当前状态：M0–M5 主体完成，等待上真机
+
+M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏览器）、M4（键盘、设置）、M5（OTA）的主体都已完成，并在 QEMU 或无屏幕模式下验证；M3（小米平板 5 适配）的镜像可以构建，还没有上真机。下一步主要是真机验证（触摸、GPU、Wi‑Fi、电池、120Hz、休眠）和瘦身（M6）。
 
 | 模块 | 状态 |
 |---|---|
 | 文档：技术规划、ADR、设计规范 | ✅ 已完成 |
 | `tools/dev-chroot.sh`、`tools/build-pkg.sh`：Alpine 3.24 构建 chroot 与 APK 打包 | ✅ 已完成 |
 | `crates/loong-motion`：弹簧、惯性衰减、橡皮筋、速度跟踪、吸附/分页、CSS `linear()` 缓动 | ✅ 已完成（含单元测试） |
-| `system/packages/wpewebkit`：WPE WebKit 2.54.2 APKBUILD 与 CI 工作流 | ✅ 配方完成，正在 chroot 中编译验证 |
-| `crates/loong-ui`：设计令牌、连续圆角、文字（中文）、图标、毛玻璃、壁纸 | ✅ 已完成 |
-| `crates/loong-shell`：headless 后端、主屏（分页）、打开应用 / 回主屏手势动画、多任务（上滑停顿进入、横向滚动吸附、点按打开、上滑关闭）、真实 Wayland 客户端（xdg-shell）、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证） |
+| `system/packages/wpewebkit`：WPE WebKit 2.54.2 APKBUILD 与 CI 工作流 | ✅ 已在 chroot 中编译出 APK（约 47MB，安装后 119MB） |
+| `crates/loong-ui`：「墨韵」设计令牌（宣纸/夜墨）、连续圆角、文字（中文，霞鹜文楷）、水墨绘画工具（宣纸、毛笔笔触、山水长卷、宣纸小笺图标、印章） | ✅ 已完成 |
+| `crates/loong-shell`：headless 后端、主屏（分页）、打开应用 / 回主屏手势动画、多任务（上滑停顿进入、横向滚动吸附、点按打开、上滑关闭）、真实 Wayland 客户端（xdg-shell、子表面、linux-dmabuf v4、viewporter、分数缩放）、「墨韵」水墨动效（点墨、晕染、笔迹、展卷、墨散）、跟随系统外观、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证）；WebKit 走 GPU（dmabuf）要在有 GPU 的真机上验证 |
 | QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
 | aarch64：qemu-user binfmt（`tools/setup-binfmt.sh`）、交叉编译（`tools/build-aarch64.sh`）、`qemu-aarch64` 镜像 | ✅ 在 QEMU virt（TCG）中启动到锁屏 |
 | 小米平板 5：`android-abl` 启动后端（boot.img、super 动态分区 A/B、userdata、qbootctl 回滚），见[适配说明](docs/devices/xiaomi-nabu.md) | 🚧 镜像可构建并通过离线自检，尚未上真机 |

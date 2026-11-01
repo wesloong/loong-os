@@ -5,6 +5,7 @@
 //! loong-shell --headless [--script 脚本.json] [--out 目录] [--size 1280x800] [--realtime]
 //! ```
 
+mod appearance;
 mod backend;
 mod clock;
 mod device;

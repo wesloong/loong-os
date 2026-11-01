@@ -37,7 +37,8 @@ use smithay::{
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale as OutputScale, Subpixel},
     reexports::{
         calloop::{
-            EventLoop, LoopHandle,
+            EventLoop, Interest, LoopHandle, Mode as LoopMode, PostAction,
+            generic::Generic,
             timer::{TimeoutAction, Timer},
         },
         drm::control::{ModeTypeFlags, connector},
@@ -296,6 +297,11 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
         )
         .map_err(|e| anyhow!("{e}"))?;
 
+    // 系统外观：“设置”写入 appearance.toml（rename 替换），这里监视并切换宣纸/夜墨。
+    if let Some(theme) = watch_appearance(&handle, &device) {
+        data.state.shell.set_theme(theme);
+    }
+
     // 输入
     let mut libinput =
         Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());
@@ -532,4 +538,51 @@ fn spawn(cmd: &str, state: &LoongState) {
     {
         tracing::warn!("启动 {cmd} 失败: {e}");
     }
+}
+
+/// 监视外观文件，返回启动时应使用的外观。监视失败只记录警告（外观停在 device.toml 的值）。
+fn watch_appearance(
+    handle: &LoopHandle<'static, Data>,
+    device: &DeviceConfig,
+) -> Option<loong_ui::theme::Theme> {
+    use crate::appearance;
+    let Some(path) = appearance::path() else {
+        tracing::warn!("没有 HOME/XDG_CONFIG_HOME，外观不跟随设置");
+        return None;
+    };
+    let watch = match appearance::Watch::new(&path) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!("无法监视 {}: {e}", path.display());
+            return None;
+        }
+    };
+    let device_theme = device.theme.clone();
+    let current = move || {
+        let env = std::env::var("LOONG_THEME").ok();
+        appearance::resolve(
+            env.as_deref(),
+            appearance::read(&path),
+            device_theme.as_deref(),
+        )
+    };
+    // 启动时就按外观文件来（device.toml 只是出厂默认）。
+    let initial = current();
+    let source = Generic::new(watch, Interest::READ, LoopMode::Level);
+    let inserted = handle.insert_source(source, move |_, watch, d: &mut Data| {
+        if watch.drain() {
+            let theme = current();
+            if theme != d.state.shell.theme {
+                tracing::info!("系统外观改为 {theme:?}");
+                d.state.shell.set_theme(theme);
+                d.backend.dirty = true;
+                render(d);
+            }
+        }
+        Ok(PostAction::Continue)
+    });
+    if let Err(e) = inserted {
+        tracing::warn!("无法监视外观文件: {e}");
+    }
+    Some(initial)
 }

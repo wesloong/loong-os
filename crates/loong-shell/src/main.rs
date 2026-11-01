@@ -9,6 +9,7 @@ mod backend;
 mod clock;
 mod device;
 mod handlers;
+mod ime;
 mod input;
 mod lunar;
 mod render;

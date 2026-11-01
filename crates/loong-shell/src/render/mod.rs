@@ -6,6 +6,7 @@
 //!   与晕染 / 墨散遮罩由着色器现算。
 
 pub mod element;
+mod keyboard;
 
 use std::collections::HashMap;
 
@@ -63,6 +64,8 @@ pub struct Assets {
     /// 正在后台线程中画的「册页」（应用下标 → 线程）。手指按下图标时就开始画，
     /// 抬起打开应用时多半已经画好，首次打开不卡顿。
     pending_sheets: HashMap<usize, std::thread::JoinHandle<Pixmap>>,
+    /// 屏幕键盘的位图状态（见 `keyboard.rs`）。
+    kb: keyboard::KeyboardAssets,
 }
 
 impl Assets {
@@ -79,6 +82,7 @@ impl Assets {
             layers: Vec::new(),
             backdrop: loong_ui::pixmap(1, 1),
             pending_sheets: HashMap::new(),
+            kb: keyboard::KeyboardAssets::default(),
         };
         assets.build(shell);
         assets
@@ -91,6 +95,7 @@ impl Assets {
             self.build(shell);
         }
         self.refresh_clock(shell);
+        self.sync_keyboard(shell);
     }
 
     /// 山水各层的视差系数与纵向位置。
@@ -103,6 +108,12 @@ impl Assets {
         self.pixmaps.clear();
         // 旧外观的册页作废（线程分离，结果丢弃）。
         self.pending_sheets.clear();
+        // 键盘背板在后台画（第一次弹出键盘时不必现画）。
+        self.kb = keyboard::KeyboardAssets::prebuild(
+            shell.theme,
+            self.scale,
+            shell.keyboard.layout().clone(),
+        );
         self.clock_text.clear();
         self.date_text.clear();
         self.theme = shell.theme;

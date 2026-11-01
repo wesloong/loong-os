@@ -106,6 +106,7 @@ PACKAGES="
 	mesa-egl mesa-gles mesa-gbm libinput-libs libxkbcommon xkeyboard-config libseat
 	fontconfig font-inter font-noto-cjk
 	foot
+	librime-nolog
 	$KERNEL_PKG
 	$DEVICE_PKGS
 "
@@ -152,6 +153,10 @@ if [ -d "$LOCAL_REPO/packages/$ARCH" ]; then
 	# 「墨韵」展示字体（霞鹜文楷屏幕版）：tools/build-pkg.sh font-lxgw-wenkai-screen
 	ls "$LOCAL_REPO/packages/$ARCH"/font-lxgw-wenkai-screen-*.apk >/dev/null 2>&1 && \
 		PACKAGES="$PACKAGES font-lxgw-wenkai-screen"
+	# 拼音输入法的 Rime 数据（loong_pinyin，词典已预编译，约 8 MiB）：tools/build-pkg.sh loong-rime-data。
+	# 没有它时屏幕键盘只能输入英文（librime 本身在上面的基础包里）。
+	ls "$LOCAL_REPO/packages/$ARCH"/loong-rime-data-*.apk >/dev/null 2>&1 && \
+		PACKAGES="$PACKAGES loong-rime-data"
 fi
 # 重新安装引导包以运行它们的脚本，再安装其余软件包。
 chroot "$ROOT" /sbin/apk fix --no-cache --no-progress -q --reinstall alpine-baselayout busybox

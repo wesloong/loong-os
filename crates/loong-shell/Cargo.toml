@@ -10,6 +10,7 @@ rust-version = "1.89"
 [dependencies]
 loong-motion = { path = "../loong-motion" }
 loong-ui = { path = "../loong-ui" }
+loong-ime = { path = "../loong-ime" }
 anyhow = "1"
 libc = "0.2"
 png = "0.18"

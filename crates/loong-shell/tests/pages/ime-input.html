@@ -1,0 +1,62 @@
+<!doctype html>
+<!--
+  屏幕键盘的端到端测试页：输入框自动获得焦点（WPE 经 text-input-v3 激活合成器的输入法），
+  页面上方用大字回显输入框的内容，底部的一行显示视口高度（键盘升起后窗口变矮，这一行随之上移）。
+  ?dark 使用夜墨外观。见 crates/loong-shell/tests/scripts/keyboard-webkit*.json。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>输入法测试</title>
+<style>
+  :root {
+    --paper: #F3EEE2; --sheet: #F9F6EE; --ink: #2A2824; --title: #141310; --dim: #7D7970;
+    --line: rgb(42 40 36 / .13); --accent: #B83A2B;
+    font-family: "LXGW WenKai Screen", "Noto Sans CJK SC", sans-serif;
+  }
+  :root.dark {
+    --paper: #15140F; --sheet: #1F1D17; --ink: #CFC8B8; --title: #E6E0D2; --dim: #7A756A;
+    --line: rgb(230 224 210 / .12);
+  }
+  html, body { margin: 0; height: 100%; background: var(--paper); color: var(--ink); }
+  main { padding: 56px 72px 0; }
+  h1 { font-weight: 400; font-size: 34px; letter-spacing: .12em; color: var(--title); margin: 0 0 6px; }
+  p.sub { margin: 0 0 28px; color: var(--dim); font-size: 15px; }
+  label { display: block; font-size: 15px; color: var(--dim); margin-bottom: 8px; }
+  input {
+    width: 100%; box-sizing: border-box; font: inherit; font-size: 26px; color: var(--title);
+    background: var(--sheet); border: none; border-radius: 12px; padding: 14px 18px; outline: none;
+    box-shadow: 0 .5px 1px rgb(58 48 32 / .12), -1px 3px 8px -3px rgb(58 48 32 / .12);
+  }
+  #echo { margin-top: 26px; min-height: 64px; font-size: 52px; color: var(--title); }
+  #echo:empty::before { content: "（尚未输入）"; color: var(--dim); font-size: 22px; }
+  footer {
+    position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 72px 14px;
+    border-top: 1px solid var(--line); color: var(--dim); font-size: 14px; background: var(--paper);
+  }
+  footer b { color: var(--accent); font-weight: 400; }
+</style>
+</head>
+<body>
+<main>
+  <h1>墨韵 · 输入法</h1>
+  <p class="sub">屏幕键盘 + 拼音（librime）经 text-input-v3 输入</p>
+  <label for="t">写点什么</label>
+  <input id="t" autofocus autocomplete="off" placeholder="点这里输入">
+  <div id="echo"></div>
+</main>
+<footer>视口高度 <b id="vh"></b> pt · 输入框内容会回显在上方</footer>
+<script>
+  if (location.search.includes("dark")) document.documentElement.classList.add("dark");
+  const t = document.getElementById("t");
+  const echo = document.getElementById("echo");
+  const vh = document.getElementById("vh");
+  const update = () => { echo.textContent = t.value; vh.textContent = innerHeight; };
+  t.addEventListener("input", update);
+  addEventListener("resize", update);
+  addEventListener("load", () => { t.focus(); update(); });
+  update();
+</script>
+</body>
+</html>

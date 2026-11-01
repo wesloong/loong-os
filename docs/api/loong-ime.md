@@ -1,6 +1,14 @@
 # loong-ime：中文拼音输入法与屏幕键盘
 
-> 状态：引擎、键盘模型、数据方案已完成并有测试（M4 输入法的第一步）。屏幕键盘的绘制和 Wayland 协议对接在 loong-shell 中进行，步骤见[第 8 节](#8-loong-shell-集成步骤)。
+> 状态：引擎、键盘模型、数据方案已完成并有测试；屏幕键盘已接入 loong-shell（「墨韵」绘制、text-input-v3、窗口避让、镜像中的 Rime 数据），在无屏幕 loong-shell + WPE WebKit 中端到端验证（输入“你好，世界。”），见[第 8 节](#8-loong-shell-中的实现)。
+
+| 宣纸 · 组字中（拼音在输入框里带下划线，候选栏左侧是拼音） | 夜墨 · 上屏后 |
+|---|---|
+| ![屏幕键盘 · 宣纸](../images/keyboard-light.png) | ![屏幕键盘 · 夜墨](../images/keyboard-committed-dark.png) |
+| **竖屏**（窗口高度 1280 − 332 = 948pt） | **数字层 + 长按“，”的备选条**（选中格为浓墨底、纸色字） |
+| ![竖屏](../images/keyboard-portrait.png) | ![备选条](../images/keyboard-alternates.png) |
+| **按下字符键**：键帽着墨、浮起放大小笺、指下点墨（夜墨） | **浏览器地址栏**（网址用途：默认英文、半角标点） |
+| ![按键](../images/keyboard-key-preview-dark.png) | ![浏览器地址栏](../images/keyboard-browser-url.png) |
 
 `crates/loong-ime` 提供 v1 必须的**中文拼音输入法**，分为三层：
 
@@ -95,7 +103,9 @@ WPE  → set_surrounding_text(…你好…) / commit
 
 ### 1.5 键盘与应用窗口的关系
 
-iPad 的键盘覆盖在应用之上，由应用自己避让。WPE 没有“键盘高度”通知，所以建议 loong-shell 在键盘**升起动画结束时**（`presentation` 停在 1）给应用发一次 `xdg_toplevel.configure`，高度减去键盘高度，WebKit 重新布局后会把光标滚到可见处；收起时先恢复窗口高度再播放收起动画。不要逐帧改窗口尺寸（会让 WebKit 每帧重排）。单任务全屏模型下这样做最简单，对所有 PWA 都有效。
+iPad 的键盘覆盖在应用之上，由应用自己避让。WPE 没有“键盘高度”通知，所以 loong-shell 采用**调整窗口高度**而不是平移窗口：键盘升起到 98%（`SMOOTH` 约 0.46 秒）时给前台应用发一次 `xdg_toplevel.configure`，高度减去键盘高度（横屏 800 − 396 = 404pt，竖屏 1280 − 332 = 948pt）；**收起一开始**就恢复全屏高度，再播放收起动画。WebKit 只重排一次：`position: fixed; bottom: 0` 的元素落到键盘上方，`innerHeight` 变小，光标所在的输入框留在可见区域。不逐帧改窗口尺寸（会让 WebKit 每帧重排）。
+
+没有选平移窗口：平移会把应用顶部（含状态栏下的内容）推出屏幕，而且要知道光标位置（`set_cursor_rectangle` 只在 text-input 激活后才有）才能决定平移多少；改高度对所有 PWA 都有效，网页用 CSS 的视口单位就能自己避让。窗口仍保持 `fullscreen` 状态（WPE 按 configure 的尺寸调整，见 `WPEToplevelWayland.cpp` 的 configure 处理），矮了的窗口画在卡片顶部，下面是卡片的纸色底，被键盘盖住。
 
 ## 2. 拼音引擎
 
@@ -131,6 +141,8 @@ iPad 的键盘覆盖在应用之上，由应用自己避让。WPE 没有“键�
 | 状态 | `state()`、`revision()`、`take_commit()` | `ImeState`：预编辑、原始输入、本页候选、页码、高亮、上屏预览、是否英文 |
 
 默认输出**简体中文**，每页 9 个候选。用户词库（`<用户目录>/loong_pinyin.userdb/`，leveldb）会学习：选过的词下次排在前面。
+
+`InputMethod` 经 `Engine` trait 驱动引擎（`ImeEngine` 实现它）：宿主的单元测试可以用 `InputMethod::with_engine` / `set_boxed_engine` 换上一个假的引擎（例如 loong-shell 的查表拼音），不必启动 librime。
 
 ### 2.3 配置与数据目录
 
@@ -215,7 +227,7 @@ iPad 的键盘覆盖在应用之上，由应用自己避让。WPE 没有“键�
 | `opencc/t2s.json`、`TSPhrases.ocd2`、`TSCharacters.ocd2`（繁转简，Rime 先在这里找） | 56 388 |
 | **合计** | **8 388 868** |
 
-打包步骤（`tests/image_data.rs` 按这个步骤逐条验证，并确认只用这些文件时引擎正常工作）：
+打包为 `system/packages/loong-rime-data`（`tools/build-pkg.sh loong-rime-data`，构建时预编译，noarch），`system/mkimage/mkimage.sh` 在本地仓库里有这个包时装进镜像；`librime-nolog` 总是装（loong-shell 链接它）。打包步骤（`tests/image_data.rs` 按这个步骤逐条验证，并确认只用这些文件时引擎正常工作）：
 
 1. 源文件：`rime-plum-data` 的 `default.yaml`、`key_bindings.yaml`、`punctuation.yaml`、`pinyin.yaml`、`luna_pinyin.dict.yaml`、`essay.txt`，加上 `crates/loong-ime/data/loong_pinyin.{schema,dict}.yaml`；
 2. `rime_deployer --compile loong_pinyin.schema.yaml <临时用户目录> <源目录> <目标>/usr/share/rime-data/build`（x86_64 约 4 秒）；
@@ -236,9 +248,11 @@ iPad 的键盘覆盖在应用之上，由应用自己避让。WPE 没有“键�
 
 开发环境用 `librime`（带 glog，`librime-dev` 依赖它），两者提供同一个 `librime.so.1`。
 
+镜像体积的实测（`mkfs.erofs -zlz4hc,12`，与 mkimage 相同）：数据 8 409 348 字节 → **5.3 MiB**，运行库 2.5 MiB → **1.4 MiB**，合计约 **6.6 MiB**（安装后 10.5 MiB）。数据包的 `.apk` 为 3.8 MiB。
+
 ### 4.4 用户目录
 
-系统镜像（预编译词典）下首次部署后约 40KB：`default.custom.yaml`、`installation.yaml`、`user.yaml`、`build/`（编译后的方案 YAML 与 31KB 的 prism）、`loong_pinyin.userdb/`（随使用增长）。开发环境现场编译时，`build/` 里还有 7.7 MiB 的词典。
+镜像里 loong-shell 以用户 loong 运行（`HOME=/home/loong`），用户目录是 `~/.local/share/loong/rime`；`/home` 由 initramfs 从 data 分区绑定进来，可写、OTA 不影响。系统镜像（预编译词典）下首次部署后约 40KB：`default.custom.yaml`、`installation.yaml`、`user.yaml`、`build/`（编译后的方案 YAML 与 31KB 的 prism）、`loong_pinyin.userdb/`（随使用增长）。开发环境现场编译时，`build/` 里还有 7.7 MiB 的词典。
 
 ### 4.5 许可证
 
@@ -285,22 +299,55 @@ tools/dev-chroot.sh run sh -c 'cargo run --release -p loong-ime --example ime_pr
 - librime 每个进程只能用一份配置启动；测试里所有引擎测试共用一个用户目录，用户词库也共用（选了非首选候选会改变后续排序）；
 - `default.custom.yaml` 等文件由 loong-ime 管理，会被覆盖；用户自定义以后通过设置应用改 `ImeConfig`。
 
-## 8. loong-shell 集成步骤
+## 8. loong-shell 中的实现
 
-1. **依赖**：`loong-ime = { path = "../loong-ime" }`；镜像加入 `librime-nolog`、`leveldb`、`libmarisa`、`opencc-libs`、`yaml-cpp`，以及按 4.2 节打包的 Rime 数据（建议新建 `system/packages/loong-rime-data/APKBUILD`，在构建时执行 `rime_deployer --compile`）。
-2. **启动**：shell 启动后在后台线程 `ImeEngine::new(&ImeConfig::default())`，通过 calloop channel 把结果送回主线程，`input_method.set_engine(Some(engine))`；失败时记录日志、继续用纯英文键盘。`Keyboard::new(LayoutParams::for_screen(w, h), true, now)` 随 shell 一起创建；旋转屏幕时 `keyboard_mut().set_params(...)`。
-3. **text-input**：`TextInputManagerState::new::<LoongState>(&dh)`；`seat.text_input().set_compositor_input_method(true)`；为 `LoongState` 实现 `TextInputActivation`：`activated(ct)` → `im.activate(ContentPurpose::from_text_input_v3(u32::from(purpose)), now)`，`deactivated()` → `im.deactivate(now)`。键盘焦点变化时 Smithay 会自动发 `enter`/`leave`。WPE 会连发两次 `enable`，`activate` 被调用两次没有副作用。
-4. **触摸路由**：键盘升起时，键盘矩形内的触摸先经过系统手势识别（底边 20pt），其余交给键盘：`layout.hit_test` 为 `CandidateBar` 时由 shell 的候选栏处理，否则 `im.touch_down/motion/up`（坐标换算成键盘坐标）。系统手势接管时调用 `im.touch_cancel`。
-5. **处理 `ImeEvent`**（每批事件按顺序处理，最后发一次 `done`）：
-   - `Commit(text)` → `seat.text_input().with_active_text_input(|ti, _| ti.commit_string(Some(text)))`；
-   - `CompositionChanged` → `ti.preedit_string(p.text, p.cursor, p.cursor)`（没有预编辑时传 `None`），并重画候选栏；
-   - `Forward(key)` → 向焦点应用发合成按键：`KeyboardHandle::input` 按下再抬起（默认 us 键位：BackSpace 的 xkb keycode 为 22，Return 为 36）。对不支持 text-input 的客户端，可以用 Smithay 的 `KeyboardHandle::inject_text_keysyms` 把文字作为按键注入；
-   - `Hide` → 播放收起动画，必要时让应用失去 text-input 激活状态；
-   - 最后 `seat.text_input().done(false)`。
-6. **绘制**：键盘图层 = `thick` 材质背板 + 键帽纹理（按 `revision` 缓存）+ 按下高亮（每帧 `highlight`）+ 备选条图层 + 候选栏；图层位置按 `presentation(now)` 下移。
-7. **定时**：在 `keyboard().next_deadline()` 注册 calloop 定时器调用 `im.tick(now)`；`keyboard().is_animating(now)` 为真时持续请求帧。
-8. **应用窗口避让**：见 1.5 节。
-9. **实体键盘**（可选）：text-input 激活时，先把按键交给 `engine.process_keysym(keysym, mods)`，返回 `false` 再按普通按键发给应用。
+按下面的集成步骤实现，代码位置：
+
+| 文件 | 内容 |
+|---|---|
+| `crates/loong-shell/src/shell/keyboard.rs` | `ScreenKeyboard`：激活与可见性、键盘与候选栏的触摸、`ImeEvent` → `TextOp`、窗口避让高度、画面（`DrawItem`）。不依赖 Wayland，单元测试用查表的假引擎（`keyboard/tests.rs`） |
+| `crates/loong-shell/src/shell/mod.rs` | 触摸路由（键盘优先于应用，底边 20pt 系统手势优先于键盘）、允许显示的条件、画面层次 |
+| `crates/loong-shell/src/ime.rs` | text-input-v3（合成器当输入法）、`commit_string` / `preedit_string` / `done`、合成按键、键盘焦点、窗口尺寸、后台启动 librime |
+| `crates/loong-shell/src/render/keyboard.rs` | 「墨韵」位图：背板、键帽、字形、放大小笺、备选条、候选 |
+| `system/packages/loong-rime-data/` | 预编译的 Rime 数据包（见 4.2 节） |
+
+1. **依赖**：`loong-ime = { path = "../loong-ime" }`；镜像加入 `librime-nolog` 与 `loong-rime-data`（`leveldb`、`libmarisa`、`opencc-libs`、`yaml-cpp` 由 apk 按 so 依赖带进来）。
+2. **启动**：真机后端在后台线程 `ImeEngine::new(&ImeConfig::default())`，经 calloop channel 交回主线程（`ScreenKeyboard::set_engine`）；失败时只能输入英文。无屏幕后端同步启动（截图可复现）。环境变量 `LOONG_IME=off` 不启动引擎。键盘背板在开机和切换外观时于后台线程预先画好（1280×800@1x 约 40ms）。
+3. **text-input**：`TextInputManagerState` + `set_compositor_input_method(true)`；`TextInputActivation::activated(ct)` → `ScreenKeyboard::activate`（只带“敏感数据”提示的输入框也按密码处理），`deactivated()` → `deactivate`。WPE 的第二次 `enable` 不带内容类型：已激活时保持原来的用途，不重置层与组字。
+4. **键盘焦点跟随前台应用，并且在窗口映射（提交第一帧）之后才给**。实测发现：WPE 的 text-input 监听器是在创建输入法上下文时才挂上的（`textInputV3GetGlobalByDisplay`），`new_toplevel` 时就给焦点的话，`zwp_text_input_v3.enter` 在客户端被丢弃（`WAYLAND_DEBUG` 里是 `discarded zwp_text_input_v3#12.enter`），之后它永远不会 `enable`。回主屏、进多任务时焦点离开应用：Smithay 只发 `leave`，应用随后的 `disable` 因为不再是焦点会被丢弃、不回调 `deactivated`，所以由 loong-shell 自己收起键盘；回到应用时重新 `enter`，输入框仍有焦点的话应用会再次 `enable`。
+5. **可见性**：输入框激活、前台应用停稳（不在打开、回主屏、多任务途中）、没有系统手势、未锁屏时显示。按收起键后输入框仍激活：在应用上**点按**（移动不超过 8pt）0.2 秒后键盘重新弹出——如果这次点按让输入框失去焦点，应用会先发 `disable`，键盘就不会弹出又收回。
+6. **触摸路由**：键盘显示时，键盘矩形内、底边 20pt 以外的触摸都交给键盘（含多指快速连打，与应用上的手指互不影响）；底边 20pt 照常是系统手势，开始时取消键盘上的触摸并收起键盘。候选栏：点按选词，横向拖动惯性滚动（`Decay::NORMAL` 投影，停在范围内），拖过末端 44pt 松手翻到下一页（开头同理翻回上一页），两端的 “‹”“›” 也可以点按翻页。
+7. **消息顺序**：一批 `ImeEvent` 合成一组 `commit_string` → `preedit_string`（只发最终状态）→ `done`；遇到要转发的按键时先发 `done`，再发合成的 `wl_keyboard` 按键（“a” 上屏后退格，应用先插入 “a”）。没有组字时的退格、回车（以及 Esc、Tab、方向键）用默认 us 键位的键码（BackSpace 22、Return 36），按下再抬起。
+8. **绘制**（`render/keyboard.rs`）：背板（熟宣 / 墨绢，上缘向上投出墨影，暗色加一道月白受光边）与全部键帽小笺（素笺、毛边、墨影；功能键用略深的纸）画成一张纹理，三层键盘共用网格，换层不重画；字形另成一层（文楷字，Shift / 退格 / 收起是 Lucide 符号转成的毛笔笔触），按 `Keyboard::revision` 重画、字形按文字缓存；按下时键帽着墨（浓墨 13%，暗色为月白）并在指下点墨（`InkLayer::Overlay`）；字符键按下时上方浮起放大小笺；长按备选条选中格为浓墨（暗色泥金）底、纸色字；候选栏左侧是拼音（重墨），候选为文楷（高亮候选焦墨，下方一笔浓墨），翻页箭头淡墨。所有位图只在内容变化时画一次，动画（升起、高亮、滚动）只做 GPU 合成。
+9. **窗口避让**：见 1.5 节。
+10. **定时**：`Shell::update` 在 `Keyboard::next_deadline` 到期时调用 `tick`（长按、退格连删）；有触摸或动画时 `Shell::is_idle` 为假，后端继续出帧。
+
+### 8.1 验证
+
+```sh
+# 单元测试（假引擎）：显示/收起、布局尺寸、候选栏命中与翻页、上屏流程、触摸路由与系统手势优先
+tools/dev-chroot.sh run cargo test -p loong-shell keyboard -j2
+# 只有合成器（模拟输入框获得焦点）：键盘升起、打字、Shift、数字层、长按备选（亮色 / 暗色 / 竖屏）
+build/target-alpine/release/loong-shell --headless --size 1280x800 \
+  --script crates/loong-shell/tests/scripts/keyboard.json --out out/kb
+# 真实客户端：loong-webapp 打开 tests/pages/ime-input.html（输入框自动获得焦点），打 nihao → 点候选 →
+# “，” → shijie + 空格 → “。”，得到“你好，世界。”（WPE 在 chroot 中需要下面这些环境变量）
+WEBKIT_SKIA_ENABLE_CPU_RENDERING=1 LIBGL_ALWAYS_SOFTWARE=1 LANG=C.UTF-8 WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1 \
+  build/target-alpine/release/loong-shell --headless --realtime --size 1280x800 \
+  --script crates/loong-shell/tests/scripts/keyboard-webkit.json --out out/kb-webkit \
+  --app "notes=build/webrt/loong-webapp --id notes --name 备忘录 file://$PWD/crates/loong-shell/tests/pages/ime-input.html"
+# 浏览器：页面输入框打 shanshui → 山水，地址栏（网址用途，英文）打 loong
+webrt/browser/tests/shell-run.sh crates/loong-shell/tests/scripts/keyboard-browser.json out/kb-browser http://127.0.0.1:8765/index.html
+```
+
+无屏幕脚本的键盘事件见 `crates/loong-shell/src/script.rs`：`text_input`（模拟输入框获得焦点）、`type`（按当前布局点按字符所在的键，可设 `interval`、`hold`）、`candidate`、`key`（功能键）。`RUST_LOG=loong_shell=debug` 打印每批发给应用的消息。
+
+### 8.2 已知问题
+
+- **text-input-v3 的 serial 竞争**：应用在收到 `done` 之前又发了 `commit`（例如 WebKit 在光标移动后更新 `set_cursor_rectangle`），它会按协议丢弃这次 `done` 带来的上屏文字。协议本身的局限，所有合成器都一样；正常打字的间隔（> 50ms）远大于往返时间，测试中没有出现。
+- 收起键只收起键盘，不让输入框失去焦点（text-input-v3 没有这个请求）；点按应用再弹出。
+- 只有平板（regular）布局；旋转屏幕时 `ScreenKeyboard` 还没有接 `set_params`（loong-shell 目前也不支持旋转）。
+- 外接实体键盘的按键还没有先交给引擎（第 9 步）；librime 的用户词库在第一次使用时部署，用户目录损坏时只记日志、退回英文。
 
 ## 9. 后续工作
 

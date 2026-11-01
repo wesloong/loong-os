@@ -1,0 +1,15 @@
+{
+  "fps": 30,
+  "duration_ms": 25000,
+  "clock": "9:41",
+  "events": [
+    { "at": 300, "launch": "browser" },
+    { "at": 9000, "tap": [275, 213] },
+    { "at": 11000, "type": "shanshui", "interval": 350 },
+    { "at": 14500, "candidate": 0 },
+    { "at": 16500, "tap": [640, 50] },
+    { "at": 18500, "type": "loong", "interval": 350 },
+    { "at": 21000, "key": "hide" }
+  ],
+  "screenshots": [8500, 10500, 13800, 16000, 18300, 20600, 22500, 24800]
+}

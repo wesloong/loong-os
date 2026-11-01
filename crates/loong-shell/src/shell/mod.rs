@@ -11,6 +11,7 @@ pub mod apps;
 pub mod geometry;
 pub mod gesture;
 pub mod ink;
+pub mod keyboard;
 pub mod layout;
 pub mod lock;
 pub mod switcher;
@@ -25,6 +26,7 @@ use self::{
     geometry::{RectF, lerp, smoothstep},
     gesture::{Axis, lock_axis, rubber_clamp, rubber_clamp_inverse},
     ink::{InkLayer, InkState},
+    keyboard::ScreenKeyboard,
     layout::{BOTTOM_EDGE, ICON_SHADOW_SPREAD, LABEL_HALO, Layout, PAGE_DOT, PAGE_DOT_GAP},
     lock::LockScreen,
     switcher::{PauseDetector, SwitcherLayout},
@@ -83,6 +85,20 @@ pub enum TexKey {
     PageDot,
     /// 主屏页面指示点：当前页（亮色为浓墨，暗色为泥金）。
     PageDotActive,
+    /// 屏幕键盘背板：厚绢底 + 全部键帽小笺 + 上缘墨影（[`keyboard::PANEL_SHADOW`]）。
+    KeyboardPanel,
+    /// 键帽上的字与笔触符号（随层、Shift、中/英变化，与键盘等大）。
+    KeyboardGlyphs,
+    /// 按下字符键时浮起的放大小笺（含四周墨影 [`keyboard::POPUP_SHADOW`]）。
+    KeyPreview,
+    /// 长按备选条（含四周墨影）。
+    KeyAlternates,
+    /// 候选栏左侧的拼音（预编辑），与所占格子等大。
+    CandidatePreedit,
+    /// 候选栏的第 i 格（候选或翻页箭头），与格子等大。
+    CandidateCell(usize),
+    /// 高亮候选下方的一笔浓墨（拉伸绘制）。
+    CandidateMark,
 }
 
 /// 画面中的一个元素。
@@ -359,6 +375,8 @@ pub struct Shell {
     ink: InkState,
     /// 展卷：烟云层随翻页速度的额外漂移（点）。
     mist: SpringAnimation<f64>,
+    /// 屏幕键盘与拼音输入。
+    pub keyboard: ScreenKeyboard,
 }
 
 impl Shell {
@@ -392,6 +410,7 @@ impl Shell {
             reduced_motion: false,
             ink: InkState::new(),
             mist: SpringAnimation::at_rest(MIST_SPRING, 0.0, 0.0).with_rest_thresholds(0.2, 2.0),
+            keyboard: ScreenKeyboard::new(w, h, 0.0),
         }
     }
 
@@ -508,6 +527,28 @@ impl Shell {
             && matches!(self.gesture, Gesture::Idle)
             && self.ink.is_idle()
             && self.mist.is_done(now)
+            && self.keyboard.is_idle(now)
+    }
+
+    /// 前台应用的窗口（键盘焦点与输入框都跟随它）。主屏、多任务中为 `None`。
+    pub fn front_window(&self) -> Option<Window> {
+        (self.mode == Mode::App)
+            .then(|| self.tasks.last().and_then(|t| t.window.clone()))
+            .flatten()
+    }
+
+    /// 是否允许显示屏幕键盘：前台应用停稳（不在打开、回主屏、多任务的途中），没有系统手势，未锁屏。
+    fn keyboard_allowed(&self, now: f64) -> bool {
+        self.mode == Mode::App
+            && !self.lock.is_locked()
+            && !matches!(
+                self.gesture,
+                Gesture::AppSwipe { .. } | Gesture::SwitcherEnter { .. }
+            )
+            && self
+                .tasks
+                .last()
+                .is_some_and(|t| !t.homing && !t.exited && t.rect.is_done(now))
     }
 
     /// 卡片宽度 → 大小进度（0 = 图标大小，1 = 全屏）。
@@ -765,6 +806,9 @@ impl Shell {
         if matches!(self.gesture, Gesture::AppSwipe { .. }) {
             self.check_pause(now);
         }
+        let allowed = self.keyboard_allowed(now);
+        self.keyboard.set_allowed(allowed, now);
+        self.keyboard.update(now);
     }
 
     /// 主屏翻页的速度（点/秒，向后翻为正）：手指拖动时取手指速度（滚动位置被手指“按住”，
@@ -967,6 +1011,14 @@ impl Shell {
             self.lock.touch_down(slot, y, now);
             return TouchRoute::Shell;
         }
+        // 屏幕键盘：底边手势区（系统手势优先）以外落在键盘上的手指都交给键盘，含多指快速连打。
+        if self.mode == Mode::App && y < self.h - BOTTOM_EDGE && self.keyboard.contains(x, y, now) {
+            let radius = self.keyboard.touch_down(slot, x, y, now);
+            if radius > 0.0 {
+                self.ink.press(slot, InkLayer::Overlay, x, y, radius, now);
+            }
+            return TouchRoute::Shell;
+        }
         if !matches!(self.gesture, Gesture::Idle) {
             // v1 只处理单指系统手势；多指交给应用。
             return self.forward_route();
@@ -981,15 +1033,17 @@ impl Shell {
                         start: (x, y),
                         pause: PauseDetector::default(),
                     };
-                    // 手指拖着的卡片完整显示内容；笔迹从底边起笔。
+                    // 手指拖着的卡片完整显示内容；笔迹从底边起笔。键盘随即收起。
                     if let Some(task) = self.tasks.last_mut() {
                         task.spread_from = None;
                     }
+                    self.keyboard.set_allowed(false, now);
                     self.ink.stroke_to(x, y, 0.0, now);
                     return TouchRoute::Shell;
                 }
                 if settled {
                     self.gesture = Gesture::Forward { slot };
+                    self.keyboard.app_touch_down(slot, x, y);
                     return self.forward_route();
                 }
                 // 打开动画进行中：吞掉触摸。
@@ -1098,6 +1152,13 @@ impl Shell {
             self.lock.touch_motion(slot, y, now);
             return TouchRoute::Shell;
         }
+        if self.keyboard.owns(slot) {
+            // 候选条开始拖动：墨滴淡入纸中。
+            if self.keyboard.touch_motion(slot, x, y, now) {
+                self.ink.release(slot, now);
+            }
+            return TouchRoute::Shell;
+        }
         match self.gesture {
             Gesture::Home { slot: s, .. } if s == slot => {
                 self.track(now, x, y);
@@ -1157,7 +1218,10 @@ impl Shell {
                 self.track(now, x, y);
                 self.trail_to(start, x, y, now);
             }
-            Gesture::Forward { slot: s } if s == slot => return self.forward_route(),
+            Gesture::Forward { slot: s } if s == slot => {
+                self.keyboard.app_touch_motion(slot, x, y);
+                return self.forward_route();
+            }
             _ => {}
         }
         TouchRoute::Shell
@@ -1306,6 +1370,11 @@ impl Shell {
             self.lock.touch_up(slot, now);
             return TouchRoute::Shell;
         }
+        if self.keyboard.owns(slot) {
+            self.keyboard.touch_up(slot, now);
+            self.ink.release(slot, now);
+            return TouchRoute::Shell;
+        }
         // 手指离开纸面：墨滴淡入纸中，笔画结束（已画的笔迹继续淡去）。
         self.ink.release(slot, now);
         if self.gesture_slot() == Some(slot) {
@@ -1394,7 +1463,10 @@ impl Shell {
                     self.go_home_from_switcher(now);
                 }
             }
-            Gesture::Forward { slot: s } if s == slot => return self.forward_route(),
+            Gesture::Forward { slot: s } if s == slot => {
+                self.keyboard.app_touch_up(slot, now);
+                return self.forward_route();
+            }
             other => self.gesture = other,
         }
         TouchRoute::Shell
@@ -1572,6 +1644,11 @@ impl Shell {
             cards.push((task, task.rect.value(now), 1.0));
         }
         self.push_cards(&mut scene, &cards, progress, now);
+
+        // 屏幕键盘（在应用之上；Home 指示条与点墨在它之上）。
+        let ink = self.ink_rgba(1, 1.0);
+        self.keyboard
+            .push_scene(&mut scene, [ink[0], ink[1], ink[2]], now);
 
         // Home 指示条（墨色）
         if self.mode == Mode::App

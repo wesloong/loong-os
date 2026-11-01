@@ -30,7 +30,7 @@ use smithay::{
 use crate::{
     device::DeviceConfig,
     render::{Assets, Painter},
-    script::{Action, Script},
+    script::{self, Action, Script},
     state::LoongState,
 };
 
@@ -107,8 +107,14 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
     let mut assets = Assets::new(&state.shell, scale);
     let mut painter = Painter::new(&mut renderer, scale).context("编译着色器失败")?;
 
+    // 拼音引擎：测试要可复现，同步启动（已部署过时只需几毫秒）。
+    if let Some(engine) = crate::ime::start_engine() {
+        state.shell.keyboard.set_engine(Box::new(engine));
+    }
+    // 启动的客户端：结束时一并结束（WPE WebKit 在合成器退出后不会自己退出）。
+    let mut children = Vec::new();
     for cmd in &opts.clients {
-        spawn(cmd, &state);
+        children.extend(spawn(cmd, &state));
     }
 
     std::fs::create_dir_all(&opts.out_dir)?;
@@ -167,14 +173,29 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
                         state.shell.launch(app, now);
                     }
                 }
+                Action::TextInput(purpose) => match purpose {
+                    Some(name) => {
+                        let purpose = script::content_purpose(&name)
+                            .with_context(|| format!("未知的输入框用途 {name}"))?;
+                        state.shell.keyboard.activate(Some(purpose), now);
+                    }
+                    None => state.shell.keyboard.deactivate(now),
+                },
+                Action::KeyDown { slot, target } => {
+                    match script::key_position(&state.shell.keyboard, &target, now) {
+                        Some((x, y)) => state.touch_down(slot, x, y, time_us),
+                        None => tracing::warn!("{:.0} ms：键盘上找不到 {target:?}", now * 1000.0),
+                    }
+                }
             }
             next_action += 1;
         }
         event_loop.dispatch(Some(Duration::ZERO), &mut state)?;
         state.shell.update(now);
+        state.sync_ime();
         for app in state.shell.take_pending_spawns() {
             if let Some(cmd) = state.shell.apps[app].command.clone() {
-                spawn(&cmd, &state);
+                children.extend(spawn(&cmd, &state));
             }
         }
 
@@ -232,6 +253,10 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
         tracing::info!("动画已保存 {}", opts.out_dir.join("anim.png").display());
     }
     timing.report();
+    for mut child in children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
     Ok(())
 }
 
@@ -269,16 +294,17 @@ impl FrameTiming {
     }
 }
 
-fn spawn(cmd: &str, state: &LoongState) {
+fn spawn(cmd: &str, state: &LoongState) -> Option<std::process::Child> {
     tracing::info!("启动: {cmd}");
+    // exec：子进程就是客户端本身，结束时能直接结束它。
     let result = std::process::Command::new("/bin/sh")
         .arg("-c")
-        .arg(cmd)
+        .arg(format!("exec {cmd}"))
         .env("WAYLAND_DISPLAY", &state.socket_name)
         .spawn();
-    if let Err(e) = result {
-        tracing::warn!("启动 {cmd} 失败: {e}");
-    }
+    result
+        .map_err(|e| tracing::warn!("启动 {cmd} 失败: {e}"))
+        .ok()
 }
 
 /// 预乘 RGBA → 不透明 RGB（截图背景不透明）。

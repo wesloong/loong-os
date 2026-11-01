@@ -106,7 +106,7 @@ PACKAGES="
 	mesa-egl mesa-gles mesa-gbm libinput-libs libxkbcommon xkeyboard-config libseat
 	fontconfig font-inter font-noto-cjk
 	foot
-	librime-nolog
+	librime
 	$KERNEL_PKG
 	$DEVICE_PKGS
 "

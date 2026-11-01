@@ -227,7 +227,7 @@ iPad 的键盘覆盖在应用之上，由应用自己避让。WPE 没有“键�
 | `opencc/t2s.json`、`TSPhrases.ocd2`、`TSCharacters.ocd2`（繁转简，Rime 先在这里找） | 56 388 |
 | **合计** | **8 388 868** |
 
-打包为 `system/packages/loong-rime-data`（`tools/build-pkg.sh loong-rime-data`，构建时预编译，noarch），`system/mkimage/mkimage.sh` 在本地仓库里有这个包时装进镜像；`librime-nolog` 总是装（loong-shell 链接它）。打包步骤（`tests/image_data.rs` 按这个步骤逐条验证，并确认只用这些文件时引擎正常工作）：
+打包为 `system/packages/loong-rime-data`（`tools/build-pkg.sh loong-rime-data`，构建时预编译，noarch），`system/mkimage/mkimage.sh` 在本地仓库里有这个包时装进镜像；`librime` 总是装（loong-shell 链接 `librime.so.1`；Alpine 的 `librime-nolog` 只提供 `librime-nolog.so.*`，不能代替它）。打包步骤（`tests/image_data.rs` 按这个步骤逐条验证，并确认只用这些文件时引擎正常工作）：
 
 1. 源文件：`rime-plum-data` 的 `default.yaml`、`key_bindings.yaml`、`punctuation.yaml`、`pinyin.yaml`、`luna_pinyin.dict.yaml`、`essay.txt`，加上 `crates/loong-ime/data/loong_pinyin.{schema,dict}.yaml`；
 2. `rime_deployer --compile loong_pinyin.schema.yaml <临时用户目录> <源目录> <目标>/usr/share/rime-data/build`（x86_64 约 4 秒）；
@@ -239,7 +239,7 @@ iPad 的键盘覆盖在应用之上，由应用自己避让。WPE 没有“键�
 
 | 包 | 安装体积 |
 |---|---|
-| `librime-nolog`（镜像用不带 glog 的版本） | 1449 KiB |
+| `librime`（另需 `glog`，约 0.2 MiB；`librime-nolog` 的 so 名字不同，loong-shell 不能直接用） | 1565 KiB |
 | `leveldb` + `snappy`（用户词库） | 274 KiB |
 | `libmarisa` | 250 KiB |
 | `opencc-libs` | 309 KiB |
@@ -274,7 +274,7 @@ iPad 的键盘覆盖在应用之上，由应用自己避让。WPE 没有“键�
 
 - 最大延迟出现在第一个键（第一次读词典页）。之后每键不到 1ms，远低于 120Hz 的帧间隔（8.3ms）；
 - 词典是 `mmap` 的只读文件页，计入 RSS，但是干净页，内存紧张时内核可以直接回收，不占匿名内存。对 shell「常驻内存 ≤ 40MB」的目标，输入法真正新增的是约 2MB 匿名内存；
-- 优化方向：输入框第一次激活时才启动 librime（`InputMethod` 允许暂时没有引擎）；镜像用 `librime-nolog`；在 nabu 实机上复测。
+- 优化方向：输入框第一次激活时才启动 librime（`InputMethod` 允许暂时没有引擎）；改为链接 `librime-nolog`（需要 build.rs 按库名链接），省掉 glog；在 nabu 实机上复测。
 
 ## 6. 测试
 
@@ -311,7 +311,7 @@ tools/dev-chroot.sh run sh -c 'cargo run --release -p loong-ime --example ime_pr
 | `crates/loong-shell/src/render/keyboard.rs` | 「墨韵」位图：背板、键帽、字形、放大小笺、备选条、候选 |
 | `system/packages/loong-rime-data/` | 预编译的 Rime 数据包（见 4.2 节） |
 
-1. **依赖**：`loong-ime = { path = "../loong-ime" }`；镜像加入 `librime-nolog` 与 `loong-rime-data`（`leveldb`、`libmarisa`、`opencc-libs`、`yaml-cpp` 由 apk 按 so 依赖带进来）。
+1. **依赖**：`loong-ime = { path = "../loong-ime" }`；镜像加入 `librime` 与 `loong-rime-data`（`leveldb`、`libmarisa`、`opencc-libs`、`yaml-cpp` 由 apk 按 so 依赖带进来）。
 2. **启动**：真机后端在后台线程 `ImeEngine::new(&ImeConfig::default())`，经 calloop channel 交回主线程（`ScreenKeyboard::set_engine`）；失败时只能输入英文。无屏幕后端同步启动（截图可复现）。环境变量 `LOONG_IME=off` 不启动引擎。键盘背板在开机和切换外观时于后台线程预先画好（1280×800@1x 约 40ms）。
 3. **text-input**：`TextInputManagerState` + `set_compositor_input_method(true)`；`TextInputActivation::activated(ct)` → `ScreenKeyboard::activate`（只带“敏感数据”提示的输入框也按密码处理），`deactivated()` → `deactivate`。WPE 的第二次 `enable` 不带内容类型：已激活时保持原来的用途，不重置层与组字。
 4. **键盘焦点跟随前台应用，并且在窗口映射（提交第一帧）之后才给**。实测发现：WPE 的 text-input 监听器是在创建输入法上下文时才挂上的（`textInputV3GetGlobalByDisplay`），`new_toplevel` 时就给焦点的话，`zwp_text_input_v3.enter` 在客户端被丢弃（`WAYLAND_DEBUG` 里是 `discarded zwp_text_input_v3#12.enter`），之后它永远不会 `enable`。回主屏、进多任务时焦点离开应用：Smithay 只发 `leave`，应用随后的 `disable` 因为不再是焦点会被丢弃、不回调 `deactivated`，所以由 loong-shell 自己收起键盘；回到应用时重新 `enter`，输入框仍有焦点的话应用会再次 `enable`。

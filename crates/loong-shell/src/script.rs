@@ -26,6 +26,7 @@
 //! - `text_input`：模拟应用的输入框获得焦点（内容用途，如 `normal`、`url`、`number`），`off` 为失去焦点。
 //!   真实客户端（WPE WebKit）经 text-input-v3 激活键盘，不需要它；
 //! - `type`：依次点按这些字符所在的键（`" "` 空格，`"\n"` 换行，`"\b"` 退格），间隔 `interval` 毫秒；
+//!   每次按住 `hold` 毫秒（默认 60；超过 500 即长按，弹出备选条）；
 //! - `candidate`：点按候选栏本页第 i 个候选；
 //! - `key`：点按功能键：`shift` / `lang` / `123` / `symbols` / `abc` / `hide` / `space` / `return` / `backspace`。
 
@@ -93,6 +94,9 @@ pub struct Event {
     /// `type` 中相邻两次点按的间隔（毫秒）。
     #[serde(default = "default_type_interval")]
     pub interval: u64,
+    /// `type` / `candidate` / `key` 每次按住多久再抬起（毫秒）。
+    #[serde(default = "default_key_hold")]
+    pub hold: u64,
     /// 点按候选栏本页第 i 个候选。
     #[serde(default)]
     pub candidate: Option<usize>,
@@ -103,6 +107,10 @@ pub struct Event {
 
 fn default_type_interval() -> u64 {
     200
+}
+
+fn default_key_hold() -> u64 {
+    60
 }
 
 /// 屏幕键盘上要点按的目标（位置在运行时按当前布局求出）。
@@ -225,9 +233,10 @@ impl Script {
                 let purpose = (purpose != "off").then(|| purpose.clone());
                 out.push((t0, Action::TextInput(purpose)));
             }
+            let hold = e.hold.max(1) as f64 / 1000.0;
             let mut tap_key = |t: f64, target: KeyTarget| {
                 out.push((t, Action::KeyDown { slot, target }));
-                out.push((t + 0.06, Action::Up { slot }));
+                out.push((t + hold, Action::Up { slot }));
             };
             if let Some(text) = &e.type_text {
                 let step = e.interval.max(80) as f64 / 1000.0;

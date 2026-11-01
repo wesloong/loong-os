@@ -1,14 +1,16 @@
 {
   "fps": 60,
-  "duration_ms": 5600,
+  "duration_ms": 7200,
   "clock": "9:41",
   "events": [
     { "at": 0, "launch": "notes" },
     { "at": 900, "text_input": "normal" },
     { "at": 2000, "type": "nihao", "interval": 220 },
-    { "at": 3400, "type": "ni", "interval": 220 },
-    { "at": 4200, "candidate": 0 },
-    { "at": 4800, "text_input": "off" }
+    { "at": 3400, "key": "shift" },
+    { "at": 3800, "key": "123" },
+    { "at": 4300, "type": "，", "hold": 900 },
+    { "at": 5500, "key": "abc" },
+    { "at": 6400, "text_input": "off" }
   ],
-  "screenshots": [1300, 2900, 2920, 3300, 3900, 4400, 5500]
+  "screenshots": [1300, 2900, 3300, 3600, 4100, 5000, 5800, 6200, 7150]
 }

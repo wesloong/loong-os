@@ -108,7 +108,12 @@ impl Assets {
         self.pixmaps.clear();
         // 旧外观的册页作废（线程分离，结果丢弃）。
         self.pending_sheets.clear();
-        self.kb = keyboard::KeyboardAssets::default();
+        // 键盘背板在后台画（第一次弹出键盘时不必现画）。
+        self.kb = keyboard::KeyboardAssets::prebuild(
+            shell.theme,
+            self.scale,
+            shell.keyboard.layout().clone(),
+        );
         self.clock_text.clear();
         self.date_text.clear();
         self.theme = shell.theme;

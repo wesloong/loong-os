@@ -12,7 +12,9 @@
 
 use std::collections::HashMap;
 
-use loong_ime::keyboard::{AlternatesPopup, KeyKind, KeyLabel, KeySymbol, LayoutParams};
+use loong_ime::keyboard::{
+    AlternatesPopup, KeyKind, KeyLabel, KeySymbol, KeyboardLayout, LayoutParams,
+};
 use loong_ui::{
     Pixmap,
     ink::{
@@ -102,8 +104,23 @@ pub struct KeyboardAssets {
     text_cache: HashMap<TextKey, Pixmap>,
     /// 毛笔符号位图（符号、边长、颜色）。
     symbol_cache: HashMap<(KeySymbol, u32, u32), Pixmap>,
-    /// 键帽小笺与它的墨影（宽、高、种类）：同样大小的键共用。
-    tile_cache: HashMap<(u32, u32, bool), (Pixmap, Pixmap)>,
+    /// 正在后台线程里画的背板（开机、切换外观时就开始画，第一次弹出键盘时不卡）。
+    pending_panel: Option<(LayoutParams, std::thread::JoinHandle<Pixmap>)>,
+}
+
+impl KeyboardAssets {
+    /// 在后台线程预先画好背板。
+    pub fn prebuild(theme: Theme, scale: f64, layout: KeyboardLayout) -> KeyboardAssets {
+        let params = layout.params;
+        let thread = std::thread::Builder::new()
+            .name("keyboard-panel".into())
+            .spawn(move || keyboard_panel(theme, scale, &layout))
+            .ok();
+        KeyboardAssets {
+            pending_panel: thread.map(|t| (params, t)),
+            ..KeyboardAssets::default()
+        }
+    }
 }
 
 impl Assets {
@@ -117,7 +134,11 @@ impl Assets {
         let params = kb.layout().params;
         if self.kb.panel_for != Some(params) {
             let t0 = std::time::Instant::now();
-            let panel = self.keyboard_panel(kb);
+            let panel = match self.kb.pending_panel.take() {
+                Some((p, thread)) if p == params => thread.join().ok(),
+                _ => None,
+            }
+            .unwrap_or_else(|| keyboard_panel(self.theme, self.scale, kb.layout()));
             self.put(TexKey::KeyboardPanel, panel);
             self.kb.panel_for = Some(params);
             self.kb.glyphs_for = None;
@@ -205,97 +226,6 @@ impl Assets {
         );
         self.kb.symbol_cache.insert(key, pm.clone());
         pm
-    }
-
-    /// 一张键帽小笺（素笺 + 毛边）与它贴在背板上的墨影（四周留 `spread`）。
-    fn key_tile(&mut self, w: u32, h: u32, function: bool) -> (Pixmap, Pixmap) {
-        if let Some(t) = self.kb.tile_cache.get(&(w, h, function)) {
-            return t.clone();
-        }
-        let theme = self.theme;
-        let s = self.scale as f32;
-        let tone = tones(theme);
-        let base = if function { tone.function } else { tone.letter };
-        let seed = 0x7ab + w * 31 + h * 7 + u32::from(function);
-        let radius = (h as f32 / s * 0.11).round().clamp(5.0, 8.0) * s;
-        let tile = paper_tile(theme, w, h, radius, base, (0.7 * s).max(0.7), seed);
-        let spread = (3.0 * s).round().max(2.0) as u32;
-        let shadow = ink::ink_shadow(theme, w, h, radius, spread);
-        self.kb
-            .tile_cache
-            .insert((w, h, function), (tile.clone(), shadow.clone()));
-        (tile, shadow)
-    }
-
-    /// 背板：上缘墨影 + 熟宣 / 墨绢 + 候选栏下的一笔淡墨 + 键帽小笺。
-    fn keyboard_panel(&mut self, kb: &ScreenKeyboard) -> Pixmap {
-        let theme = self.theme;
-        let s = self.scale;
-        let layout = kb.layout();
-        let (w, h) = (layout.params.width, layout.params.height);
-        let (pw, ph, sh) = (px(w, s), px(h, s), px(PANEL_SHADOW, s));
-        let tone = tones(theme);
-        let mut out = loong_ui::pixmap(pw, ph + sh);
-
-        // 上缘的墨影：纸浮在应用之上，向上淡开，略有浓淡起伏。
-        let (shadow_rgb, k) = match theme {
-            Theme::Light => (rgb(0x3A3020), 0.24),
-            Theme::Dark => ([0.0, 0.0, 0.0], 0.45),
-        };
-        {
-            let data = out.data_mut();
-            for y in 0..sh {
-                let t = (y as f32 + 0.5) / sh as f32;
-                for x in 0..pw {
-                    let lumpy = 0.8 + 0.4 * noise::fbm(x as f32 / (90.0 * s as f32), 0.5, 0x5ad, 2);
-                    let a = (k * t.powf(2.4) * lumpy).min(1.0);
-                    let i = ((y * pw + x) * 4) as usize;
-                    data[i] = (shadow_rgb[0] * a * 255.0 + 0.5) as u8;
-                    data[i + 1] = (shadow_rgb[1] * a * 255.0 + 0.5) as u8;
-                    data[i + 2] = (shadow_rgb[2] * a * 255.0 + 0.5) as u8;
-                    data[i + 3] = (a * 255.0 + 0.5) as u8;
-                }
-            }
-        }
-        let sheet = paper::paper_with(theme, pw, ph, tone.panel, 0x4b0);
-        draw(&mut out, &sheet, 0, sh as i32);
-
-        // 候选栏与键区之间：一笔从左向右渐淡的淡墨。
-        let bar_h = layout.candidate_bar.h;
-        let y = (sh as f64 + bar_h * s) as f32;
-        let x0 = (16.0 * s) as f32;
-        let x1 = pw as f32 - x0;
-        let mut field = brush::render(
-            &[Stroke::open(vec![(x0, y), (x1, y)])],
-            &BrushStyle {
-                taper: Some(true),
-                ..BrushStyle::for_width((1.3 * s) as f32)
-            },
-            pw as usize,
-            (ph + sh) as usize,
-            0x11e,
-        );
-        for (i, v) in field.data.iter_mut().enumerate() {
-            let fx = (i % pw as usize) as f32 / pw as f32;
-            *v *= 0.55 * (1.0 - fx).powf(0.7);
-        }
-        blend(&mut out, &field, tone.hint);
-
-        // 键帽：同样大小的键共用一张小笺。
-        for key in &layout.keys {
-            let r = key.rect;
-            let (x, y) = (
-                (r.x * s).round() as i32,
-                (r.y * s).round() as i32 + sh as i32,
-            );
-            let (w, h) = (px(r.w, s), px(r.h, s));
-            let function = key.kind.is_function();
-            let (tile, shadow) = self.key_tile(w, h, function);
-            let spread = ((shadow.width() - w) / 2) as i32;
-            draw(&mut out, &shadow, x - spread, y - spread);
-            draw(&mut out, &tile, x, y);
-        }
-        out
     }
 
     /// 键帽上的字与符号（与键盘等大的透明位图）。
@@ -549,6 +479,103 @@ impl Assets {
         }
         pm
     }
+}
+
+/// 背板：上缘墨影 + 熟宣 / 墨绢 + 候选栏下的一笔淡墨 + 键帽小笺（同样大小的键共用一张）。
+fn keyboard_panel(theme: Theme, s: f64, layout: &KeyboardLayout) -> Pixmap {
+    let (w, h) = (layout.params.width, layout.params.height);
+    let (pw, ph, sh) = (px(w, s), px(h, s), px(PANEL_SHADOW, s));
+    let tone = tones(theme);
+    let mut out = loong_ui::pixmap(pw, ph + sh);
+
+    // 上缘的墨影：纸浮在应用之上，向上淡开，略有浓淡起伏。
+    let (shadow_rgb, k) = match theme {
+        Theme::Light => (rgb(0x3A3020), 0.24),
+        Theme::Dark => ([0.0, 0.0, 0.0], 0.45),
+    };
+    {
+        let data = out.data_mut();
+        for y in 0..sh {
+            let t = (y as f32 + 0.5) / sh as f32;
+            for x in 0..pw {
+                let lumpy = 0.8 + 0.4 * noise::fbm(x as f32 / (90.0 * s as f32), 0.5, 0x5ad, 2);
+                let a = (k * t.powf(2.4) * lumpy).min(1.0);
+                let i = ((y * pw + x) * 4) as usize;
+                data[i] = (shadow_rgb[0] * a * 255.0 + 0.5) as u8;
+                data[i + 1] = (shadow_rgb[1] * a * 255.0 + 0.5) as u8;
+                data[i + 2] = (shadow_rgb[2] * a * 255.0 + 0.5) as u8;
+                data[i + 3] = (a * 255.0 + 0.5) as u8;
+            }
+        }
+    }
+    let mut sheet = paper::paper_with(theme, pw, ph, tone.panel, 0x4b0);
+    if theme == Theme::Dark {
+        // 暗色：上缘一道极淡的月白受光边（设计规范 6.2），键盘与夜色的应用分得开。
+        let edge = theme::hex(theme.palette().ink[0], 1.0);
+        let data = sheet.data_mut();
+        for y in 0..(s.round() as u32).max(1) {
+            for x in 0..pw {
+                let i = ((y * pw + x) * 4) as usize;
+                for (c, v) in [edge.red(), edge.green(), edge.blue()].iter().enumerate() {
+                    let d = data[i + c] as f32 / 255.0;
+                    data[i + c] = ((d + (v - d) * 0.16) * 255.0 + 0.5) as u8;
+                }
+            }
+        }
+    }
+    draw(&mut out, &sheet, 0, sh as i32);
+
+    // 候选栏与键区之间：一笔从左向右渐淡的淡墨。
+    let bar_h = layout.candidate_bar.h;
+    let y = (sh as f64 + bar_h * s) as f32;
+    let x0 = (16.0 * s) as f32;
+    let x1 = pw as f32 - x0;
+    let mut field = brush::render(
+        &[Stroke::open(vec![(x0, y), (x1, y)])],
+        &BrushStyle {
+            taper: Some(true),
+            ..BrushStyle::for_width((1.3 * s) as f32)
+        },
+        pw as usize,
+        (ph + sh) as usize,
+        0x11e,
+    );
+    for (i, v) in field.data.iter_mut().enumerate() {
+        let fx = (i % pw as usize) as f32 / pw as f32;
+        *v *= 0.55 * (1.0 - fx).powf(0.7);
+    }
+    blend(&mut out, &field, tone.hint);
+
+    let mut tiles: HashMap<(u32, u32, bool), (Pixmap, Pixmap)> = HashMap::new();
+    for key in &layout.keys {
+        let r = key.rect;
+        let (x, y) = (
+            (r.x * s).round() as i32,
+            (r.y * s).round() as i32 + sh as i32,
+        );
+        let (w, h) = (px(r.w, s), px(r.h, s));
+        let function = key.kind.is_function();
+        let (tile, shadow) = tiles
+            .entry((w, h, function))
+            .or_insert_with(|| key_tile(theme, s, w, h, function));
+        let spread = ((shadow.width() - w) / 2) as i32;
+        draw(&mut out, shadow, x - spread, y - spread);
+        draw(&mut out, tile, x, y);
+    }
+    out
+}
+
+/// 一张键帽小笺（素笺 + 毛边）与它贴在背板上的墨影（四周留 `spread`）。
+fn key_tile(theme: Theme, scale: f64, w: u32, h: u32, function: bool) -> (Pixmap, Pixmap) {
+    let s = scale as f32;
+    let tone = tones(theme);
+    let base = if function { tone.function } else { tone.letter };
+    let seed = 0x7ab + w * 31 + h * 7 + u32::from(function);
+    let radius = (h as f32 / s * 0.11).round().clamp(5.0, 8.0) * s;
+    let tile = paper_tile(theme, w, h, radius, base, (0.7 * s).max(0.7), seed);
+    let spread = (3.0 * s).round().max(2.0) as u32;
+    let shadow = ink::ink_shadow(theme, w, h, radius, spread);
+    (tile, shadow)
 }
 
 /// 键帽内容的文字（放大小笺上显示）。

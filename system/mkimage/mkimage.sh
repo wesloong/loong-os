@@ -149,7 +149,9 @@ if [ -d "$LOCAL_REPO/packages/$ARCH" ]; then
 	mkdir -p "$ROOT/mnt/loong-packages"
 	mount --bind "$LOCAL_REPO" "$ROOT/mnt/loong-packages"
 	extra_repo="--repository /mnt/loong-packages/packages"
-	[ -n "${WITH_WPE:-}" ] && PACKAGES="$PACKAGES wpewebkit wpewebkit-minibrowser"
+	# shared-mime-info：WebKit 靠 GIO 按扩展名判断 file:// 的类型；缺了它 .html 会被当成纯文本显示源码
+	# （wpewebkit 包没有声明这个依赖，开发 chroot 里碰巧有，所以无屏幕测试发现不了）
+	[ -n "${WITH_WPE:-}" ] && PACKAGES="$PACKAGES wpewebkit wpewebkit-minibrowser shared-mime-info"
 	# 「墨韵」展示字体（霞鹜文楷屏幕版）：tools/build-pkg.sh font-lxgw-wenkai-screen
 	ls "$LOCAL_REPO/packages/$ARCH"/font-lxgw-wenkai-screen-*.apk >/dev/null 2>&1 && \
 		PACKAGES="$PACKAGES font-lxgw-wenkai-screen"

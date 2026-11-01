@@ -6,7 +6,10 @@ browser_ui_dir = get_option('prefix') / get_option('datadir') / 'loong' / 'web' 
 
 executable('loong-browser',
   'loong-browser.c',
+  '../webapp/loong-appearance.c', # 系统外观（与 loong-webapp 共用）
   c_args: ['-DLOONG_BROWSER_UI_DIR="@0@"'.format(browser_ui_dir)],
+  include_directories: include_directories('../webapp'),
+  link_with: bridge_core,
   dependencies: [wpe_webkit, loong_platform_dep, dependency('gio-unix-2.0')],
   install: true,
 )

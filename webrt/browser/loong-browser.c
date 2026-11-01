@@ -31,6 +31,7 @@
 #include <wpe/wpe-platform.h>
 
 #include "loong-platform.h"
+#include "loong-appearance.h"
 
 #define APP_ID "loong.browser"
 #define DEFAULT_SEARCH_URL "https://www.bing.com/search?q=%s"
@@ -77,6 +78,7 @@ struct _Browser {
     char *start_url;
     char *search_url;
     gboolean dark;
+    LoongAppearance *appearance; /* 跟随系统外观（没有用 --theme / LOONG_THEME 固定时） */
     gboolean windowed;
     int windowed_width, windowed_height;
     char **initial_urls;
@@ -1129,6 +1131,24 @@ on_display_disconnected(WPEDisplay *display, GError *error, Browser *b)
     g_application_quit(b->app);
 }
 
+
+/* 外观（宣纸/夜墨）→ WPE 的 dark-mode 设置（界面与网页的 prefers-color-scheme）与窗口底色。 */
+static void
+apply_theme(Browser *b)
+{
+    WPESettings *wpe_settings = wpe_display_get_settings(b->display);
+    wpe_settings_set_boolean(wpe_settings, WPE_SETTING_DARK_MODE, b->dark, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
+    if (b->toplevel)
+        loong_toplevel_set_background(LOONG_TOPLEVEL(b->toplevel), b->dark ? PAPER_DARK : PAPER_LIGHT);
+}
+
+static void
+on_appearance_changed(LoongAppearance *appearance, G_GNUC_UNUSED GParamSpec *pspec, Browser *b)
+{
+    b->dark = g_strcmp0(loong_appearance_get_theme(appearance), "dark") == 0;
+    apply_theme(b);
+}
+
 static void
 on_activate(GApplication *app, Browser *b)
 {
@@ -1145,11 +1165,13 @@ on_activate(GApplication *app, Browser *b)
     WPESettings *wpe_settings = wpe_display_get_settings(b->display);
     /* 所有 view 放进同一个窗口，由本程序决定位置。 */
     wpe_settings_set_boolean(wpe_settings, WPE_SETTING_CREATE_VIEWS_WITH_A_TOPLEVEL, FALSE, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
-    wpe_settings_set_boolean(wpe_settings, WPE_SETTING_DARK_MODE, b->dark, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
-
     b->toplevel = wpe_display_create_toplevel(b->display, 0);
     loong_toplevel_set_app_id(LOONG_TOPLEVEL(b->toplevel), APP_ID);
-    loong_toplevel_set_background(LOONG_TOPLEVEL(b->toplevel), b->dark ? PAPER_DARK : PAPER_LIGHT);
+    if (b->appearance) {
+        b->dark = g_strcmp0(loong_appearance_get_theme(b->appearance), "dark") == 0;
+        g_signal_connect(b->appearance, "notify::theme", G_CALLBACK(on_appearance_changed), b);
+    }
+    apply_theme(b);
     wpe_toplevel_set_title(b->toplevel, "浏览器");
     if (b->windowed)
         wpe_toplevel_resize(b->toplevel, b->windowed_width, b->windowed_height);
@@ -1228,7 +1250,11 @@ main(G_GNUC_UNUSED int argc, char **argv)
 
     if (!theme)
         theme = g_strdup(g_getenv("LOONG_THEME"));
-    b->dark = theme && !g_ascii_strcasecmp(theme, "dark");
+    /* 没有用命令行或环境变量固定外观时，跟随系统外观文件（“设置”写入，见 docs/api/loong-js-bridge.md） */
+    if (theme)
+        b->dark = !g_ascii_strcasecmp(theme, "dark");
+    else
+        b->appearance = loong_appearance_new();
     if (windowed && sscanf(windowed, "%dx%d", &b->windowed_width, &b->windowed_height) == 2 && b->windowed_width > 0 &&
         b->windowed_height > 0)
         b->windowed = TRUE;

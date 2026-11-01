@@ -6,8 +6,9 @@
 //! - 格式与 modifier 取自渲染器能导入的（`ImportDma::dmabuf_formats`）。只有主 tranche：
 //!   应用窗口总要经过自定义着色器合成（圆角、晕染遮罩，见 [`RoundedSurface`]），
 //!   不会直接扫描输出客户端缓冲，scanout tranche 只会误导客户端。
-//! - 没有 DRM 设备（Mesa llvmpipe 等纯软件渲染）时退化为 v3：只公布格式表，不发 feedback
-//!   （协议要求 feedback 必须给出一个设备）。
+//! - 没有 DRM 设备，或合成器本身就是软件渲染（llvmpipe、QEMU 无 3D 时的 kms_swrast）时退化为
+//!   v3：只公布格式表，不发 feedback（协议要求 feedback 必须给出一个设备）。客户端于是走共享
+//!   内存；合成器都在软件渲染时，让客户端在同一块“GPU”上用 GBM 分配缓冲没有好处。
 //! - 导入在 [`DmabufHandler::dmabuf_imported`] 中先排队，由后端在本轮事件处理之后交给
 //!   渲染器（[`LoongState::import_pending_dmabufs`]）：渲染器归后端所有，协议回调里拿不到；
 //!   `ImportNotifier` 本身就支持异步完成。
@@ -130,7 +131,7 @@ impl LoongState {
             }
             DmabufMode::FormatsOnly => {
                 tracing::info!(
-                    "linux-dmabuf v3：渲染器没有 DRM 设备（软件渲染），只公布 {codes} 种格式"
+                    "linux-dmabuf v3：软件渲染、没有可公布的 GPU，只公布 {codes} 种格式"
                 );
                 Some(self.dmabuf.state.create_global::<LoongState>(&dh, formats))
             }

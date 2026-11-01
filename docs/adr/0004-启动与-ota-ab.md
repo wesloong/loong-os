@@ -2,7 +2,7 @@
 
 - **状态**：已接受
 - **日期**：2026-10
-- **相关**：[技术规划 · 启动与 A/B 的两种后端](../技术规划.md#启动与-ab-的两种后端)、[ADR 0001](0001-基础发行版-alpine.md)
+- **相关**：[技术规划 · 启动与 A/B 的两种后端](../技术规划.md#启动与-ab-的两种后端)、[ADR 0001](0001-基础发行版-alpine.md)、[ADR 0006](0006-ota-更新包与-loong-update.md)（OTA 更新包与 loong-update，M5 的实现细节）
 
 ## 背景
 
@@ -40,7 +40,7 @@ v1 包含 OTA A/B 更新。系统要做到：更新可靠（断电或坏包都�
 `uefi-sdboot` 的细节：
 
 - 用 mtools 把 systemd-boot 的 `.efi` 和 UKI 拷入 ESP，`loader.conf` 自己写。分区用 sfdisk 生成 GPT：**ESP | root_a | root_b | data**。整个过程不需要 loop 设备。
-- 自写 OpenRC 服务 **`loong-boot-ok`**：系统启动完成后，从 efivarfs 读取 `LoaderBootCountPath`，把对应 UKI 文件名中的计数后缀去掉，即“标记本次启动成功”。这需要加载 `efivarfs` 模块。
+- 自写 OpenRC 服务 **`loong-boot-ok`**：系统启动完成后，从 efivarfs 读取 `LoaderBootCountPath`，把对应 UKI 文件名中的计数后缀去掉，即“标记本次启动成功”。这需要加载 `efivarfs` 模块。（M5 起由 `loong-update mark-good` 完成，并且要等系统界面连续运行一段时间才确认，见 [ADR 0006](0006-ota-更新包与-loong-update.md#启动确认系统界面真的跑起来了才算)。）
 
 ### 内核参数
 
@@ -49,6 +49,7 @@ v1 包含 OTA A/B 更新。系统要做到：更新可靠（断电或坏包都�
 ### OTA（M5）
 
 - 由 `loong-update` 下载**签名的整镜像更新包**，写入非活动 slot，再通过当前后端的机制切换 slot。新系统如果没能完成启动确认，就由启动计数自动回滚。
+- 更新包格式、写入顺序、启动确认的标准与 D-Bus 接口见 [ADR 0006](0006-ota-更新包与-loong-update.md)；dm-verity 的设计也记在那里（尚未实现）。
 
 ## 备选方案及不选原因
 
@@ -75,5 +76,5 @@ v1 包含 OTA A/B 更新。系统要做到：更新可靠（断电或坏包都�
 - 需要自行维护 initramfs、`loong-boot-ok`、`system/mkimage/` 构建脚本，以及每种后端的 slot 切换逻辑。
 - 两个 slot 会让根分区占用的空间翻倍，这也是镜像体积目标（压缩后 ≤ 250MB，瘦身后 ≤ 150MB）重要的原因之一。
 - 所有可变状态都必须显式放到 `/data`。新增系统服务时，要检查它的写入路径（加入 bind/tmpfs 列表）。
-- 必须验证回滚：在 QEMU 中人为损坏 slot A，确认启动计数会回滚到 slot B；nabu 上的 ABL 回滚在 M3/M5 中验证。
+- 必须验证回滚：在 QEMU 中人为损坏 slot A，确认启动计数会回滚到 slot B；nabu 上的 ABL 回滚在 M3/M5 中验证。（uefi-sdboot 已在 M5 中验证：装一个系统界面起不来的更新，连续 3 次试运行失败后 systemd-boot 自动回到旧 slot，见 ADR 0006；nabu 仍待真机。）
 - 在 `android-abl` 后端上，回滚行为取决于 ABL 实现，需要逐个机型确认。

@@ -2,7 +2,11 @@
 """在 QEMU 中运行 Loong OS 镜像，并通过 QMP 截图、模拟触摸（在开发 chroot 内运行）。
 
   tools/qemu.py start  <镜像> [--arch x86_64|aarch64] [--size 1280x800] [--mem 2048] [--smp 4]
-  tools/qemu.py wait   <正则> [--timeout 秒]        等待串口日志出现某内容
+                       [--disk 文件]...               额外的只读 virtio 磁盘（/dev/vdb、vdc…，例如 OTA 更新包）
+  tools/qemu.py wait   <正则> [--timeout 秒] [--count N]   等待串口日志出现某内容（至少 N 次）
+  tools/qemu.py send   <文本>                       向串口输入一行（例如在 login: 提示后输入 root）
+  tools/qemu.py exec   <命令|@脚本> [--timeout 秒]  在串口 shell 里运行命令或宿主机上的脚本（需已登录），
+                                                     打印输出，返回其退出码
   tools/qemu.py shot   <文件.png>                   截图
   tools/qemu.py tap    <x> <y>                       点按（逻辑坐标 = 屏幕像素）
   tools/qemu.py swipe  <x1> <y1> <x2> <y2> [毫秒] [--hold 毫秒]   滑动（可在终点停留）
@@ -26,6 +30,8 @@ import time
 RUN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "build", "qemu")
 QMP = os.path.join(RUN, "qmp.sock")
 SERIAL = os.path.join(RUN, "serial.log")
+# 串口输入：QEMU 在这个 unix socket 上收发串口数据，同时把输出记进 SERIAL
+SERIAL_SOCK = os.path.join(RUN, "serial.sock")
 STATE = os.path.join(RUN, "state.json")
 
 
@@ -47,7 +53,7 @@ MACHINES = {
 
 def start(args):
     os.makedirs(RUN, exist_ok=True)
-    for f in (QMP, SERIAL):
+    for f in (QMP, SERIAL, SERIAL_SOCK):
         if os.path.exists(f):
             os.remove(f)
     w, h = (int(v) for v in args.size.split("x"))
@@ -60,12 +66,15 @@ def start(args):
         "-smp", str(args.smp), "-m", str(args.mem),
         "-drive", f"if=pflash,format=raw,readonly=on,file={m['code']}",
         "-drive", f"if=pflash,format=raw,file={vars_file}",
-        "-drive", f"file={args.image},format=raw,if=virtio",
+        # .qcow2：写时复制的覆盖层（qemu-img create -f qcow2 -b 原镜像 -F raw x.qcow2），原镜像不变
+        "-drive", f"file={args.image},format={'qcow2' if args.image.endswith('.qcow2') else 'raw'},if=virtio",
+        *[a for d in args.disk for a in ("-drive", f"file={os.path.abspath(d)},format=raw,if=virtio,readonly=on")],
         "-device", f"virtio-gpu-pci,xres={w},yres={h}",
         "-device", "virtio-tablet-pci",
         "-device", "virtio-keyboard-pci",
         "-display", "none",
-        "-serial", f"file:{SERIAL}",
+        "-chardev", f"socket,id=ser0,path={SERIAL_SOCK},server=on,wait=off,logfile={SERIAL}",
+        "-serial", "chardev:ser0",
         "-qmp", f"unix:{QMP},server=on,wait=off",
         "-daemonize", "-pidfile", os.path.join(RUN, "qemu.pid"),
     ]
@@ -151,12 +160,70 @@ def wait(args):
     while time.time() < deadline:
         if os.path.exists(SERIAL):
             with open(SERIAL, errors="replace") as f:
-                if pat.search(f.read()):
+                if len(pat.findall(f.read())) >= args.count:
                     print("已出现:", args.pattern)
                     return
         time.sleep(1)
     print("超时：未等到", args.pattern, file=sys.stderr)
     sys.exit(1)
+
+
+def serial_write(text):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.connect(SERIAL_SOCK)
+    s.sendall(text.encode())
+    # 断开前留时间让虚拟机的串口把输入读完（客户端一断开，QEMU 就丢掉还没送进串口的数据）。
+    # 连接期间虚拟机的输出也会发到这个 socket：一直读掉，免得堵住（输出另有日志文件记录）。
+    s.setblocking(False)
+    deadline = time.time() + 0.5 + len(text) / 2000
+    while time.time() < deadline:
+        try:
+            if not s.recv(65536):
+                break
+        except BlockingIOError:
+            time.sleep(0.02)
+    s.close()
+
+
+def serial_size():
+    return os.path.getsize(SERIAL) if os.path.exists(SERIAL) else 0
+
+
+def send(args):
+    serial_write(args.text + "\n")
+
+
+def exec_(args):
+    # 输出前后的标记由 shell 拼出来（"@@""@" → "@@@"），命令回显里没有连续的标记文本，
+    # 不会被误认；ash 的行编辑在长命令换行时会把回显弄乱，所以不靠回显定位输出。
+    token = f"{os.getpid()}-{int(time.time() * 1000)}"
+    command = args.command
+    if command.startswith("@"):
+        # @文件：把宿主机上的脚本经 here-document 传进虚拟机执行
+        with open(command[1:]) as f:
+            script = f.read()
+        command = f"sh -s <<'@@EOF{token}'\n{script.rstrip()}\n@@EOF{token}\n"
+        start_at = serial_size()
+        serial_write(f'echo "@@""@ B {token}"; ' + command)
+        serial_write(f'echo "@@""@ E {token} rc=$?"\n')
+    else:
+        start_at = serial_size()
+        serial_write(f'echo "@@""@ B {token}"; {command}; echo "@@""@ E {token} rc=$?"\n')
+    # QEMU 的串口日志偶尔会把一个字符记两次：标记行只认前缀，不逐字比对 token
+    # （同一时间只有一个 exec，从发送前的日志位置开始找，不会认错）
+    pat = re.compile(r"@@@ B [^\n]*\n(.*?)@@@ E [^\n]*?rc=(\d+)", re.S)
+    deadline = time.time() + args.timeout
+    while time.time() < deadline:
+        with open(SERIAL, "rb") as f:
+            f.seek(start_at)
+            out = f.read().decode(errors="replace")
+        m = pat.search(out)
+        if m:
+            print(m.group(1).replace("\r", "").rstrip("\n"))
+            sys.exit(int(m.group(2)))
+        time.sleep(1)
+    print("超时：命令没有结束", file=sys.stderr)
+    sys.exit(124)
 
 
 def stop(_args):
@@ -175,10 +242,19 @@ def main():
     s.add_argument("--size", default="1280x800")
     s.add_argument("--mem", type=int, default=2048)
     s.add_argument("--smp", type=int, default=4)
+    s.add_argument("--disk", action="append", default=[], help="额外的只读 raw 磁盘（可多次）")
     s.set_defaults(fn=start)
+    s = sub.add_parser("send")
+    s.add_argument("text")
+    s.set_defaults(fn=send)
+    s = sub.add_parser("exec")
+    s.add_argument("command")
+    s.add_argument("--timeout", type=int, default=600)
+    s.set_defaults(fn=exec_)
     s = sub.add_parser("wait")
     s.add_argument("pattern")
     s.add_argument("--timeout", type=int, default=300)
+    s.add_argument("--count", type=int, default=1, help="至少出现几次（多次重启后用）")
     s.set_defaults(fn=wait)
     s = sub.add_parser("shot")
     s.add_argument("file")

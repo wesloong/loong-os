@@ -16,8 +16,20 @@
 /bin/busybox mkdir -p /bin /sbin /proc /sys /dev /newroot
 /bin/busybox --install -s /bin
 
+rescue_requested=0
+
 rescue() {
 	echo "Loong OS initramfs: $*"
+	if [ "$rescue_requested" != 1 ]; then
+		# 平板上通常没人能操作救援 shell。停在这里的话 A/B 回滚永远不会发生：
+		# 重启，让引导程序消耗一次启动尝试次数，用完后自动回到另一个 slot。
+		echo "10 秒后重启（按回车进入救援 shell；内核命令行加 loong.rescue 直接进入）。"
+		if read -t 10 _ 2>/dev/null; then
+			exec /bin/sh
+		fi
+		echo "重启。"
+		reboot -f
+	fi
 	echo "进入救援 shell。"
 	exec /bin/sh
 }
@@ -40,7 +52,7 @@ for arg in $(cat /proc/cmdline); do
 		# Android 引导程序（ABL）会附加当前 slot；boot.img 自带的 loong.slot 优先
 		androidboot.slot_suffix=_*) abl_slot="${arg#androidboot.slot_suffix=_}" ;;
 		loong.debug) set -x ;;
-		loong.rescue) rescue "命令行要求进入救援模式" ;;
+		loong.rescue) rescue_requested=1; rescue "命令行要求进入救援模式" ;;
 	esac
 done
 slot=${slot:-$abl_slot}

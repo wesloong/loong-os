@@ -1,72 +1,63 @@
 #!/sbin/openrc-run
-# A/B 启动确认：系统界面成功启动后，告诉引导程序“这个 slot 是好的”。
-# 启动后端由 mkimage 写入 /etc/conf.d/loong-boot-ok（BOOT_BACKEND=...）。
+# A/B 启动确认：系统界面正常运行后，告诉引导程序“这个 slot 是好的”。
 #
-# uefi-sdboot：systemd-boot 的启动计数。UKI 文件名带 "+剩余次数-已失败次数"（如 loong-a+3.efi），
-#   每次尝试启动都会递减；次数用完的 slot 会被排到最后，自动回退到另一个 slot。
-#   本服务去掉文件名里的计数。Alpine 只提供 systemd-boot 的 EFI 程序，没有 systemd-bless-boot，所以自己实现。
-# android-abl：高通 ABL 的 slot 属性（GPT 分区属性里的 successful / retry-count）。
-#   qbootctl -m 把当前 slot 标记为启动成功；未标记时 ABL 每次启动递减重试次数，用完后切换到另一个 slot。
-#   不启用 qbootctl 自带的 OpenRC 服务：它在启动早期就标记成功，起不到保护作用。
+# 只有“试运行”的启动（刚装完更新、还没确认；`loong-update status --boot-state` 为 trial）才需要确认：
+#   1. 等系统界面（loong-session 的 loong-shell 进程）连续运行 LOONG_BOOT_OK_STABLE 秒；
+#   2. 等到了 → `loong-update mark-good`：
+#        uefi-sdboot  去掉 UKI 文件名里的启动计数（loong-b+2-1.efi → loong-b.efi）。Alpine 没有
+#                     systemd-bless-boot，由 loong-update 读 EFI 变量 LoaderBootCountPath 实现；
+#        android-abl  qbootctl -m（不启用 qbootctl 自带的 OpenRC 服务：它在启动早期就标记成功，
+#                     起不到保护作用）；
+#   3. LOONG_BOOT_OK_TIMEOUT 秒内没等到（例如新系统的 loong-shell 一启动就崩溃）→ 重启，让引导程序
+#      消耗一次尝试次数。次数用完后引导程序自动回到旧 slot（systemd-boot 把计数用完的 UKI 排到最后；
+#      ABL 把重试次数用完的 slot 标为不可启动）。
+# 已确认的启动什么也不做。上面几个变量可以在 /etc/conf.d/loong-boot-ok 中调整；
+# LOONG_BOOT_OK_REBOOT=0 时只报错、不重启（调试用）。
 
-description="标记本次启动成功（A/B 回滚保护）"
+description="确认本次启动成功（A/B 回滚保护）"
 
 depend() {
 	need localmount
 	after loong-session
 }
 
-EFI_LOADER_GUID="4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
-
-find_partition() {
-	for u in /sys/class/block/*/uevent; do
-		if grep -qx "PARTNAME=$1" "$u"; then
-			echo "/dev/$(basename "$(dirname "$u")")"
-			return 0
+# loong-shell 连续运行 $1 秒则成功；$2 秒内没做到则失败。进程号变了（崩溃后被重新拉起）就重新计时。
+wait_session() {
+	waited=0
+	since=0
+	last=
+	while [ "$waited" -lt "$2" ]; do
+		pid=$(pidof loong-shell 2>/dev/null)
+		if [ -n "$pid" ] && [ "$pid" = "$last" ]; then
+			[ $((waited - since)) -ge "$1" ] && return 0
+		else
+			last=$pid
+			since=$waited
 		fi
+		sleep 1
+		waited=$((waited + 1))
 	done
 	return 1
 }
 
 start() {
-	case "${BOOT_BACKEND:-uefi-sdboot}" in
-		android-abl) mark_abl ;;
-		*) mark_sdboot ;;
-	esac
-}
+	state=$(loong-update status --boot-state 2>/dev/null) || state=unknown
+	# good：已经确认过（或本次启动不带计数）；unknown：不是 A/B 启动，或读不到状态——都不做任何事，
+	# 尤其不能因为读不到状态就重启。
+	[ "$state" = trial ] || return 0
 
-mark_abl() {
-	ebegin "标记本次启动成功（slot $(qbootctl -c 2>/dev/null)）"
-	qbootctl -m >/dev/null
-	eend $?
-}
-
-mark_sdboot() {
-	ebegin "标记本次启动成功"
-	modprobe -q efivarfs 2>/dev/null
-	if ! mountpoint -q /sys/firmware/efi/efivars 2>/dev/null; then
-		mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null
-	fi
-	var="/sys/firmware/efi/efivars/LoaderBootCountPath-$EFI_LOADER_GUID"
-	if [ ! -r "$var" ]; then
-		# 本次启动没有使用计数（已经确认过，或不是 UEFI 启动）。
+	ebegin "试运行的启动：等待系统界面正常运行"
+	if wait_session "${LOONG_BOOT_OK_STABLE:-15}" "${LOONG_BOOT_OK_TIMEOUT:-180}"; then
 		eend 0
-		return 0
+		ebegin "标记本次启动成功"
+		loong-update mark-good >/dev/null
+		eend $?
+		return
 	fi
-	# 变量内容：4 字节属性 + UTF-16LE 路径（例如 \EFI\Linux\loong-a+2-1.efi）
-	path=$(tail -c +5 "$var" | tr -d '\000' | tr '\\' '/')
-	esp=$(find_partition esp) || { eend 1 "找不到 ESP 分区"; return 1; }
-	modprobe -q vfat 2>/dev/null
-	mnt=/run/loong/esp
-	mkdir -p "$mnt"
-	mount -t vfat "$esp" "$mnt" || { eend 1 "无法挂载 ESP"; return 1; }
-	old="$mnt$path"
-	new=$(echo "$old" | sed -E 's/\+[0-9]+(-[0-9]+)?\.efi$/.efi/')
-	rc=0
-	if [ "$old" != "$new" ] && [ -e "$old" ]; then
-		mv "$old" "$new" || rc=1
-		sync
+	eend 1 "系统界面没有正常启动，本次启动不确认"
+	if [ "${LOONG_BOOT_OK_REBOOT:-1}" = 1 ]; then
+		ewarn "重启：启动尝试次数用完后，引导程序会回到上一个系统"
+		reboot
 	fi
-	umount "$mnt"
-	eend $rc
+	return 1
 }

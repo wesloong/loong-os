@@ -34,6 +34,12 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 |---|---|---|
 | ![设置：显示与亮度](docs/images/web/settings-wpe-display.jpg) | ![设置：电池（夜墨）](docs/images/web/settings-wpe-battery-dark.jpg) | ![设置：无线局域网](docs/images/web/settings-wpe-wifi.jpg) |
 
+屏幕键盘与拼音输入（M4）：输入法运行在 loong-shell 进程内（librime），应用经 `zwp_text_input_v3` 收到预编辑与上屏文字，键盘升起后窗口让出高度。下图是 WPE WebKit 页面里打出“你好，世界。”（见 [loong-ime](docs/api/loong-ime.md#8-loong-shell-中的实现)）：
+
+| 组字中（拼音在输入框里，候选栏为文楷） | 夜墨 · 上屏后 | 浏览器地址栏（网址用途，英文） |
+|---|---|---|
+| ![屏幕键盘 · 组字中](docs/images/keyboard-light.png) | ![屏幕键盘 · 夜墨](docs/images/keyboard-committed-dark.png) | ![浏览器地址栏](docs/images/keyboard-browser-url.png) |
+
 完整系统在 QEMU 中启动后的画面（UEFI → systemd-boot → UKI → initramfs → 只读 erofs → OpenRC → `loong-shell` 走 DRM/KMS）：
 
 ![QEMU 中的 Loong OS](docs/images/qemu-home.png)
@@ -55,7 +61,8 @@ ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-she
 | QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
 | aarch64：qemu-user binfmt（`tools/setup-binfmt.sh`）、交叉编译（`tools/build-aarch64.sh`）、`qemu-aarch64` 镜像 | ✅ 在 QEMU virt（TCG）中启动到锁屏 |
 | 小米平板 5：`android-abl` 启动后端（boot.img、super 动态分区 A/B、userdata、qbootctl 回滚），见[适配说明](docs/devices/xiaomi-nabu.md) | 🚧 镜像可构建并通过离线自检，尚未上真机 |
-| `crates/loong-ime`：librime 拼音引擎（简体，词库 8MB）、iPad 式屏幕键盘模型（布局、命中测试、触摸状态机） | ✅ 已完成（含真实 librime 测试）；绘制与 text-input-v3 对接待接入 loong-shell（M4） |
+| `crates/loong-ime`：librime 拼音引擎（简体，词库 8MB）、iPad 式屏幕键盘模型（布局、命中测试、触摸状态机） | ✅ 已完成（含真实 librime 测试） |
+| 屏幕键盘（M4）：loong-shell 内的输入法、「墨韵」键盘与候选栏、`zwp_text_input_v3`、窗口避让、镜像中的预编译 Rime 数据（`loong-rime-data`） | ✅ 在无屏幕 loong-shell + WPE WebKit（loong-webapp、loong-browser）中端到端验证；还没上真机 |
 | `webrt/`：`loong-webapp`（每个应用一个进程、跟随系统外观）、系统应用的受限 JS bridge（`window.loong` → loong-sysd，见[说明](docs/api/loong-js-bridge.md)）、**设置**（无线局域网、显示与亮度、电池、关于本机） | ✅ 在无屏幕 loong-shell + WPE WebKit 中端到端验证（亮度滑块写入背光、电池读自 sysfs）；Wi‑Fi 用假 iwd 验证（还没有在真实网卡上试过） |
 | `webrt/platform`、`webrt/browser`：自写 `loong` WPEPlatform 后端（每个 view 一个 `wl_subsurface`）与系统浏览器 `loong-browser`（界面 + 网页同屏、标签页、「墨韵」界面、添加到主屏幕），见[下文](#浏览器) | ✅ 在 sway 与 loong-shell（无屏幕）中验证（M2） |
 
@@ -73,6 +80,7 @@ ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-she
 | `crates/loong-sysd/` | 系统服务（D-Bus `org.loong.System1`）：背光、电源、Wi‑Fi（iwd）；OTA 待做。接口见 [docs/api/loong-sysd.md](docs/api/loong-sysd.md) | 已有（M4 进行中） |
 | `webrt/` | C/meson：`webapp/`（loong-webapp 与 JS bridge）、`apps/`（系统 Web 应用：设置）、`platform/`（`loong` WPEPlatform 后端）、`browser/`（loong-browser 与测试工具）、`loongkit/`、`demo/` | 已有（M2 进行中） |
 | `system/packages/wpewebkit/` | WPE WebKit 的 APKBUILD | 已有 |
+| `system/packages/loong-rime-data/` | 拼音输入法的 Rime 数据（构建时预编译词典，约 8 MiB） | 已有 |
 | `system/packages/loong-*/` | `loong-shell`、`loong-webrt`、`loong-base`、`loong-initramfs`、`loong-device-*` | 计划 |
 | `system/rootfs/` | OpenRC 服务：`loong-session`（系统界面）、`loong-boot-ok`（A/B 启动确认） | 已有 |
 | `system/profiles/` | 机型配置与设备描述：`qemu-x86_64`、`qemu-aarch64`、`xiaomi-nabu` | 已有（nabu 未上机） |
@@ -106,7 +114,8 @@ sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build -p loong-shell && \
   build/target-alpine/debug/loong-shell --headless --size 1280x800 \
     --script crates/loong-shell/tests/scripts/open-and-go-home.json --out out/demo'
 #    把某个图标绑定到真实 Wayland 程序：--app browser=foot（再加 --realtime）
-#    其他脚本：switcher.json（多任务）、home-paging.json（主屏翻页）、unlock.json（锁屏）
+#    其他脚本：switcher.json（多任务）、home-paging.json（主屏翻页）、unlock.json（锁屏）、
+#    keyboard.json（屏幕键盘；用真实 WebKit 客户端打字见 docs/api/loong-ime.md 第 8.1 节）
 
 # 5. 构建 QEMU 系统镜像并启动（在 chroot 内运行 QEMU，TCG 软件模拟，较慢）
 sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build --release -p loong-shell -p loong-sysd && \
@@ -164,7 +173,7 @@ loong-browser [--theme light|dark] [--search-url 'https://www.bing.com/search?q=
 2. **`zwp_linux_dmabuf_v1`**（v4，带默认 feedback / main_device）：没有它 WebKit 只能用共享内存，后端每帧拷贝整帧像素，也无法让 WebKit 用 GPU 渲染。
 3. **`wp_viewporter` + `wp_single_pixel_buffer_manager_v1`**（最好再加 `wp_fractional_scale_manager_v1`）：没有时根表面的纯色底只能是整窗大小的共享内存缓冲（nabu 上约 16MB）。
 4. **子表面命中测试**：触摸 / 指针目前一律发给根表面，后端会自己命中，能用；改为发给子表面（smithay `surface_under`）后坐标与焦点更准确。
-5. **`zwp_text_input_manager_v3`** + 屏幕键盘（M4）：浏览器侧已实现并用 input-method-v2 测试过预编辑与提交。
+5. ~~**`zwp_text_input_manager_v3`** + 屏幕键盘（M4）~~：已实现，地址栏与页面输入框都能用屏幕键盘输入（`crates/loong-shell/tests/scripts/keyboard-browser.json`）。
 6. app_id `loong.browser` 对应主屏的 `browser` 图标（目前靠“正在启动的应用”或第一个应用兜底）。
 
 ## 文档

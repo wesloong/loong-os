@@ -262,6 +262,8 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
     let handle = event_loop.handle();
     data.state
         .register_sources(&handle, |d: &mut Data| &mut d.state)?;
+    // 拼音引擎在后台线程启动，就绪前键盘只能输入英文。
+    crate::ime::spawn_engine(&handle, |d: &mut Data| &mut d.state)?;
 
     // vblank → 释放上一帧，按需画下一帧。
     handle
@@ -346,6 +348,8 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
     render(&mut data);
     event_loop.run(None, &mut data, |d| {
         d.state.import_pending_dmabufs(&mut d.backend.renderer);
+        // 输入法：焦点跟随前台应用、发送上屏文字与合成按键、调整窗口高度。
+        d.state.sync_ime();
         // 每轮事件处理后：客户端有新提交或动画进行中 → 需要重画。
         if d.state.take_damage()
             || !d

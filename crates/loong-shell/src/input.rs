@@ -70,7 +70,7 @@ impl LoongState {
             return;
         };
         // 按窗口此刻的摆放换算：多指操作时，窗口可能正被另一根手指拖着缩放。
-        let Some((front, placement)) = self.shell.front_window(self.now) else {
+        let Some((front, placement)) = self.shell.front_placement(self.now) else {
             return;
         };
         let Some(touch) = self.seat.get_touch().filter(|_| front == window) else {

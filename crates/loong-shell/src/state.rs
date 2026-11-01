@@ -90,6 +90,8 @@ impl LoongState {
         seat.add_keyboard(XkbConfig::default(), 400, 30)?;
         seat.add_pointer();
         seat.add_touch();
+        // 屏幕键盘：text-input-v3，合成器自己当输入法（见 ime.rs）。
+        crate::ime::init_text_input(&dh, &seat);
 
         let socket = ListeningSocketSource::new_auto()?;
         let socket_name = socket.socket_name().to_os_string();

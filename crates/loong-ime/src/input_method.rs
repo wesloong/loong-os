@@ -7,7 +7,7 @@
 //!
 //! 引擎是可选的：librime 还在后台启动、或数据缺失时，键盘照常工作，只能输入英文。
 
-use crate::engine::{ImeEngine, ImeKey, KeyOutcome};
+use crate::engine::{Engine, ImeEngine, ImeKey, KeyOutcome};
 use crate::keyboard::{KeyAction, Keyboard, Layer, ShiftState};
 use crate::rime::{Candidate, Preedit};
 
@@ -104,7 +104,7 @@ pub enum ImeEvent {
 #[derive(Debug)]
 pub struct InputMethod {
     keyboard: Keyboard,
-    engine: Option<ImeEngine>,
+    engine: Option<Box<dyn Engine>>,
     /// 用户最近一次在普通输入框里选择的中/英模式。
     prefer_chinese: bool,
     purpose: ContentPurpose,
@@ -113,6 +113,11 @@ pub struct InputMethod {
 impl InputMethod {
     /// 新建。`engine` 为 `None` 时只能输入英文（之后可用 [`InputMethod::set_engine`] 补上）。
     pub fn new(keyboard: Keyboard, engine: Option<ImeEngine>) -> InputMethod {
+        InputMethod::with_engine(keyboard, engine.map(|e| Box::new(e) as Box<dyn Engine>))
+    }
+
+    /// 新建，使用任意实现了 [`Engine`] 的引擎（例如宿主测试用的假引擎）。
+    pub fn with_engine(keyboard: Keyboard, engine: Option<Box<dyn Engine>>) -> InputMethod {
         let mut im = InputMethod {
             keyboard,
             engine,
@@ -134,12 +139,17 @@ impl InputMethod {
     }
 
     /// 拼音引擎。
-    pub fn engine(&self) -> Option<&ImeEngine> {
-        self.engine.as_ref()
+    pub fn engine(&self) -> Option<&dyn Engine> {
+        self.engine.as_deref()
     }
 
     /// 装上（或去掉）拼音引擎，例如 librime 在后台启动完成后。
     pub fn set_engine(&mut self, engine: Option<ImeEngine>) {
+        self.set_boxed_engine(engine.map(|e| Box::new(e) as Box<dyn Engine>));
+    }
+
+    /// 装上（或去掉）任意实现了 [`Engine`] 的引擎。
+    pub fn set_boxed_engine(&mut self, engine: Option<Box<dyn Engine>>) {
         self.engine = engine;
         self.sync_mode();
     }
@@ -304,14 +314,14 @@ impl InputMethod {
 
     /// 执行 `f`，然后按顺序收集事件：上屏文字 → `f` 产生的事件 → 组字变化。
     fn run(&mut self, f: impl FnOnce(&mut Self) -> Option<ImeEvent>) -> Vec<ImeEvent> {
-        let before = self.engine.as_ref().map(ImeEngine::revision);
+        let before = self.engine.as_ref().map(|e| e.revision());
         let event = f(self);
         let mut out = Vec::new();
-        if let Some(text) = self.engine.as_mut().and_then(ImeEngine::take_commit) {
+        if let Some(text) = self.engine.as_mut().and_then(|e| e.take_commit()) {
             out.push(ImeEvent::Commit(text));
         }
         out.extend(event);
-        if self.engine.as_ref().map(ImeEngine::revision) != before {
+        if self.engine.as_ref().map(|e| e.revision()) != before {
             out.push(ImeEvent::CompositionChanged);
         }
         out

@@ -1,0 +1,14 @@
+{
+  "fps": 30,
+  "duration_ms": 15500,
+  "clock": "9:41",
+  "events": [
+    { "at": 300, "launch": "notes" },
+    { "at": 8000, "type": "nihao", "interval": 300 },
+    { "at": 9900, "candidate": 0 },
+    { "at": 10600, "type": "，" },
+    { "at": 11000, "type": "shijie ", "interval": 300 },
+    { "at": 13300, "type": "。" }
+  ],
+  "screenshots": [6000, 9600, 15000]
+}

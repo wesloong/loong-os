@@ -356,10 +356,11 @@ impl Wifi {
     async fn set_enabled(&self, conn: &Connection, enabled: bool) -> Result<(), Error> {
         let snap = self.ready()?;
         let dev = snap.device.expect("ready() 已检查设备");
-        if enabled && !dev.adapter_powered {
-            if let Some(adapter) = &dev.adapter {
-                iwd_set(conn, adapter.as_str(), iwd::ADAPTER, "Powered", true.into()).await?;
-            }
+        if enabled
+            && !dev.adapter_powered
+            && let Some(adapter) = &dev.adapter
+        {
+            iwd_set(conn, adapter.as_str(), iwd::ADAPTER, "Powered", true.into()).await?;
         }
         iwd_set(
             conn,

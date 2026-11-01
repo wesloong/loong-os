@@ -106,6 +106,71 @@ impl ImeState {
     }
 }
 
+/// [`InputMethod`](crate::InputMethod) 驱动引擎所用的接口。
+///
+/// [`ImeEngine`]（librime 会话）是唯一的正式实现；宿主的单元测试可以换成一个假的引擎
+/// （例如固定的拼音表），不必启动 librime。各方法的语义见 [`ImeEngine`] 上的同名方法。
+pub trait Engine: std::fmt::Debug + Send {
+    /// 当前组字状态。
+    fn state(&self) -> &ImeState;
+    /// 组字状态的版本号（每变化一次加一）。
+    fn revision(&self) -> u64;
+    /// 取出待上屏的文字。
+    fn take_commit(&mut self) -> Option<String>;
+    /// 处理一个按键。
+    fn process_key(&mut self, key: ImeKey) -> KeyOutcome;
+    /// 直接输入一段文字（标点、数字、符号）。
+    fn insert_text(&mut self, text: &str);
+    /// 选择本页第 `index` 个候选。
+    fn select_candidate(&mut self, index: usize) -> bool;
+    /// 向后翻页。
+    fn next_page(&mut self) -> bool;
+    /// 向前翻页。
+    fn prev_page(&mut self) -> bool;
+    /// 切换西文模式。
+    fn set_ascii_mode(&mut self, ascii: bool);
+    /// 把组字内容按当前候选上屏。
+    fn commit_composition(&mut self);
+    /// 丢弃组字内容。
+    fn clear(&mut self);
+}
+
+impl Engine for ImeEngine {
+    fn state(&self) -> &ImeState {
+        ImeEngine::state(self)
+    }
+    fn revision(&self) -> u64 {
+        ImeEngine::revision(self)
+    }
+    fn take_commit(&mut self) -> Option<String> {
+        ImeEngine::take_commit(self)
+    }
+    fn process_key(&mut self, key: ImeKey) -> KeyOutcome {
+        ImeEngine::process_key(self, key)
+    }
+    fn insert_text(&mut self, text: &str) {
+        ImeEngine::insert_text(self, text)
+    }
+    fn select_candidate(&mut self, index: usize) -> bool {
+        ImeEngine::select_candidate(self, index)
+    }
+    fn next_page(&mut self) -> bool {
+        ImeEngine::next_page(self)
+    }
+    fn prev_page(&mut self) -> bool {
+        ImeEngine::prev_page(self)
+    }
+    fn set_ascii_mode(&mut self, ascii: bool) {
+        ImeEngine::set_ascii_mode(self, ascii)
+    }
+    fn commit_composition(&mut self) {
+        ImeEngine::commit_composition(self)
+    }
+    fn clear(&mut self) {
+        ImeEngine::clear(self)
+    }
+}
+
 /// 中文拼音输入引擎（一个 Rime 会话）。
 pub struct ImeEngine {
     session: Session,

@@ -10,6 +10,7 @@ mod clock;
 mod device;
 mod dmabuf;
 mod handlers;
+mod ime;
 mod input;
 mod lunar;
 mod protocols;

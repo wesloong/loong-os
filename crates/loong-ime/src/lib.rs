@@ -43,7 +43,7 @@ pub use config::{
     DEFAULT_PAGE_SIZE, DEFAULT_SCHEMA, DEFAULT_SHARED_DATA_DIR, ImeConfig, LogLevel,
     default_user_data_dir,
 };
-pub use engine::{ImeEngine, ImeKey, ImeState, KeyOutcome};
+pub use engine::{Engine, ImeEngine, ImeKey, ImeState, KeyOutcome};
 pub use error::ImeError;
 pub use input_method::{ContentPurpose, ImeEvent, InputMethod};
 pub use rime::{Candidate, Preedit, Rime};

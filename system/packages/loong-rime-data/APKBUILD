@@ -1,0 +1,60 @@
+# Loong OS: 屏幕键盘拼音输入法的 Rime 数据（loong_pinyin 方案，词典在构建时预编译）
+# 构建: tools/build-pkg.sh loong-rime-data
+#
+# 方案与词典定义在 crates/loong-ime/data/（朙月拼音字表 + 八股文中词频 ≥ 100、长度 ≤ 7 的词）。
+# 构建时用 rime_deployer --compile 预编译词典，镜像里只放运行时需要的约 8 MiB：不带 10 MiB 的
+# luna_pinyin.dict.yaml / essay.txt 源文件，首次启动的部署只需约 0.1 秒（之后约 7 ms）。
+# 打包步骤与 crates/loong-ime/tests/image_data.rs 一致，见 docs/api/loong-ime.md 第 4.2 节。
+#
+# 用户数据（部署产物、用户词库）在 ~/.local/share/loong/rime，即 /data 分区上的 /home/loong。
+pkgname=loong-rime-data
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Loong OS pinyin input data (loong_pinyin schema with a prebuilt dictionary)"
+url="https://github.com/wesloong/loong-os"
+# 预编译词典是小端、64 位的内存映射格式，x86_64 与 aarch64 通用。
+arch="noarch"
+# 词典数据（朙月拼音、八股文）LGPL-3.0；OpenCC 繁转简数据 Apache-2.0；方案配置 MIT OR Apache-2.0。
+license="LGPL-3.0-only AND Apache-2.0 AND (MIT OR Apache-2.0)"
+depends=""
+makedepends="librime-tools rime-plum-data opencc"
+# 方案文件来自仓库（crates/loong-ime/data），不经 source 下载。
+source=""
+options="!check"
+
+_rime=/usr/share/rime-data
+_data="$startdir/../../../crates/loong-ime/data"
+
+build() {
+	mkdir -p "$builddir"/src "$builddir"/user "$builddir"/shared/build
+	for f in default.yaml key_bindings.yaml punctuation.yaml pinyin.yaml luna_pinyin.dict.yaml essay.txt; do
+		cp "$_rime/$f" "$builddir"/src/
+	done
+	cp "$_data"/loong_pinyin.schema.yaml "$_data"/loong_pinyin.dict.yaml "$builddir"/src/
+	rime_deployer --compile "$builddir"/src/loong_pinyin.schema.yaml \
+		"$builddir"/user "$builddir"/src "$builddir"/shared/build 2> "$builddir"/deploy.log ||
+		{ cat "$builddir"/deploy.log >&2; return 1; }
+	# 只保留运行时需要的预编译产物（删掉 *.txt 调试导出等）。
+	for f in "$builddir"/shared/build/*; do
+		case "${f##*/}" in
+			loong_pinyin.table.bin|loong_pinyin.reverse.bin|loong_pinyin.prism.bin|loong_pinyin.schema.yaml) ;;
+			*) rm -f "$f" ;;
+		esac
+	done
+	for f in loong_pinyin.table.bin loong_pinyin.reverse.bin loong_pinyin.prism.bin loong_pinyin.schema.yaml; do
+		[ -s "$builddir/shared/build/$f" ] || { echo "缺少预编译产物 $f" >&2; return 1; }
+	done
+}
+
+package() {
+	local d="$pkgdir$_rime"
+	mkdir -p "$d"/build "$d"/opencc
+	for f in default.yaml key_bindings.yaml punctuation.yaml pinyin.yaml loong_pinyin.schema.yaml; do
+		install -m644 "$builddir/src/$f" "$d/$f"
+	done
+	install -m644 "$builddir"/shared/build/* "$d"/build/
+	# 繁转简（简体输出）：Rime 先在共享目录的 opencc/ 下找。
+	for f in t2s.json TSPhrases.ocd2 TSCharacters.ocd2; do
+		install -m644 /usr/share/opencc/$f "$d"/opencc/$f
+	done
+}

@@ -483,8 +483,19 @@ fn cancel_leaves_target_invalid() {
     .unwrap_err();
     assert_eq!(e.kind(), ErrorKind::Cancelled, "{e}");
     assert_eq!(dev.esp_files(), ["loong-a.efi"]);
-    // 锁已释放
-    dev.sys().lock().unwrap();
+    // 锁已释放。并行的其他测试会启动子进程（openssl、假 qbootctl 等）：fork 到 exec 之间，
+    // 子进程暂时持有本进程所有文件描述符的副本（包括锁文件），所以这里允许短暂重试。
+    let mut tries = 0;
+    loop {
+        match dev.sys().lock() {
+            Ok(_) => break,
+            Err(e) if e.kind() == ErrorKind::Busy && tries < 100 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => panic!("锁没有释放: {e}"),
+        }
+    }
 }
 
 #[test]

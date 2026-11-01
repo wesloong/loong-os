@@ -1,0 +1,21 @@
+[package]
+name = "loong-update"
+description = "Loong OS A/B 系统更新：签名更新包、写入非活动 slot、启动确认与回滚"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# std 的 File::try_lock 从 1.89 起稳定
+rust-version = "1.89"
+
+[dependencies]
+# 只用来验签（以及开发机上的签名）：不开 fast（预计算表），体积更小，一次验签的耗时可以忽略。
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
+sha2 = { version = "0.10", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+toml = { version = "1", default-features = false, features = ["parse", "serde", "std", "display"] }
+# fadvise：写完后丢掉页缓存，回读校验时真正读到存储设备上的数据
+rustix = { version = "1", default-features = false, features = ["std", "fs"] }
+
+[lints]
+workspace = true

@@ -1,15 +1,20 @@
 [package]
 name = "loong-sysd"
-description = "Loong OS 系统服务（root，D-Bus org.loong.System1）：背光、电池/电源、Wi‑Fi（iwd）"
+description = "Loong OS 系统服务（root，D-Bus org.loong.System1 / org.loong.Update1）：背光、电池/电源、Wi‑Fi（iwd）、系统更新"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version = "1.87"
+# 依赖 loong-update（std 的 File::try_lock，1.89）
+rust-version = "1.89"
 
 [dependencies]
 loong-motion = { path = "../loong-motion" }
+# org.loong.Update1：与命令行 loong-update 共用同一套更新代码
+loong-update = { path = "../loong-update" }
 anyhow = "1"
+# 在线程池里运行阻塞操作（挂载 ESP、读更新包清单）；zbus 本来就依赖它
+blocking = "1"
 # zbus 5 自带的 async-io 执行器；不引入 tokio，二进制更小。
 # （zbus 6 于 2026-10 发布，换成了新的 zruntime；稳定后再迁移。）
 zbus = { version = "5.19", default-features = false, features = ["async-io"] }

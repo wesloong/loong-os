@@ -55,6 +55,7 @@ ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-she
 | QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
 | aarch64：qemu-user binfmt（`tools/setup-binfmt.sh`）、交叉编译（`tools/build-aarch64.sh`）、`qemu-aarch64` 镜像 | ✅ 在 QEMU virt（TCG）中启动到锁屏 |
 | 小米平板 5：`android-abl` 启动后端（boot.img、super 动态分区 A/B、userdata、qbootctl 回滚），见[适配说明](docs/devices/xiaomi-nabu.md) | 🚧 镜像可构建并通过离线自检，尚未上真机 |
+| `crates/loong-update` + `org.loong.Update1`：签名 OTA 更新包、写入非活动 slot、启动确认与自动回滚，见 [loong-update](docs/api/loong-update.md) | ✅ 在 QEMU 中验证（0.1.0 → 0.1.1 升级；系统界面起不来的更新 3 次后自动回滚；坏签名/坏哈希在写入前被拒绝）；`android-abl` 只有单元测试，未上真机；dm-verity 待做 |
 | `crates/loong-ime`：librime 拼音引擎（简体，词库 8MB）、iPad 式屏幕键盘模型（布局、命中测试、触摸状态机） | ✅ 已完成（含真实 librime 测试）；绘制与 text-input-v3 对接待接入 loong-shell（M4） |
 | `webrt/`：`loong-webapp`（每个应用一个进程、跟随系统外观）、系统应用的受限 JS bridge（`window.loong` → loong-sysd，见[说明](docs/api/loong-js-bridge.md)）、**设置**（无线局域网、显示与亮度、电池、关于本机） | ✅ 在无屏幕 loong-shell + WPE WebKit 中端到端验证（亮度滑块写入背光、电池读自 sysfs）；Wi‑Fi 用假 iwd 验证（还没有在真实网卡上试过） |
 | `webrt/platform`、`webrt/browser`：自写 `loong` WPEPlatform 后端（每个 view 一个 `wl_subsurface`）与系统浏览器 `loong-browser`（界面 + 网页同屏、标签页、「墨韵」界面、添加到主屏幕），见[下文](#浏览器) | ✅ 在 sway 与 loong-shell（无屏幕）中验证（M2） |
@@ -70,7 +71,8 @@ ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-she
 | `crates/loong-ui/` | 绘制、设计令牌、连续圆角（超椭圆） | 已有 |
 | `crates/loong-shell/` | Wayland 合成器、系统 UI、手势识别 | 已有（M1 进行中） |
 | `crates/loong-ime/` | 中文拼音输入法：librime 绑定、屏幕键盘模型 | 已有（M4） |
-| `crates/loong-sysd/` | 系统服务（D-Bus `org.loong.System1`）：背光、电源、Wi‑Fi（iwd）；OTA 待做。接口见 [docs/api/loong-sysd.md](docs/api/loong-sysd.md) | 已有（M4 进行中） |
+| `crates/loong-sysd/` | 系统服务（D-Bus `org.loong.System1`）：背光、电源、Wi‑Fi（iwd）；另提供系统更新 `org.loong.Update1`。接口见 [docs/api/loong-sysd.md](docs/api/loong-sysd.md) | 已有（M4 进行中） |
+| `crates/loong-update/` | A/B 系统更新：签名更新包（ed25519）、写入非活动 slot、启动确认与回滚（`uefi-sdboot` / `android-abl`）。见 [docs/api/loong-update.md](docs/api/loong-update.md) | 已有（M5） |
 | `webrt/` | C/meson：`webapp/`（loong-webapp 与 JS bridge）、`apps/`（系统 Web 应用：设置）、`platform/`（`loong` WPEPlatform 后端）、`browser/`（loong-browser 与测试工具）、`loongkit/`、`demo/` | 已有（M2 进行中） |
 | `system/packages/wpewebkit/` | WPE WebKit 的 APKBUILD | 已有 |
 | `system/packages/loong-*/` | `loong-shell`、`loong-webrt`、`loong-base`、`loong-initramfs`、`loong-device-*` | 计划 |
@@ -109,7 +111,7 @@ sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build -p loong-shell && \
 #    其他脚本：switcher.json（多任务）、home-paging.json（主屏翻页）、unlock.json（锁屏）
 
 # 5. 构建 QEMU 系统镜像并启动（在 chroot 内运行 QEMU，TCG 软件模拟，较慢）
-sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build --release -p loong-shell -p loong-sysd && \
+sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build --release -p loong-shell -p loong-sysd -p loong-update && \
   system/mkimage/mkimage.sh qemu-x86_64 && \
   python3 tools/qemu.py start build/image/qemu-x86_64/loong-qemu-x86_64.img && \
   python3 tools/qemu.py wait "login:" && python3 tools/qemu.py shot out/qemu.png'
@@ -174,6 +176,7 @@ loong-browser [--theme light|dark] [--search-url 'https://www.bing.com/search?q=
 - [设计规范（Loong HIG）](docs/design/设计规范.md)：颜色、字体、圆角、材质、动效、布局、手势、LoongKit 令牌
 - [loong-ime](docs/api/loong-ime.md)：输入法架构、text-input-v3 对接、词库体积与延迟
 - [loong-sysd](docs/api/loong-sysd.md)：系统服务的 D-Bus 接口；[JS bridge](docs/api/loong-js-bridge.md)：系统 Web 应用如何调用它、安全模型、系统外观文件的约定
+- [loong-update](docs/api/loong-update.md)：OTA 更新包格式、A/B 写入与回滚、`org.loong.Update1`
 
 ## 许可证
 

@@ -1,13 +1,13 @@
 #!/bin/sh
 # 在 x86_64 开发 chroot 里交叉编译 Loong OS 的 Rust 组件（目标 aarch64-alpine-linux-musl）。
 #
-#   tools/dev-chroot.sh run tools/build-aarch64.sh                  构建 loong-shell（release）
+#   tools/dev-chroot.sh run tools/build-aarch64.sh                  构建 loong-shell、loong-sysd、loong-update（release）
 #   tools/dev-chroot.sh run tools/build-aarch64.sh test -p loong-motion
 #                                                                   其他 cargo 子命令；测试经 qemu-user 运行
 #   tools/dev-chroot.sh run tools/build-aarch64.sh sysroot          只准备 C sysroot 和 Rust 标准库
 #
-# 产物：$CARGO_TARGET_DIR/aarch64-alpine-linux-musl/release/loong-shell
-#      （即 build/target-alpine/aarch64-alpine-linux-musl/release/loong-shell，mkimage.sh 会从这里取）
+# 产物：$CARGO_TARGET_DIR/aarch64-alpine-linux-musl/release/loong-{shell,sysd,update}
+#      （即 build/target-alpine/aarch64-alpine-linux-musl/release/，mkimage.sh 会从这里取）
 #
 # 做法：
 #   1. C sysroot：apk --root build/sysroot-aarch64 --arch aarch64 安装 musl-dev、gcc（crt*.o、libgcc、
@@ -125,7 +125,7 @@ prepare_rust_sysroot() {
 prepare_sysroot
 prepare_rust_sysroot
 [ "${1:-}" = sysroot ] && exit 0
-[ $# -gt 0 ] || set -- build --release -p loong-shell -p loong-sysd
+[ $# -gt 0 ] || set -- build --release -p loong-shell -p loong-sysd -p loong-update
 
 export "CARGO_TARGET_${ENV_TARGET}_RUSTFLAGS=--sysroot=$RUST_SYSROOT $LINK_FLAGS"
 # 文档测试由 rustdoc 编译，它不读 RUSTFLAGS（使用 --target 时 RUSTDOCFLAGS 只作用于目标架构）

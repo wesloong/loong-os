@@ -1,6 +1,6 @@
 # loong-sysd 接口说明（`org.loong.System1`）
 
-`loong-sysd` 是 Loong OS 的系统服务，以 root 运行，在**系统总线**上占用 `org.loong.System1`，向系统界面（`loong-shell`）和系统 Web 应用（设置等）提供背光、电池/电源、Wi‑Fi 三项能力。OTA（`loong-update`）以后也会挂在这里。
+`loong-sysd` 是 Loong OS 的系统服务，以 root 运行，在**系统总线**上占用 `org.loong.System1`，向系统界面（`loong-shell`）和系统 Web 应用（设置等）提供背光、电池/电源、Wi‑Fi 三项能力。它还占用 `org.loong.Update1`，提供 A/B 系统更新（链接 `loong-update` 库），接口见 [loong-update.md](loong-update.md#d-busorgloongupdate1)。
 
 源码：[`crates/loong-sysd`](../../crates/loong-sysd)；总线策略：[`system/rootfs/usr/share/dbus-1/system.d/org.loong.System1.conf`](../../system/rootfs/usr/share/dbus-1/system.d/org.loong.System1.conf)；OpenRC 服务：[`system/rootfs/etc/init.d/loong-sysd`](../../system/rootfs/etc/init.d/loong-sysd)。
 

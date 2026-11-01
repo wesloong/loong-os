@@ -40,7 +40,8 @@ PKGS_SHELL="wayland-dev wayland-protocols libxkbcommon-dev libinput-dev eudev-de
   font-inter font-noto-cjk weston weston-clients foot
   librime-dev rime-plum-data"
 PKGS_IMAGE="erofs-utils e2fsprogs mtools dosfstools sfdisk ukify py3-pefile systemd-boot systemd-efistub
-  busybox-static kmod zstd xz cpio file squashfs-tools qemu-system-x86_64 qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci ovmf"
+  busybox-static kmod zstd xz cpio file squashfs-tools qemu-system-x86_64 qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci ovmf
+  qemu-img"
 # 跨架构（aarch64）：交叉编译用的标准库源码、qemu-user（binfmt，见 tools/setup-binfmt.sh）、
 # aarch64 虚拟机（自带 edk2 固件），以及 Android 启动镜像工具（boot.img、super、sparse、vbmeta）
 PKGS_CROSS="rust-src qemu-aarch64 qemu-system-aarch64

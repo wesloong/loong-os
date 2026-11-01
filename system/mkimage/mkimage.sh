@@ -15,6 +15,12 @@
 # 目标架构与开发 chroot 不同时（例如在 x86_64 上构建 aarch64），先在宿主机运行一次 tools/setup-binfmt.sh；
 # loong-shell 用 tools/build-aarch64.sh 交叉编译。
 #
+# 环境变量：
+#   LOONG_VERSION        系统版本（默认 0.1.0-dev），写入 /etc/os-release 与 UKI
+#   UPDATE_BUNDLE=1      同时生成签名的 OTA 更新包 update-<版本>-<机型>.loongup（tools/mkupdate.sh）
+#   LOONG_UPDATE_PUBKEY  镜像信任的 OTA 公钥（正式发布用；私钥不必在构建机上）
+#   LOONG_UPDATE_KEY     开发用的签名私钥（默认 build/keys/loong-dev.pem，不存在时自动生成，不进 git）
+#
 # 产物：$SRC/build/image/<机型>/
 
 set -eu
@@ -64,12 +70,32 @@ esac
 # loong-shell：与开发 chroot 同架构时是普通的 cargo 构建，否则是 tools/build-aarch64.sh 的交叉编译产物
 if [ "$ARCH" = "$HOST_ARCH" ]; then
 	SHELL_BIN=${SHELL_BIN:-$SRC/build/target-alpine/release/loong-shell}
-	SHELL_HINT="cargo build --release -p loong-shell -p loong-sysd"
+	SHELL_HINT="cargo build --release -p loong-shell -p loong-sysd -p loong-update"
 else
 	SHELL_BIN=${SHELL_BIN:-$SRC/build/target-alpine/$ARCH-alpine-linux-musl/release/loong-shell}
 	SHELL_HINT="tools/build-$ARCH.sh"
 fi
 [ -x "$SHELL_BIN" ] || die "缺少 $SHELL_BIN，请先运行 $SHELL_HINT"
+# loong-sysd、loong-update 与 loong-shell 由同一次（交叉）构建产出，放在同一目录
+SYSD_BIN=${SYSD_BIN:-$(dirname "$SHELL_BIN")/loong-sysd}
+UPDATE_BIN=${UPDATE_BIN:-$(dirname "$SHELL_BIN")/loong-update}
+for b in "$SYSD_BIN" "$UPDATE_BIN"; do
+	[ -x "$b" ] || die "缺少 $b，请先运行 $SHELL_HINT"
+done
+
+# OTA 签名公钥：镜像只信任它签署的更新包。没有指定时使用开发密钥（build/keys/，不进 git），
+# 第一次构建时生成；之后同一台开发机构建的镜像与更新包都用这一对密钥。
+KEY_DIR="$SRC/build/keys"
+UPDATE_KEY=${LOONG_UPDATE_KEY:-$KEY_DIR/loong-dev.pem}
+UPDATE_PUBKEY=${LOONG_UPDATE_PUBKEY:-${UPDATE_KEY%.pem}.pub}
+if [ ! -f "$UPDATE_PUBKEY" ]; then
+	[ -z "${LOONG_UPDATE_PUBKEY:-}${LOONG_UPDATE_KEY:-}" ] || die "找不到 OTA 公钥 $UPDATE_PUBKEY"
+	log "生成开发用的 OTA 签名密钥 $UPDATE_KEY"
+	mkdir -p "$KEY_DIR"
+	chmod 700 "$KEY_DIR"
+	(umask 077 && openssl genpkey -algorithm ed25519 -out "$UPDATE_KEY")
+	openssl pkey -in "$UPDATE_KEY" -pubout -out "$UPDATE_PUBKEY"
+fi
 
 # ───────────────────────── 1. rootfs ─────────────────────────
 PACKAGES="
@@ -138,10 +164,9 @@ rm -f "$ROOT/etc/resolv.conf"
 # ───────────────────────── 2. Loong OS 组件 ─────────────────────────
 log "安装 Loong OS 组件"
 install -Dm755 "$SHELL_BIN" "$ROOT/usr/bin/loong-shell"
-# loong-sysd 与 loong-shell 由同一次（交叉）构建产出，放在同一目录
-SYSD_BIN=${SYSD_BIN:-$(dirname "$SHELL_BIN")/loong-sysd}
-[ -x "$SYSD_BIN" ] || die "缺少 $SYSD_BIN，请先运行 $SHELL_HINT"
 install -Dm755 "$SYSD_BIN" "$ROOT/usr/bin/loong-sysd"
+install -Dm755 "$UPDATE_BIN" "$ROOT/usr/bin/loong-update"
+install -Dm644 "$UPDATE_PUBKEY" "$ROOT/usr/share/loong/update-keys/$(basename "${UPDATE_PUBKEY%.pub}").pub"
 install -Dm644 "$SRC/system/profiles/$PROFILE.device.toml" "$ROOT/usr/share/loong/device.toml"
 # Web 运行时（WPE WebKit 构建完成后可用：WITH_WPE=1）
 if [ -n "${WITH_WPE:-}" ]; then
@@ -168,8 +193,19 @@ chmod 755 "$ROOT"/etc/init.d/loong-*
 if [ -n "${SESSION_ENV:-}" ]; then
 	printf 'LOONG_SESSION_ENV="%s"\n' "$SESSION_ENV" >> "$ROOT/etc/conf.d/loong-session"
 fi
-mkdir -p "$ROOT/etc/conf.d"
-printf 'BOOT_BACKEND=%s\n' "$BOOT_BACKEND" > "$ROOT/etc/conf.d/loong-boot-ok"
+mkdir -p "$ROOT/etc/loong"
+# loong-update 的机型配置（loong-boot-ok 也通过 loong-update 确认启动）。说明见 docs/api/loong-update.md
+cat > "$ROOT/etc/loong/update.conf" <<EOF
+# 由 mkimage.sh 生成
+PROFILE=$PROFILE
+ARCH=$ARCH
+BOOT_BACKEND=$BOOT_BACKEND
+ROOT_PART=$ROOT_PART
+SUPER_PART=$SUPER_PART
+ESP_PART=esp
+BOOT_PART=boot_
+BOOT_TRIES=3
+EOF
 
 cat > "$ROOT/etc/os-release" <<EOF
 NAME="Loong OS"
@@ -319,6 +355,28 @@ truncate -s "${DATA_MB}M" "$WORK/data.img"
 # 块大小固定 4096：UFS 等存储的逻辑扇区是 4096 字节，1024 字节块的 ext4 在上面无法挂载
 mke2fs -q -t ext4 -b 4096 -L data -F "$WORK/data.img"
 
+# ───────────────────────── OTA 更新包的载荷 ─────────────────────────
+# 把更新包要用的文件（硬链接，不占额外空间）和元数据放进 $OUT/update/，由 tools/mkupdate.sh 打包签名。
+# 参数：种类[@slot]=文件（同 loong-update pack）
+stage_update() {
+	mkdir -p "$OUT/update"
+	items=""
+	for spec in "$@"; do
+		what=${spec%%=*}
+		name=$(echo "$what" | tr '@' '-')
+		ln -f "${spec#*=}" "$OUT/update/$name"
+		items="$items $what=$name"
+	done
+	cat > "$OUT/update/bundle.env" <<-EOF
+		VERSION=$VERSION
+		PROFILE=$PROFILE
+		ARCH=$ARCH
+		BOOT_BACKEND=$BOOT_BACKEND
+		ROOT_FS=$ROOT_FS
+		ITEMS="$items"
+	EOF
+}
+
 # ───────────────────────── 7a. uefi-sdboot ─────────────────────────
 build_uefi_sdboot() {
 	IMG="$OUT/loong-$PROFILE.img"
@@ -326,19 +384,26 @@ build_uefi_sdboot() {
 
 	log "生成 UKI"
 	# systemd-boot 优先启动版本号更高的 UKI；用尽启动次数的 UKI 会被排到最后（自动回退）。
-	# 初始镜像中 slot A 是当前系统，slot B 作为“旧版本”备份。OTA 时把新版本写入另一个 slot 即可。
-	for slot in a b; do
-		if [ "$slot" = a ]; then slot_version=$VERSION; else slot_version=0; fi
-		sed "s/^IMAGE_VERSION=.*/IMAGE_VERSION=$slot_version/" "$ROOT/etc/os-release" > "$WORK/os-release-$slot"
+	# 初始镜像中 slot A 是当前系统，slot B 作为“旧版本”备份（IMAGE_VERSION=0）。
+	# OTA 时 loong-update 把新版本写入另一个 slot，新 UKI 版本更高，排在前面。
+	build_uki() { # <slot> <IMAGE_VERSION> <输出>
+		sed "s/^IMAGE_VERSION=.*/IMAGE_VERSION=$2/" "$ROOT/etc/os-release" > "$WORK/os-release-$1"
 		ukify build \
 			--linux "$WORK/vmlinuz" \
 			--initrd "$WORK/initramfs.img" \
-			--cmdline "$CMDLINE loong.slot=$slot" \
-			--os-release "@$WORK/os-release-$slot" \
+			--cmdline "$CMDLINE loong.slot=$1" \
+			--os-release "@$WORK/os-release-$1" \
 			--stub "$EFI_DIR/linux$EFI_ARCH.efi.stub" \
 			--efi-arch "$EFI_ARCH" \
-			--output "$WORK/loong-$slot.efi" >/dev/null
-	done
+			--output "$3" >/dev/null
+	}
+	build_uki a "$VERSION" "$WORK/loong-a.efi"
+	build_uki b 0 "$WORK/loong-b.efi"
+	if [ "${UPDATE_BUNDLE:-0}" = 1 ]; then
+		# 更新包里两个 slot 的 UKI 都带真实版本
+		build_uki b "$VERSION" "$WORK/update-loong-b.efi"
+		stage_update rootfs="$ROOTIMG" uki@a="$WORK/loong-a.efi" uki@b="$WORK/update-loong-b.efi"
+	fi
 
 	log "生成 ESP（systemd-boot）"
 	ESP="$WORK/esp.img"
@@ -411,6 +476,9 @@ build_android_abl() {
 	cmp -s "$WORK/unpacked/ramdisk" "$WORK/initramfs.img" || die "boot.img 自检失败：initramfs 不一致"
 	grep -q "^command line args: $CMDLINE loong.slot=b\$" "$WORK/unpacked.txt" || die "boot.img 自检失败：cmdline 不一致"
 	rm -rf "$WORK/unpacked" "$WORK/unpacked.txt"
+	if [ "${UPDATE_BUNDLE:-0}" = 1 ]; then
+		stage_update rootfs="$ROOTIMG" boot@a="$OUT/boot_a.img" boot@b="$OUT/boot_b.img"
+	fi
 
 	log "生成 super.img（${ROOT_PART}a | ${ROOT_PART}b）"
 	cp "$ROOTIMG" "$OUT/system.img"
@@ -460,3 +528,8 @@ case "$BOOT_BACKEND" in
 	uefi-sdboot) build_uefi_sdboot ;;
 	android-abl) build_android_abl ;;
 esac
+
+if [ "${UPDATE_BUNDLE:-0}" = 1 ]; then
+	log "生成 OTA 更新包"
+	LOONG_UPDATE_KEY="$UPDATE_KEY" "$SRC/tools/mkupdate.sh" "$PROFILE"
+fi

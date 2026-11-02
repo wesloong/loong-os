@@ -12,6 +12,7 @@
 #         Alpine 构建 chroot（build/chroot-<架构>/）里经 qemu-user 本地编译：先在宿主机运行一次
 #         tools/setup-binfmt.sh；构建 chroot 第一次使用时自动创建（Alpine 基础系统 + alpine-sdk），之后复用。
 #         编译器等全部经 qemu-user 模拟运行，比同架构编译慢一个数量级。签名密钥与开发 chroot 共用。
+#         WPE WebKit 这样的大包这样编译要好几天，改用 tools/cross-build-pkg.sh 交叉编译（编译器原生运行）。
 
 set -eu
 

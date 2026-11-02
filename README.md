@@ -63,7 +63,7 @@ M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏�
 | 文档：技术规划、ADR、设计规范 | ✅ 已完成 |
 | `tools/dev-chroot.sh`、`tools/build-pkg.sh`：Alpine 3.24 构建 chroot 与 APK 打包 | ✅ 已完成 |
 | `crates/loong-motion`：弹簧、惯性衰减、橡皮筋、速度跟踪、吸附/分页、CSS `linear()` 缓动 | ✅ 已完成（含单元测试） |
-| `system/packages/wpewebkit`：WPE WebKit 2.54.2 APKBUILD 与 CI 工作流 | ✅ 已在 chroot 中编译出 APK（约 47MB，安装后 119MB） |
+| `system/packages/wpewebkit`：WPE WebKit 2.54.2 APKBUILD 与 CI 工作流 | ✅ 已在 chroot 中编译出 APK（r1：31MB，安装后 81MiB；M6 按体积编译、关掉 v1 用不到的功能，r0 是 47MB / 119MiB，取舍与实测见 [ADR 0003](docs/adr/0003-web-内核-wpe-webkit.md#m6-瘦身记录webkit-体积)） |
 | `crates/loong-ui`：「墨韵」设计令牌（宣纸/夜墨）、连续圆角、文字（中文，霞鹜文楷）、水墨绘画工具（宣纸、毛笔笔触、山水长卷、宣纸小笺图标、印章） | ✅ 已完成 |
 | `crates/loong-shell`：headless 后端、主屏（分页）、打开应用 / 回主屏手势动画、多任务（上滑停顿进入、横向滚动吸附、点按打开、上滑关闭）、真实 Wayland 客户端（xdg-shell、子表面、linux-dmabuf v4、viewporter、分数缩放）、「墨韵」水墨动效（点墨、晕染、笔迹、展卷、墨散）、跟随系统外观、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证）；WebKit 走 GPU（dmabuf）要在有 GPU 的真机上验证 |
 | QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
@@ -117,7 +117,8 @@ sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo clippy --workspace --all-ta
 # 3. 打包 WPE WebKit（4 核约需 3–6 小时；JOBS 控制并行数，默认 3）
 sudo JOBS=8 tools/build-pkg.sh wpewebkit
 #    产物在 build/packages/packages/<arch>/：abuild 用 APKBUILD 上级目录名作仓库名
-#    日志与中间文件在 build/abuild/wpewebkit/
+#    日志与中间文件在 build/abuild/wpewebkit/；中断后用 tools/resume-wpewebkit.sh 继续
+#    要远程 Web Inspector 的开发构建：先把 APKBUILD 里的 _devtools 改成 ON
 
 # 4. 无屏幕运行系统界面：回放触摸脚本，输出截图和 APNG 动画（GPU 用 Mesa llvmpipe 即可）
 sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build -p loong-shell && \

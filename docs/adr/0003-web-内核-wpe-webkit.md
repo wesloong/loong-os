@@ -117,3 +117,89 @@ Loong OS 不建设原生应用生态，所有应用都是 PWA，浏览器要基�
 - 没有：光标主题（平板不需要）、与其他应用共享的剪贴板（只有进程内的 WPE 剪贴板）、指针锁定、拖放、xdg-activation、presentation-time；loong 私有协议（theme-color → 状态栏前景、启动闪屏交接）还没有，之后加在这个后端里。
 - 浏览器功能上：下载、权限授权、历史 / 书签 / 会话恢复都还没有；后台标签页不丢弃（每个标签页一个 Web 进程）；通知没有转发。
 - loong-shell 侧还缺的能力（子表面已能显示）：见 README 的“浏览器”一节。
+
+## M6 瘦身记录：WebKit 体积
+
+r0（M0 打的包）的 `libWPEWebKit-2.0.so` 去符号后 123MB，是只读根里最大的单个文件。r1 按体积重新编译、关掉 v1 用不到的功能，**库 123.3MB → 85.2MB，安装大小 119.0MiB → 81.2MiB，镜像的 erofs（lz4hc,12）里 66.2MiB → 44.5MiB；另外少装 7 个依赖包（15.7MiB，压缩后 8.7MiB）**。JS 性能与 r0 持平，DOM/布局类测试慢 3–7%，所有进程的内存（RSS）少 8–13%。
+
+### 编译参数
+
+| 改动 | 理由 / 实测 |
+|---|---|
+| 去掉 CMake Release 默认的 `-O3` | `CMAKE_BUILD_TYPE=Release` 会把 `-O3 -DNDEBUG` 追加在 CFLAGS 之后，**r0 名义上 `-O2`，实际是 `-O3`**。现在 `CMAKE_{C,CXX}_FLAGS_RELEASE=-DNDEBUG`，优化级别只由 CFLAGS 与目标选项决定 |
+| 全局 `-Os`，热点目标 `-O2` | `loong-opt-targets.cmake` 经 `CMAKE_PROJECT_INCLUDE` 加载，等所有目标定义完再给 `LOONG_O2_TARGETS` 里的目标追加 `-O2`（不改 WebKit 源码）。`-O2` 的有：JavaScriptCore（含子目标 JavaScriptCoreJIT）、WTF、bmalloc、Skia，以及 WebCore 的 WebCoreStyle、WebCoreDOMAndRendering、WebCoreJSBindings 子目标；其余（WebCore 的 platform/Modules/loader、WebKit 的 IPC 与 UI 进程、ANGLE、PAL）用 `-Os`。只给 JSC/WTF/bmalloc/Skia `-O2` 时库是 78.6MB，但 DOM、innerHTML+布局测试比 r0 慢 16–18%；加上三个 WebCore 子目标后库 85.2MB（+6.6MB），只慢 3–7%。系统界面和所有应用都是网页，选后者 |
+| `-fno-asynchronous-unwind-tables -fno-unwind-tables` | r0 里 `.eh_frame` + `.eh_frame_hdr` 共 12.5MiB。WebKit 全部 `-fno-exceptions`，库里没有任何 `_Unwind_*` 调用（不做 DWARF 栈回溯，`USE_LIBBACKTRACE=OFF`），没有 C++ 异常要穿过 WebKit 的栈帧。WebKit 会把 `-fasynchronous-unwind-tables` 前置到 CXXFLAGS，我们的标志在后面生效。代价：gdb/perf 在 WebKit 帧里的回溯不如以前可靠（aarch64 上 LLInt 自带的 `.cfi` 指令不受影响） |
+| lld `--icf=safe`、`-O2` | 同一棵构建树重新链接比较：不合并 84.3MB，`--icf=safe` 78.6MB，`--icf=all` 77.8MB。`all` 只再省 0.8MB，但 JSC 会拿函数指针当身份标识选快路径（方法表函数与 `JSObject` 默认实现比较、宿主函数与 `callHostFunctionAsConstructor` 比较），不同函数合并成同一地址可能走错路径，所以用 `safe`。`-ffunction-sections -fdata-sections --gc-sections` WebKit 自己已经加了 |
+| 不开 LTO | ThinLTO 链接 WebKit 要 10GB 以上内存、时间翻倍，开发机（4 核、约 15GB、多人共用）上不现实；以后在 CI 或自托管 runner 上再评估 |
+
+库的组成（`size -A`，MiB）：
+
+| 段 | r0 | r1 |
+|---|---|---|
+| `.text` | 88.9 | 69.1 |
+| `.eh_frame` + `.eh_frame_hdr` | 12.5 | 0 |
+| `.rodata` | 8.4 | 8.0 |
+| PDF.js 资源（`.gresource.PdfJS…`） | 3.5 | 0 |
+| `.data.rel.ro` | 3.2 | 3.0 |
+
+### 功能开关
+
+v1 的要求：PWA、系统浏览器、GStreamer 音视频、WebGL 与 GPU 合成、JS bridge（脚本消息处理器）、text-input-v3 输入法、暗色模式。逐项对照后：
+
+| 开关 | 取舍 | 理由 |
+|---|---|---|
+| MEDIA_STREAM、MEDIA_RECORDER、WEB_RTC | 关 | 摄像头不纳入 v1（技术规划），浏览器与 loong-webapp 也一律拒绝权限请求。WEB_RTC 在 WPE 上本来就默认关 |
+| WEB_CODECS | 关 | 底层编解码 API；`<video>`/`<audio>`/MSE 播放不依赖它 |
+| PDFJS | 关 | 内置 PDF 阅读器，3.5MiB 的 JS 资源。PDF 现在按“不能显示的内容”处理：浏览器提示“暂不支持下载文件”（v1 本来就没有下载） |
+| XSLT | 关 | 网页几乎不用，主流浏览器也在移除；去掉 libxslt |
+| `USE_AVIF`、`USE_JPEGXL` | 关 | 网站会经 `<picture>` / Accept 回退到 WebP/JPEG。去掉 libavif（连带 aom-libs 8MiB、libdav1d、libyuv）与 libjxl（连带 libhwy） |
+| GPU_PROCESS | 关 | WPE 上 WebGL、媒体、DOM 绘制默认都不走 GPU 进程（`UseGPUProcessFor*` 默认关），WebGL 在 Web 进程里经 ANGLE 渲染、GPU 合成也不经过它；关掉后不编译 GPU 进程及其 IPC，也不再有 `WPEGPUProcess`。上游在 `USE_GBM=OFF` 时也会自动关掉它 |
+| MHTML、MEMORY_SAMPLER、WEBXR、ENCRYPTED_MEDIA、JAVASCRIPT_SHELL | 关 | 用不到；WEBXR / ENCRYPTED_MEDIA 本来就默认关（实验功能 / 需要 Thunder）；`jsc` 命令行本来就不安装 |
+| REMOTE_INSPECTOR、SAMPLING_PROFILER、RESOURCE_USAGE | 跟随 `_devtools`（默认关） | 只服务于调试；RESOURCE_USAGE 还会让 GC 多做内存统计。开发构建把 APKBUILD 的 `_devtools` 改成 `ON`：打开远程 Web Inspector（`WEBKIT_INSPECTOR_HTTP_SERVER=127.0.0.1:9222` 等），并安装 `inspector.gresource`（1.3MiB，发布构建不装） |
+| VIDEO、MEDIA_SOURCE、`USE_GSTREAMER_GL` | 留 | 音视频播放；MSE 给流媒体网站 |
+| WEB_AUDIO | 留 | 游戏、音乐类应用，以及很多网页的提示音 |
+| WEBGL、WEBASSEMBLY、FTL JIT | 留 | v1 要求 WebGL；Wasm 与 FTL 关系到应用性能 |
+| NOTIFICATIONS、MEDIA_SESSION、CONTENT_EXTENSIONS | 留 | PWA 通知；以后做系统媒体控制、浏览器广告拦截 |
+| `USE_LCMS` | 留 | 带 ICC 配置的照片颜色正确（lcms2 只有 332KiB） |
+| WOFF2 | 留 | Alpine 的 FreeType 自带 WOFF2 解码，`USE_WOFF2` 自动关、不依赖 libwoff2 |
+| DARK_MODE_CSS、TOUCH_EVENTS、BUBBLEWRAP_SANDBOX | 留 | 暗色模式、触摸、沙箱 |
+
+### 实测
+
+**体积**（x86_64）：
+
+| | r0 | r1 |
+|---|---|---|
+| `libWPEWebKit-2.0.so.1.11.5`（去符号） | 123.3MB | 85.2MB |
+| `wpewebkit` 安装大小 | 119.0MiB | 81.2MiB |
+| `wpewebkit` APK 文件 | 47.0MB | 31.0MB |
+| 只读根里的 `wpewebkit`（erofs lz4hc,12） | 66.2MiB | 44.5MiB |
+| 只因 WebKit 才装的依赖 | aom-libs、libavif、libdav1d、libhwy、libjxl、libxslt、libyuv：15.7MiB（erofs 8.7MiB） | 无 |
+
+合计镜像的只读根约少 30MiB（压缩后）。用本 worktree 的 r1 打的 qemu-x86_64 镜像（`WITH_WPE=1`）rootfs 为 293MiB。
+
+**性能**（chroot 里无屏幕 WPE，CPU 渲染；r0 与 r1 交替运行 6 轮取中位数，机器上同时有别的构建，单项波动约 ±5%）：
+
+| | r0 | r1 | 变化 |
+|---|---|---|---|
+| JS 引擎类（整数循环、对象分配、字符串、排序、正则、JSON、Map/Set、解析） | — | — | 各项都在 ±3% 内 |
+| DOM 创建 + 布局（热） | 206ms | 218ms | +6% |
+| innerHTML 表格 + 布局 + getComputedStyle（热） | 660ms | 678ms | +3% |
+| Canvas 2D（热） | 353ms | 322ms | −9%（噪声范围） |
+| 基准合计（热 / 首轮） | 2983 / 3428ms | 2995 / 3569ms | +0.4% / +4% |
+| `webrt/demo` 冷启动到 load-finished | 599ms | 521ms | 噪声范围 |
+| 浏览器起始页冷启动到 load-finished | 200ms | 197ms | 持平 |
+| 加载起始页后所有进程 RSS / PSS | 469 / 316MiB | 409 / 287MiB | −13% / −9% |
+
+基准页、对比脚本与功能自检页的思路：一个链接 r0 头文件的小程序用 WPE 的 headless 平台加载页面、计时、调用页面里的 `runBench()`，再用 `LD_LIBRARY_PATH` 指向解包出来的 r1 库（子进程继承），两个版本跑同一个可执行文件。
+
+### 功能验证
+
+- **无屏幕 WPE（chroot，`LD_LIBRARY_PATH` 指向 r1）**：`<video>`（Ogg Theora + Vorbis，HTTP Range）播放、帧画进 canvas；WebGL 2.0 清屏读像素；`OfflineAudioContext` 渲染正弦波；WOFF2 字体加载；`prefers-color-scheme: dark` 跟随 WPE 的暗色设置；脚本消息处理器带回复（JS bridge 的机制）；MSE 可用。关掉的接口确实不存在（`navigator.mediaDevices`、`MediaRecorder`、`VideoDecoder`、`XSLTProcessor`），保留的都在（Service Worker、IndexedDB、Cache、Notification、Wasm、OffscreenCanvas、mediaSession、TouchEvent）。
+- **无屏幕 loong-shell + r1**：屏幕键盘在 WPE 页面里打出“你好，世界。”（text-input-v3）、浏览器（页面输入框与地址栏）、设置（loong-sysd + JS bridge）。
+- **QEMU 整机（用 r1 打的镜像）**：Web 进程都在 bubblewrap 沙箱里（独立的 mount 命名空间，映射的是 r1 的库）；设置、浏览器正常显示。
+
+### 发现的问题（不在本包范围）
+
+- **镜像里播放任何 `<video>`/`<audio>` 都会让 Web 进程崩溃（r0 同样）**：WebKit 的 `createAutoAudioSink()` 直接用 gst-plugins-good 里的 `autoaudiosink`，找不到就对空指针连信号、随后崩溃；镜像只有 gst-plugins-base（随 wpewebkit 的依赖装进来）。镜像需要装 gst-plugins-good（至少 autodetect 插件）以及实际的音频输出（PipeWire 的 GStreamer 插件或 ALSA）。在 chroot 里只让 GStreamer 看到镜像里的那 35 个插件即可复现；用 QEMU 验证时是把 autodetect 插件放在测试盘上、用 `GST_PLUGIN_PATH` 指过去（沙箱会绑定这个目录）。
+- bubblewrap 在开发 chroot 里起不来（`bwrap: Failed to make / slave`），沙箱只能在 QEMU 或真机上验证。

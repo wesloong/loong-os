@@ -377,7 +377,7 @@ impl Shell {
 
     // ───────────────────────── 每帧 ─────────────────────────
 
-    /// 主屏是否“摆在用户眼前”：没有应用、多任务、锁屏挡着，没有手势、菜单，主屏也已经迎上来。
+    /// 主屏是否“摆在用户眼前”：没有应用、多任务、锁屏、控制中心挡着，没有手势、菜单，主屏也已经迎上来。
     /// `ignore_gesture` 时不看手势（判断移除时是否值得播放收墨）。
     fn home_presentable(&self, now: f64, ignore_gesture: bool) -> bool {
         self.mode == Mode::Home
@@ -389,6 +389,7 @@ impl Shell {
             && self.backdrop.value(now) < 0.05
             && self.home.value(now)[0] < 1.01
             && self.home_state.menu.is_none()
+            && !self.control_center.is_visible(now)
     }
 
     /// 第 `i` 个图标此刻是否在屏幕上（停稳后的这一页或 Dock）。
@@ -421,10 +422,14 @@ impl Shell {
             self.ink.release(slot, now);
             self.open_menu(app, now);
         }
-        // 菜单只在主屏上：应用来到前台（例如被别的程序打开）时直接收起。
+        // 菜单只在主屏上：应用来到前台（例如被别的程序打开）时直接收起；拉出控制中心时淡出。
         if self.mode != Mode::Home && self.home_state.menu.is_some() {
             self.home_state.menu = None;
             self.home_state.menu_touch = None;
+        }
+        if self.control_center.is_visible(now) && self.home_state.menu.is_some() {
+            self.home_state.menu_touch = None;
+            self.close_menu(now);
         }
         if let Some(menu) = &self.home_state.menu
             && menu.closing
@@ -1276,6 +1281,43 @@ mod tests {
         s.shell.set_theme(Theme::Dark);
         assert_eq!(s.shell.card_paper(x), Theme::Dark.palette().paper_raised);
         assert_eq!(s.shell.card_paper(y), 0x101820);
+    }
+
+    /// 从顶边右侧拉出控制中心。
+    fn pull_control_center(s: &mut Sim) {
+        s.shell.touch_down(0, 1100.0, 8.0, s.now);
+        for k in 1..=20 {
+            s.now += 0.01;
+            s.shell
+                .touch_motion(0, 1100.0, 8.0 + 20.0 * k as f64, s.now);
+            s.shell.update(s.now);
+        }
+        s.shell.touch_up(0, s.now);
+        s.wait(1.0);
+    }
+
+    #[test]
+    fn control_center_wins_over_the_home_screen() {
+        let mut s = Sim::new();
+        s.apply(vec![Change::Added(webapp("x", "X"))], false);
+        s.shell.home_scroll = offset_anim(Spring::SNAPPY, W, W, 0.0, s.now);
+        let x = s.index("x");
+        let (px, py) = s.icon_center(x);
+        s.press(px, py, 0.6);
+        assert!(s.shell.home_menu().is_some());
+        // 菜单打开时从顶边拉出控制中心：菜单淡出。
+        pull_control_center(&mut s);
+        assert!(s.shell.control_center.is_visible(s.now));
+        assert!(s.shell.home_menu().is_none());
+        // 控制中心开着时新装的应用不落印，收起后才落印。
+        s.apply(vec![Change::Added(webapp("y", "Y"))], true);
+        let y = s.index("y");
+        s.wait(1.5);
+        assert!(s.shell.home_state.waiting.contains(&y));
+        s.shell.control_center.close(s.now);
+        s.wait(3.0);
+        assert!(s.shell.home_state.waiting.is_empty());
+        assert!(s.shell.icon_tappable(y));
     }
 
     #[test]

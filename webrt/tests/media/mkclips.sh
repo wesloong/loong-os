@@ -1,6 +1,7 @@
 #!/bin/sh
 # 生成媒体检查页（index.html）用的测试片段。在开发 chroot 里运行（用 chroot 里完整的发行版 GStreamer 编码，
-# 需要 gstreamer-tools；镜像里只有解码用的最小插件集，见 system/packages/gst-plugins-loong）：
+# 需要 gstreamer-tools、gst-plugins-bad（fdkaacenc）与 gst-plugins-ugly（x264enc）；镜像里只有解码用的最小插件集，
+# 见 system/packages/gst-plugins-loong 与 ffmpeg-loong）：
 #
 #   tools/dev-chroot.sh run sh webrt/tests/media/mkclips.sh build/media-test
 #
@@ -29,9 +30,15 @@ launch "videotestsrc num-buffers=900 pattern=smpte ! $size ! vp8enc deadline=1 k
 launch "videotestsrc num-buffers=900 pattern=ball background-color=0xff604020 ! $size ! theoraenc ! queue ! mux." \
 	"audiotestsrc num-buffers=2813 freq=550 volume=0.2 ! $a_fmt ! vorbisenc ! queue ! mux." \
 	"oggmux name=mux ! filesink location=theora-vorbis.ogv"
-# 纯音频：MP3（带 ID3v2 标签）、Ogg Opus
+# MP4：H.264 High（x264enc，gst-plugins-ugly；CABAC、B 帧，与网站上的 MP4 相同）+ AAC-LC（fdkaacenc，gst-plugins-bad）
+h264='x264enc speed-preset=faster bitrate=400 key-int-max=15 ! video/x-h264,profile=high ! h264parse'
+launch "videotestsrc num-buffers=900 pattern=ball background-color=0xff402060 ! $size ! $h264 ! queue ! mux." \
+	"audiotestsrc num-buffers=2813 freq=660 volume=0.2 ! $a_fmt ! fdkaacenc bitrate=128000 ! queue ! mux." \
+	"mp4mux name=mux faststart=true ! filesink location=h264-aac.mp4"
+# 纯音频：MP3（带 ID3v2 标签）、Ogg Opus、M4A（AAC-LC）
 launch "audiotestsrc num-buffers=2813 freq=330 volume=0.2 ! $a_fmt ! lamemp3enc ! id3v2mux ! filesink location=tone.mp3"
 launch "audiotestsrc num-buffers=2813 freq=440 volume=0.2 ! $a_fmt ! opusenc ! oggmux ! filesink location=tone.opus"
+launch "audiotestsrc num-buffers=2813 freq=770 volume=0.2 ! $a_fmt ! fdkaacenc bitrate=128000 ! mp4mux faststart=true ! filesink location=tone.m4a"
 
 # MSE 用的 WebM（VP9 + Opus，10 秒；streamable：没有 Cues、Segment 长度未知，与网站的分片一样）与
 # Web Audio 解码用的 WAV（1 秒）。file:// 页面不能 fetch 本地文件，所以写成 base64 放进 media-data.js。
@@ -39,12 +46,22 @@ launch "videotestsrc num-buffers=150 pattern=ball background-color=0xff204060 ! 
 	"audiotestsrc num-buffers=469 freq=440 volume=0.2 ! $a_fmt ! opusenc ! queue ! mux." \
 	"webmmux name=mux streamable=true ! filesink location=mse.webm"
 launch "audiotestsrc num-buffers=43 freq=880 volume=0.2 ! audio/x-raw,rate=44100,channels=1,format=S16LE ! wavenc ! filesink location=beep.wav"
+# MSE 用的分片 MP4（fMP4：moov 带 mvex，之后每秒一个 moof + mdat；H.264 High + AAC-LC，40 秒：TCG 下画面
+# 落后页面十几秒，片段太短时截图赶不上）与 decodeAudioData 用的 M4A（AAC-LC，1 秒）
+launch "videotestsrc num-buffers=600 pattern=ball background-color=0xff602040 ! $size ! $h264 ! queue ! mux." \
+	"audiotestsrc num-buffers=1875 freq=660 volume=0.2 ! $a_fmt ! fdkaacenc bitrate=128000 ! queue ! mux." \
+	"mp4mux name=mux fragment-duration=1000 streamable=true ! filesink location=mse.mp4"
+launch "audiotestsrc num-buffers=47 freq=990 volume=0.2 ! audio/x-raw,rate=48000,channels=1 ! audioconvert ! fdkaacenc bitrate=128000 ! mp4mux ! filesink location=beep.m4a"
 {
 	printf 'window.MEDIA_DATA = {\n  mseWebm: "'
 	base64 -w0 mse.webm
+	printf '",\n  mseMp4: "'
+	base64 -w0 mse.mp4
 	printf '",\n  beepWav: "'
 	base64 -w0 beep.wav
+	printf '",\n  beepM4a: "'
+	base64 -w0 beep.m4a
 	printf '"\n};\n'
 } > media-data.js
-rm -f mse.webm beep.wav
+rm -f mse.webm mse.mp4 beep.wav beep.m4a
 ls -l

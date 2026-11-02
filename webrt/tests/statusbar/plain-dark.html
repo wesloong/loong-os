@@ -1,0 +1,20 @@
+<!doctype html>
+<!-- 状态栏测试页：普通网页，没有 theme-color，也不理会 prefers-color-scheme，总是深色底。
+     loong-shell 只能读窗口顶部的像素（共享内存缓冲）来决定状态栏用月白。 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plain dark page</title>
+<style>
+  html, body { margin: 0; background: #14171b; color: #e8e8e8; font: 18px/1.5 sans-serif; }
+  header { padding: 40px 32px 16px; border-bottom: 1px solid #2a2f36; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; }
+  main { padding: 24px 32px; color: #9aa3ad; }
+</style>
+</head>
+<body>
+<header><h1>A plain dark web page</h1></header>
+<main>No theme-color, no color-scheme: the shell samples the pixels under the status bar.</main>
+</body>
+</html>

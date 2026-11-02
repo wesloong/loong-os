@@ -20,6 +20,7 @@
 #   UPDATE_BUNDLE=1      同时生成签名的 OTA 更新包 update-<版本>-<机型>.loongup（tools/mkupdate.sh）
 #   LOONG_UPDATE_PUBKEY  镜像信任的 OTA 公钥（正式发布用；私钥不必在构建机上）
 #   LOONG_UPDATE_KEY     开发用的签名私钥（默认 build/keys/loong-dev.pem，不存在时自动生成，不进 git）
+#   MESA_FLAVOR          图形栈，覆盖机型配置：loong（自编的 mesa-loong，默认）或 distro（Alpine 的 mesa + LLVM）
 #   WITH_WPE=1           安装 WPE WebKit 与 Web 运行时（loong-webapp、loong-browser、系统 Web 应用）
 #   WITH_DEVTOOLS=1      再装开发工具：foot 终端、WebKit 的 MiniBrowser 与 Web Inspector 资源
 #
@@ -54,6 +55,8 @@ APPEND_DTB=0
 SESSION_ENV=""
 # shellcheck disable=SC1090
 . "$PROFILE_CONF"
+# 图形栈：环境变量 > 机型配置（QEMU 默认 distro，真机默认 loong）> loong
+MESA_FLAVOR=${MESA_FLAVOR:-loong}
 
 OUT="$SRC/build/image/$PROFILE"
 ROOT="$OUT/rootfs"
@@ -111,12 +114,24 @@ if [ ! -f "$UPDATE_PUBKEY" ]; then
 fi
 
 # ───────────────────────── 1. rootfs ─────────────────────────
+# 图形栈（MESA_FLAVOR，见 system/profiles/*.conf）：
+#   loong   自编的 mesa-loong（system/packages/mesa-loong：freedreno/virgl/softpipe，不依赖 LLVM 与 X11），
+#           来自本地仓库 build/packages；其中 mesa-loong-glx-stub 满足 gst-plugins-base 对 libGL.so.1 的链接
+#   distro  Alpine 的 mesa（多出 llvmpipe，QEMU 里软件渲染快得多；连同 LLVM 等约 230 MiB）
+case "$MESA_FLAVOR" in
+	loong)
+		MESA_PKGS="mesa-loong mesa-loong-egl mesa-loong-gles mesa-loong-gbm mesa-loong-glx-stub"
+		ls "$SRC/build/packages/packages/$ARCH"/mesa-loong-[0-9]*.apk >/dev/null 2>&1 ||
+			die "缺少 $ARCH 的 mesa-loong 包：先运行 tools/build-pkg.sh mesa-loong（或用 MESA_FLAVOR=distro）" ;;
+	distro) MESA_PKGS="mesa-egl mesa-gles mesa-gbm mesa-dri-gallium" ;;
+	*) die "未知的 MESA_FLAVOR: $MESA_FLAVOR（可选 loong、distro）" ;;
+esac
 PACKAGES="
 	alpine-base busybox-openrc
 	eudev udev-init-scripts udev-init-scripts-openrc
 	seatd seatd-openrc dbus dbus-openrc
 	kmod e2fsprogs e2fsprogs-extra dosfstools
-	mesa-egl mesa-gles mesa-gbm libinput-libs libxkbcommon xkeyboard-config libseat
+	$MESA_PKGS libinput-libs libxkbcommon xkeyboard-config libseat
 	fontconfig
 	librime
 	$KERNEL_PKG
@@ -130,7 +145,7 @@ PACKAGES="
 CJK_FONT=font-noto-cjk
 LATIN_FONT=font-inter
 
-log "安装 rootfs（$PROFILE_NAME，$ARCH）"
+log "安装 rootfs（$PROFILE_NAME，$ARCH，图形栈 $MESA_FLAVOR）"
 rm -rf "$OUT"
 mkdir -p "$ROOT/etc/apk/keys" "$WORK"
 # 公钥：目标架构的 Alpine 公钥（开发 chroot 的 /etc/apk/keys 只有宿主架构的），本地软件包的公钥，

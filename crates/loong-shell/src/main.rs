@@ -5,6 +5,7 @@
 //! loong-shell --headless [--script 脚本.json] [--out 目录] [--size 1280x800] [--realtime]
 //! ```
 
+mod app_protocol;
 mod appearance;
 mod backend;
 mod clock;
@@ -19,6 +20,7 @@ mod render;
 mod script;
 mod shell;
 mod state;
+mod status_sample;
 
 use std::path::PathBuf;
 

@@ -114,6 +114,6 @@ Loong OS 不建设原生应用生态，所有应用都是 PWA，浏览器要基�
 - 合成器没有 viewporter 时，根表面的底色是整窗大小的缓冲（nabu 上约 16MB）。
 - **DMA-BUF 路径已实现、未实测**：开发环境没有 GPU（`LIBGL_ALWAYS_SOFTWARE` 下 WebKit 不会产出 DMA-BUF），测试用的 sway（pixman）也不提供 linux-dmabuf；要在 nabu 上或带 GPU 的合成器里验证。
 - 界面的子表面看不到网页的像素，`backdrop-filter` 模糊不到网页，对话框用不透明的素笺代替「绢」。
-- 没有：光标主题（平板不需要）、与其他应用共享的剪贴板（只有进程内的 WPE 剪贴板）、指针锁定、拖放、xdg-activation、presentation-time；loong 私有协议（theme-color → 状态栏前景、启动闪屏交接）还没有，之后加在这个后端里。
+- 没有：光标主题（平板不需要）、与其他应用共享的剪贴板（只有进程内的 WPE 剪贴板）、指针锁定、拖放、xdg-activation、presentation-time；启动闪屏交接还没有。Loong 私有协议 `loong_app_v1`（状态栏样式、主题色）已加入：浏览器按界面外观指定状态栏样式，网页全屏时改报网页的 theme-color；loong-webapp 在 WPE 自带的 Wayland 平台上也能用它（公开接口取 `wl_display` 与 `wl_surface`，单独的事件队列），见 [loong_app_v1](../api/loong-app-protocol.md)。
 - 浏览器功能上：下载、权限授权、历史 / 书签 / 会话恢复都还没有；后台标签页不丢弃（每个标签页一个 Web 进程）；通知没有转发。
 - loong-shell 侧还缺的能力（子表面已能显示）：见 README 的“浏览器”一节。

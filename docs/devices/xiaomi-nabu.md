@@ -23,7 +23,7 @@
 | `qbootctl` | A/B slot 查询、切换、标记启动成功（由 `loong-boot-ok` 调用） |
 | `tqftpserv`、`pd-mapper@pmos`、`rmtfs`（及各自的 `-openrc`） | 远程处理器需要的 QRTR 服务：ADSP（音频）、CDSP、modem（Wi‑Fi 芯片 WCN3990 由 modem 子系统承载） |
 | `alsa-ucm-conf` + `system/devices/xiaomi-nabu/rootfs/usr/share/alsa/ucm2/` | 音频路由（nabu 的 UCM 文件来自 pmaports，作者 map220v，MIT） |
-| `mesa-dri-gallium` | freedreno GPU 驱动 |
+| `mesa-loong`（`MESA_FLAVOR=loong`，见下文“构建 mesa-loong”） | 自编的 Mesa：freedreno GPU 驱动（Adreno 640）+ EGL/GLES，不依赖 LLVM |
 
 ## 启动链与分区布局
 
@@ -76,8 +76,30 @@ pmOS 的 sm8150 内核配置（pmaports `config-postmarketos-qcom-sm8150.aarch64
 ```sh
 sudo tools/setup-binfmt.sh                                    # 注册 qemu-aarch64 binfmt（每次开机一次）
 sudo tools/dev-chroot.sh run tools/build-aarch64.sh            # 交叉编译 aarch64 的 loong-shell
+sudo ARCH=aarch64 JOBS=2 tools/build-pkg.sh mesa-loong         # aarch64 的 mesa-loong（约 1 小时，见下文；只需一次）
 sudo tools/dev-chroot.sh run system/mkimage/mkimage.sh xiaomi-nabu
 ```
+
+### 构建 mesa-loong（aarch64）
+
+nabu 的图形栈是自编的 `mesa-loong`（`system/packages/mesa-loong/`，Mesa 26.1.6）：gallium 驱动只有 freedreno（Adreno 640，kmsro 随之构建）、virgl 和 softpipe，接口只有 EGL + GLES 2/3（Wayland、GBM、surfaceless），没有 LLVM、X11/GLX、Vulkan。它不在 Alpine 仓库里，要先打包进本地仓库 `build/packages/packages/aarch64/`；不想自编时可用 `MESA_FLAVOR=distro system/mkimage/mkimage.sh xiaomi-nabu` 换回 Alpine 的 mesa（多出 LLVM 等约 195 MiB）。
+
+在 x86_64 开发机上，`ARCH=aarch64 tools/build-pkg.sh` 用一个 aarch64 的 Alpine 构建 chroot（`build/chroot-aarch64/`，第一次运行时自动创建：Alpine 基础系统 + `alpine-sdk`，约 270 MiB，之后复用）经 qemu-user（binfmt）本地编译，产物用开发 chroot 的同一把密钥签名，mkimage 直接信任：
+
+```sh
+sudo tools/setup-binfmt.sh                                    # 每次开机一次
+sudo ARCH=aarch64 JOBS=2 tools/build-pkg.sh mesa-loong         # 中间文件在 build/abuild/mesa-loong-aarch64/
+ls build/packages/packages/aarch64/                            # mesa-loong、-egl、-gles、-gbm、-glx-stub、-dev
+```
+
+编译器、meson、Python 代码生成都经 qemu-user 模拟运行：在 4 核的开发沙箱里（`-j2`、`nice 19`，与其他构建共用 CPU）完整构建用了 56 分钟（同一台机器上 x86_64 版本约 7 分钟）。实测结果：
+
+- meson 配置：`Gallium drivers: freedreno virgl softpipe`，EGL 平台 `wayland surfaceless drm`，LLVM、Vulkan、GLX 均为关闭；1266 个编译步骤全部通过。
+- 安装后约 15.1 MiB（`libgallium-26.1.6.so` 15.7 MB，含 freedreno 的设备表，`FD640` 即 Adreno 640）；依赖只有 libdrm、libwayland-client、zlib、zstd、libstdc++。
+- 按 nabu 的软件包集合（Alpine + pmOS 仓库，另加 gst-plugins-base）模拟安装：`mesa-loong` 方案共 485 MiB，Alpine mesa 方案 680 MiB（多出 llvm22-libs、spirv-tools、mesa-gl 等）；`gst-plugins-base` 对 `libGL.so.1` 的依赖由 `mesa-loong-glx-stub` 满足，不会拉回发行版的 mesa。
+- 还没有在真机上运行：freedreno 在 Adreno 640 上的渲染、`loong-shell` 的 GBM/KMS 路径以及 WebKit 走 GPU（dmabuf）都待 M3 上机验证。
+
+也可以用 meson 交叉编译（clang `--target=aarch64-alpine-linux-musl` + `apk --root --arch aarch64` 准备的 sysroot，同 `tools/build-aarch64.sh` 的做法），编译器原生运行会快得多（未实测），但还要自己处理 APK 的打包与签名；只在需要频繁修改 Mesa 时才值得。
 
 产物在 `build/image/xiaomi-nabu/`：
 
@@ -153,6 +175,7 @@ qbootctl -u a       # 把 slot a 标记为不可启动
 - ABL 能否引导我们的 v0 boot.img（官方系统用 header v3 + vendor_boot；pmOS 用 v0 能启动，所以预期可以）。
 - initramfs 在真机上能否找到 `super`/`userdata`、dmsetup 能否在没有 udev 的环境下建好 `/dev/mapper/system_<slot>`。
 - 显示、触控、背光、Wi‑Fi、音频、电池、休眠，以及 120Hz 和屏幕方向。
+- GPU：`mesa-loong` 的 freedreno 在 Adreno 640 上的渲染（`loong-shell` 的自定义着色器、WebKit 的 dmabuf 路径）。
 - qbootctl 的标记与 ABL 的自动回滚。
 
 ## 风险与注意事项
@@ -164,7 +187,7 @@ qbootctl -u a       # 把 slot a 标记为不可启动
 5. **UFS 稳定性**：pmOS 报告部分三星 UFS 会无故崩溃（`cat /sys/class/block/*/device/model` 可查型号）。
 6. **屏幕方向**：面板原生是竖屏 1600×2560，`xiaomi-nabu.device.toml` 按横屏 2560×1600 描述；loong-shell 需要在 M3 中根据 device.toml 加上输出旋转和触控坐标变换。
 7. **内核没有 erofs/dm-verity**：见上文“根文件系统”，M5 的完整性校验需要换内核。
-8. **镜像体积**：固件依赖拉进了整个 `linux-firmware-qcom`/`ath11k`（`/lib/firmware` 约 230 MB，根文件系统压缩后约 400 MB，QEMU 机型约 200 MB），远超体积目标。需要按 nabu 实际用到的固件裁剪（GPU 只需 `a630_sqe.fw`、`a640_gmu.bin`、`a640_zap.mbn`）。
+8. **镜像体积**：固件依赖拉进了整个 `linux-firmware-qcom`/`ath11k`（`/lib/firmware` 约 230 MB，根文件系统压缩后约 400 MB，QEMU 机型约 200 MB），远超体积目标。需要按 nabu 实际用到的固件裁剪（GPU 只需 `a630_sqe.fw`、`a640_gmu.bin`、`a640_zap.mbn`）。图形栈已换成 `mesa-loong`（安装后约 15 MiB，Alpine 的 mesa 连同 LLVM 等约 195 MiB，见上文“构建 mesa-loong”）。
 9. **内核跟随 pmOS**：`linux-postmarketos-qcom-sm8150` 是厂商分支，不是 LTS，每次 pmOS 大版本升级都要重新验证。
 10. **userdata 被重新格式化为 ext4**：Android 的 userdata 是加密的 f2fs，刷入后原有数据全部丢失。
 

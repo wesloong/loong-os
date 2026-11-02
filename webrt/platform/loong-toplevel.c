@@ -574,6 +574,9 @@ loong_toplevel_constructed(GObject *object)
     self->app_id = g_strdup(g_get_prgname());
     if (self->app_id)
         xdg_toplevel_set_app_id(self->xdg_toplevel, self->app_id);
+    /* loong_app_v1：状态即时生效（不随提交），之后的设置直接发送。 */
+    if (display->app_manager)
+        self->app_surface = loong_app_manager_v1_get_app_surface(display->app_manager, self->surface);
 
     /* 初始缩放：第一个输出（收到 enter 之前）。 */
     double scale = loong_toplevel_buffer_scale(self);
@@ -597,6 +600,7 @@ loong_toplevel_dispose(GObject *object)
             g_signal_handlers_disconnect_by_data(g_ptr_array_index(self->screens, i), self);
         g_clear_pointer(&self->screens, g_ptr_array_unref);
     }
+    g_clear_pointer(&self->app_surface, loong_app_surface_v1_destroy);
     g_clear_pointer(&self->fractional_scale, wp_fractional_scale_v1_destroy);
     g_clear_pointer(&self->viewport, wp_viewport_destroy);
     g_clear_pointer(&self->xdg_toplevel, xdg_toplevel_destroy);
@@ -667,6 +671,33 @@ loong_toplevel_set_background(LoongToplevel *self, guint32 rgb)
     self->bg_color_dirty = TRUE;
     self->bg_dirty = TRUE;
     loong_toplevel_schedule_commit(self);
+}
+
+void
+loong_toplevel_set_status_bar_style(LoongToplevel *self, LoongStatusBarStyle style)
+{
+    g_return_if_fail(LOONG_IS_TOPLEVEL(self));
+    g_return_if_fail(style <= LOONG_STATUS_BAR_LIGHT_CONTENT);
+    if (self->status_bar_style == style)
+        return;
+    self->status_bar_style = style;
+    if (self->app_surface)
+        loong_app_surface_v1_set_status_bar_style(self->app_surface, style);
+    g_debug("loong_app_v1：状态栏样式 %d", style);
+}
+
+void
+loong_toplevel_set_theme_color(LoongToplevel *self, guint32 argb)
+{
+    g_return_if_fail(LOONG_IS_TOPLEVEL(self));
+    if (!(argb >> 24))
+        argb = 0;
+    if (self->theme_color == argb)
+        return;
+    self->theme_color = argb;
+    if (self->app_surface)
+        loong_app_surface_v1_set_theme_color(self->app_surface, argb);
+    g_debug("loong_app_v1：主题色 %08x", argb);
 }
 
 gboolean

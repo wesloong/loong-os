@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- 状态栏测试页：外观固定为「宣纸」，主题色也固定（不随系统外观）。系统是夜墨时，
+     loong-shell 应按主题色给状态栏用浓墨（见 webrt/tests/statusbar-headless.sh）。 -->
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#f3eee2">
+<title>宣纸页面</title>
+<link rel="stylesheet" href="../../loongkit/loongkit.css">
+<style>
+  body { min-height: 100vh; }
+  main { max-width: 720px; margin: 40px auto; padding: 0 24px; }
+  .note { font: 400 30px/1.6 var(--loong-font-display-family); letter-spacing: 0.08em; color: var(--loong-color-title); }
+  .meta { font: var(--loong-font-callout); color: var(--loong-color-secondary-label); }
+</style>
+</head>
+<body>
+<header class="loong-nav"><h2 class="loong-nav-title">宣纸 · 亮页面</h2></header>
+<main>
+  <p class="note">晴窗细乳戏分茶。</p>
+  <p class="meta">&lt;meta name="theme-color" content="#f3eee2"&gt;，data-theme="light"：不随系统外观变化。</p>
+</main>
+</body>
+</html>

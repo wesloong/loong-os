@@ -716,3 +716,52 @@ fn reduced_motion_falls_back_to_crossfades() {
         }
     }
 }
+
+/// 场景中状态栏时间的各层：（墨, 不透明度），从下到上。
+fn status_layers(s: &Sim) -> Vec<(StatusInk, f64)> {
+    s.shell
+        .scene(s.now)
+        .iter()
+        .filter_map(|item| match item {
+            DrawItem::Natural {
+                key: TexKey::StatusTime(ink),
+                alpha,
+                ..
+            } => Some((*ink, *alpha)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn status_bar_follows_the_system_appearance_and_crossfades() {
+    let mut s = Sim::new();
+    s.shell.set_theme(Theme::Dark);
+    // 第一帧之前、之后都直接是月白：开机不会从浓墨淡过来。
+    assert_eq!(status_layers(&s), vec![(StatusInk::Light, 1.0)]);
+    s.wait(FRAME);
+    assert_eq!(s.shell.status_ink(s.now), Some(StatusInk::Light));
+    assert_eq!(status_layers(&s), vec![(StatusInk::Light, 1.0)]);
+    assert!(s.shell.is_idle(s.now));
+
+    // 切换外观：两种墨交叉淡化，字形始终是实的（下层不透明）。
+    s.shell.set_theme(Theme::Light);
+    s.wait(0.15);
+    assert!(!s.shell.is_idle(s.now));
+    let layers = status_layers(&s);
+    assert_eq!(layers.len(), 2, "{layers:?}");
+    assert_eq!(layers[0].1, 1.0);
+    assert!(layers[1].1 > 0.05 && layers[1].1 <= 0.5, "{layers:?}");
+    s.wait(1.0);
+    assert_eq!(status_layers(&s), vec![(StatusInk::Dark, 1.0)]);
+    assert!(s.shell.is_idle(s.now));
+
+    // 没有窗口的演示应用（占位画面按系统外观画）、多任务：都跟随系统外观。
+    s.shell.set_theme(Theme::Dark);
+    s.wait(1.0);
+    s.launch("photos");
+    assert!(s.shell.app_in_front());
+    assert_eq!(s.shell.status_ink(s.now), Some(StatusInk::Light));
+    s.enter_switcher();
+    assert_eq!(s.shell.status_ink(s.now), Some(StatusInk::Light));
+}

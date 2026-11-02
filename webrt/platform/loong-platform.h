@@ -42,6 +42,7 @@ WPEDisplay *loong_display_new(void);
 /* 合成器提供的能力，便于诊断与测试。 */
 gboolean loong_display_has_linux_dmabuf(LoongDisplay *display);
 gboolean loong_display_has_fractional_scale(LoongDisplay *display);
+gboolean loong_display_has_app_protocol(LoongDisplay *display);
 
 /*
  * 窗口的 Wayland app_id（默认取 g_get_prgname()）。需在第一次 configure 之前调用。
@@ -50,6 +51,23 @@ void loong_toplevel_set_app_id(LoongToplevel *toplevel, const char *app_id);
 
 /* 根表面的底色（0xRRGGBB，不透明）：没有被任何 view 覆盖的区域显示这个颜色。 */
 void loong_toplevel_set_background(LoongToplevel *toplevel, guint32 rgb);
+
+/*
+ * 系统状态栏（loong-shell 画在全屏窗口顶部 24pt 上）用哪种墨，经 Loong 私有协议 loong_app_v1
+ * 告诉合成器（protocols/loong-app-v1.xml，docs/api/loong-app-protocol.md）。合成器没有这个协议
+ * 时不做任何事。值与协议的 status_bar_style 相同。
+ */
+typedef enum {
+    LOONG_STATUS_BAR_AUTO = 0,          /* 由合成器决定：主题色 → 取样 → 系统外观 */
+    LOONG_STATUS_BAR_DARK_CONTENT = 1,  /* 浓墨（深色字形），窗口顶部是亮的 */
+    LOONG_STATUS_BAR_LIGHT_CONTENT = 2, /* 月白（浅色字形），窗口顶部是暗的 */
+} LoongStatusBarStyle;
+
+void loong_toplevel_set_status_bar_style(LoongToplevel *toplevel, LoongStatusBarStyle style);
+
+/* 窗口顶部（状态栏下方）的颜色 0xAARRGGBB，非预乘；alpha 为 0 表示没有（默认）。
+ * 只在样式为 LOONG_STATUS_BAR_AUTO 时起作用。 */
+void loong_toplevel_set_theme_color(LoongToplevel *toplevel, guint32 argb);
 
 /* 窗口是否已收到第一次 configure（之后 view 才会映射、开始出帧）。 */
 gboolean loong_toplevel_is_configured(LoongToplevel *toplevel);

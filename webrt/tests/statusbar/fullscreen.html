@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- 状态栏测试页（浏览器）：深色网页，点按中间的按钮进入网页全屏。全屏前状态栏随浏览器界面的
+     外观；全屏后界面隐藏、顶部是网页，loong-browser 改用网页的 theme-color（深色 → 月白）。 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#101317">
+<title>网页全屏</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #101317; color: #e6e0d2; font: 20px/1.5 sans-serif; }
+  body { display: grid; place-items: center; }
+  #stage { display: grid; place-items: center; gap: 16px; width: 100%; height: 100%; background: #101317; }
+  button { font: inherit; padding: 18px 48px; border-radius: 14px; border: 1px solid #5a564c; background: #1f1d17; color: #e6e0d2; }
+  p { margin: 0; color: #a39d90; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div>
+    <button id="go" type="button">进入全屏</button>
+    <p id="state">theme-color #101317</p>
+  </div>
+</div>
+<script>
+  document.getElementById('go').addEventListener('click', () => {
+    document.getElementById('stage').requestFullscreen().catch((e) => {
+      document.getElementById('state').textContent = '全屏失败：' + e;
+    });
+  });
+  document.addEventListener('fullscreenchange', () => {
+    document.getElementById('state').textContent = document.fullscreenElement ? '全屏中' : '已退出全屏';
+  });
+</script>
+</body>
+</html>

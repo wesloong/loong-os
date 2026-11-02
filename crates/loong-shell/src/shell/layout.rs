@@ -2,6 +2,7 @@
 //!
 //! 网格中的应用按顺序排满一页再排下一页。图标位置使用“内容坐标”：第 p 页的图标
 //! x 坐标已加上 `p × 页宽`，绘制时减去主屏的横向滚动位置即可。Dock 不随页面滚动。
+//! 既不在 Dock 也不在网格中的应用（已从主屏移除）不显示（`shown` 为假）。
 
 use super::geometry::RectF;
 
@@ -27,8 +28,10 @@ pub struct Layout {
     pub icons: Vec<RectF>,
     /// 网格中的应用是否显示名称（Dock 中不显示）。
     pub labeled: Vec<bool>,
-    /// 图标所在页；Dock 中的应用为 `None`。
+    /// 图标所在页；Dock 中的应用（以及不显示的应用）为 `None`。
     pub page_of: Vec<Option<usize>>,
+    /// 是否显示在主屏上（Dock 或网格中）。
+    pub shown: Vec<bool>,
     /// 页数（至少 1）。
     pub pages: usize,
     /// 页宽（= 屏幕宽度）。
@@ -40,15 +43,24 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// 计算布局。`in_dock[i]` 表示第 i 个应用是否在 Dock。
+    /// 计算布局。`in_dock[i]` 表示第 i 个应用是否在 Dock，其余按下标顺序排进网格。
+    #[cfg(test)]
     pub fn compute(w: f64, h: f64, in_dock: &[bool]) -> Layout {
+        let dock: Vec<usize> = (0..in_dock.len()).filter(|&i| in_dock[i]).collect();
+        let grid: Vec<usize> = (0..in_dock.len()).filter(|&i| !in_dock[i]).collect();
+        Layout::arrange(w, h, in_dock.len(), &dock, &grid)
+    }
+
+    /// 计算 `n` 个应用的布局：`dock`、`grid` 分别是 Dock 与网格中应用的下标（按显示顺序），
+    /// 两者都没有的应用不显示。
+    pub fn arrange(w: f64, h: f64, n: usize, dock_apps: &[usize], grid_apps: &[usize]) -> Layout {
         let landscape = w >= h;
         let icon = (w.min(h) * 0.095).clamp(56.0, 84.0).round();
         let (cols, rows) = if landscape { (6usize, 4usize) } else { (4, 6) };
         let per_page = cols * rows;
 
         // Dock
-        let dock_count = in_dock.iter().filter(|&&d| d).count().max(1) as f64;
+        let dock_count = dock_apps.len().max(1) as f64;
         let dock_pad = (icon * 0.2).round();
         let dock_gap = (icon * 0.3).round();
         let dock_w = dock_count * icon + (dock_count - 1.0) * dock_gap + 2.0 * dock_pad;
@@ -68,34 +80,38 @@ impl Layout {
         let cell_w = (w - 2.0 * margin_x) / cols as f64;
         let cell_h = (bottom - top) / rows as f64;
 
-        let mut icons = Vec::with_capacity(in_dock.len());
-        let mut labeled = Vec::with_capacity(in_dock.len());
-        let mut page_of = Vec::with_capacity(in_dock.len());
-        let (mut grid_i, mut dock_i) = (0usize, 0usize);
-        for &d in in_dock {
-            if d {
-                let x = dock.x + dock_pad + dock_i as f64 * (icon + dock_gap);
-                icons.push(RectF::new(x, dock.y + dock_pad, icon, icon));
-                labeled.push(false);
-                page_of.push(None);
-                dock_i += 1;
-            } else {
-                let (page, slot) = (grid_i / per_page, grid_i % per_page);
-                let (c, r) = (slot % cols, slot / cols);
-                let cx = page as f64 * w + margin_x + (c as f64 + 0.5) * cell_w;
-                let cy = top + (r as f64 + 0.42) * cell_h;
-                let rect = RectF::centered(cx, cy, icon, icon);
-                icons.push(RectF::new(rect.x.round(), rect.y.round(), icon, icon));
-                labeled.push(true);
-                page_of.push(Some(page));
-                grid_i += 1;
+        let mut icons = vec![RectF::default(); n];
+        let mut labeled = vec![false; n];
+        let mut page_of = vec![None; n];
+        let mut shown = vec![false; n];
+        for (dock_i, &i) in dock_apps.iter().enumerate().filter(|(_, i)| **i < n) {
+            let x = dock.x + dock_pad + dock_i as f64 * (icon + dock_gap);
+            icons[i] = RectF::new(x, dock.y + dock_pad, icon, icon);
+            shown[i] = true;
+        }
+        let mut grid_i = 0usize;
+        for &i in grid_apps {
+            // 越界的、已经在 Dock（或网格中重复出现）的跳过。
+            if i >= n || shown[i] {
+                continue;
             }
+            let (page, slot) = (grid_i / per_page, grid_i % per_page);
+            let (c, r) = (slot % cols, slot / cols);
+            let cx = page as f64 * w + margin_x + (c as f64 + 0.5) * cell_w;
+            let cy = top + (r as f64 + 0.42) * cell_h;
+            let rect = RectF::centered(cx, cy, icon, icon);
+            icons[i] = RectF::new(rect.x.round(), rect.y.round(), icon, icon);
+            labeled[i] = true;
+            page_of[i] = Some(page);
+            shown[i] = true;
+            grid_i += 1;
         }
         Layout {
             icon,
             icons,
             labeled,
             page_of,
+            shown,
             pages: grid_i.div_ceil(per_page).max(1),
             page_width: w,
             dots_y: (dock.y - gap / 2.0).round(),
@@ -121,7 +137,7 @@ impl Layout {
     pub fn hit(&self, x: f64, y: f64, scroll: f64) -> Option<usize> {
         // 点击区域比图标略大，手指更容易点中。
         let slop = self.icon * 0.1;
-        (0..self.icons.len()).find(|&i| {
+        (0..self.icons.len()).filter(|&i| self.shown[i]).find(|&i| {
             let r = self.icon_at(i, scroll);
             RectF::new(r.x - slop, r.y - slop, r.w + 2.0 * slop, r.h + 2.0 * slop).contains(x, y)
         })
@@ -162,6 +178,28 @@ mod tests {
                     .all(|(r, _)| r.y + r.h < l.dots_y - PAGE_DOT)
             );
         }
+    }
+
+    #[test]
+    fn arranged_order_and_hidden_apps() {
+        let (w, h) = (1280.0, 800.0);
+        // 应用 0 在 Dock；网格顺序 3, 1；应用 2 不显示。
+        let l = Layout::arrange(w, h, 4, &[0], &[3, 1]);
+        assert_eq!(l.shown, [true, true, false, true]);
+        assert_eq!(l.page_of, [None, Some(0), None, Some(0)]);
+        assert!(l.icons[3].x < l.icons[1].x, "按给定顺序排");
+        assert_eq!(l.pages, 1);
+        let r = l.icons[2];
+        assert_eq!(l.hit(r.x + 1.0, r.y + 1.0, 0.0), None, "不显示的应用点不中");
+        let a = l.icons[3];
+        assert_eq!(l.hit(a.x + 1.0, a.y + 1.0, 0.0), Some(3));
+        // 与 compute 等价。
+        let c = Layout::compute(w, h, &[true, false, false]);
+        let d = Layout::arrange(w, h, 3, &[0], &[1, 2]);
+        assert_eq!(c.icons, d.icons);
+        // 25 个网格应用：两页。
+        let grid: Vec<usize> = (1..26).collect();
+        assert_eq!(Layout::arrange(w, h, 26, &[0], &grid).pages, 2);
     }
 
     #[test]

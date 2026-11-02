@@ -21,6 +21,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Loong 私有协议（protocols/loong-app-v1.xml）的服务端代码生成。
 wayland-scanner = "0.31"
+# loong-sysd 客户端（状态栏电量 / Wi‑Fi、控制中心）：与 loong-sysd 用同一份 zbus 5（async-io，
+# 不引入 tokio），在后台线程里运行；以下几个都是 zbus 本来就依赖的。
+zbus = { version = "5.19", default-features = false, features = ["async-io"] }
+async-io = "2"
+async-channel = "2"
+futures-lite = { version = "2", default-features = false, features = ["std"] }
 
 [dependencies.smithay-drm-extras]
 git = "https://github.com/Smithay/smithay.git"

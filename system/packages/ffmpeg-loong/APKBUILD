@@ -1,0 +1,151 @@
+# Loong OS: 只含 H.264、AAC 解码器的精简 FFmpeg，以及 WebKit 经 GStreamer 用它的 gst-libav（avdec_h264、avdec_aac）
+# 构建: tools/build-pkg.sh ffmpeg-loong（aarch64：ARCH=aarch64 JOBS=2 tools/build-pkg.sh ffmpeg-loong）
+#
+# 背景：网站上最常见的是 MP4（H.264 + AAC，MSE 里是分片的 fMP4）。GStreamer 的 qtdemux（gst-plugins-loong 的
+# isomp4）能解封装，但镜像里没有 H.264、AAC 解码器。Alpine 的 ffmpeg-libavcodec 有 19 MiB（还连带 x264、x265、
+# dav1d 等一串库），所以从源码编一个 --disable-everything 的 FFmpeg，只打开两个解码器：
+#   h264  H.264/AVC 软解（nabu 上 v4l2h264dec 走 Venus 硬解，rank 更高，自动优先；这里是 QEMU 与没有硬解时的后备）
+#   aac   AAC-LC、HE-AAC（SBR）、HE-AACv2（PS）
+# 不编：HEVC（软解多 0.78 MiB；nabu 的 HEVC 走 Venus。没有硬解的机器上报告支持 HEVC 反而会让 B 站这类按
+# isTypeSupported 挑编码的网站选上软解很吃力的 HEVC，所以只在有硬解时报告）、编码器、封装/解封装（由 GStreamer
+# 做）、parser（gst-libav 不用 av_parser，分帧由 h264parse、aacparse 做）、滤镜、设备、网络、hwaccel、命令行程序、
+# libavformat、libavfilter、libswscale、libswresample、libavdevice。取舍与体积见 docs/媒体格式.md。
+#
+# 许可证：LGPL-2.1-or-later（不加 --enable-gpl / --enable-version3 / --enable-nonfree，configure 的结论是
+# "License: LGPL version 2.1 or later"）。H.264、AAC 仍受专利约束，发行前见 docs/媒体格式.md 的“专利”一节。
+#
+# 库放在私有目录 /usr/lib/ffmpeg-loong，不放 /usr/lib：
+#   - 与 Alpine 的 ffmpeg-libs（同样的 soname libavcodec.so.62）不冲突，开发 chroot 或以后的镜像同时装两份也没事；
+#   - 别的 Alpine 包依赖 so:libavcodec.so.62 时不会被这个只有两个解码器的版本满足（sonameprefix 让本包提供的是
+#     so:ffmpeg-loong:libavcodec.so.62）；
+#   - gst-libav 的插件带 RUNPATH=/usr/lib/ffmpeg-loong 找到它们；WebKit 网页进程的沙箱绑定了整个 /usr/lib。
+# 同一进程里只能有一份 libavcodec.so.62（musl 按 soname 去重），所以 gst-libav-loong 与 Alpine 的 gst-libav 互斥。
+#
+# gst-libav 在同一个 APKBUILD 里编（子包 gst-libav-loong，版本号随 FFmpeg；gst-libav 的版本见 _gstver）：
+# 这样不需要单独的 -dev 包装进共用的开发 chroot，插件的依赖也直接解析到本包（so:ffmpeg-loong:...），
+# 不会因为 chroot 里碰巧装了 Alpine 的 ffmpeg 而错连。gst-libav-decoders-only.patch 去掉 avdemux/avmux/avenc/
+# avdeinterlace/avvidcmp，不再链接 libavformat、libavfilter（说明见补丁开头）。
+# 两个包合起来约 2 MiB（x86_64），见 docs/体积预算.md。
+#
+# 版本：pkgver 跟 Alpine 的 ffmpeg（apk info ffmpeg），_gstver 跟 Alpine 的 gstreamer（同 gst-plugins-loong）。
+# 升级 FFmpeg 时 soname 可能变（libavcodec.so.62），gst-libav-loong 随本包一起重编，不会错配。
+pkgname=ffmpeg-loong
+pkgver=8.1.3
+_gstver=1.28.3
+pkgrel=0
+pkgdesc="Minimal FFmpeg for Loong OS media playback (H.264 and AAC decoders only, private libdir)"
+url="https://ffmpeg.org"
+arch="aarch64 x86_64"
+license="LGPL-2.1-or-later"
+depends=""
+makedepends="
+	chrpath
+	gst-plugins-base-dev
+	gstreamer-dev
+	meson
+	"
+# x86 的 SIMD 汇编要 nasm（没有它 configure 直接报错，也不该关掉汇编：解码慢几倍）。aarch64 的 NEON 汇编由 gcc 编
+case "$CARCH" in
+x86*) makedepends="$makedepends nasm" ;;
+esac
+subpackages="gst-libav-loong:_gstlibav"
+source="https://ffmpeg.org/releases/ffmpeg-$pkgver.tar.xz
+	https://gstreamer.freedesktop.org/src/gst-libav/gst-libav-$_gstver.tar.xz
+	gst-libav-decoders-only.patch
+	"
+builddir="$srcdir"
+# FFmpeg 的 FATE 测试要样本文件与命令行程序，打包时不运行；功能检查见 webrt/tests/media/
+options="!check"
+# 私有库目录：abuild 只扫描 ldpath 里的库来生成 so: provides；前缀避免冒充 Alpine 的 libavcodec
+ldpath="/usr/lib/ffmpeg-loong"
+sonameprefix="$pkgname:"
+
+_ff="$srcdir/ffmpeg-$pkgver"
+_gst="$srcdir/gst-libav-$_gstver"
+_libdir=/usr/lib/ffmpeg-loong
+
+prepare() {
+	cd "$_gst"
+	patch -p1 < "$srcdir"/gst-libav-decoders-only.patch
+}
+
+build() {
+	# --disable-autodetect：不自动链接 zlib、iconv、libdrm、vaapi、vulkan、xcb 等（autodetect 也包括线程库，
+	# 所以 pthreads 要明确打开：H.264 的帧级/片级多线程解码）。
+	# --enable-small：-Os，并去掉编解码器的长名等字符串；1080p H.264 High 单线程解码只慢约 2%（热点是汇编），
+	# 库小 0.86 MiB。--enable-lto 再小 6%（Alpine 的 ffmpeg 也开 LTO）。
+	# --disable-stripping：由 abuild 统一 strip。
+	cd "$_ff"
+	./configure \
+		--prefix=/usr \
+		--libdir=$_libdir \
+		--shlibdir=$_libdir \
+		--incdir=$_libdir/include \
+		--pkgconfigdir=$_libdir/pkgconfig \
+		--enable-shared \
+		--disable-static \
+		--disable-everything \
+		--disable-autodetect \
+		--enable-pthreads \
+		--disable-programs \
+		--disable-doc \
+		--disable-avdevice \
+		--disable-avformat \
+		--disable-avfilter \
+		--disable-swscale \
+		--disable-swresample \
+		--disable-network \
+		--disable-iconv \
+		--disable-debug \
+		--disable-stripping \
+		--enable-small \
+		--enable-lto \
+		--enable-decoder=h264,aac
+	# 许可证核对：不能误开 GPL/nonfree 组件
+	grep -q 'FFMPEG_LICENSE "LGPL version 2.1 or later"' config.h || die "FFmpeg 的许可证不是 LGPL-2.1+"
+	make
+	# 装到暂存目录，gst-libav 对它编译；pkg-config 文件里的路径改到暂存目录
+	make DESTDIR="$srcdir"/ffmpeg-stage install
+	mkdir -p "$srcdir"/ffmpeg-pc
+	local f
+	for f in "$srcdir"/ffmpeg-stage$_libdir/pkgconfig/*.pc; do
+		sed "s|^prefix=.*|prefix=$srcdir/ffmpeg-stage/usr|; s|$_libdir|$srcdir/ffmpeg-stage$_libdir|g" \
+			"$f" > "$srcdir"/ffmpeg-pc/"${f##*/}"
+	done
+
+	# gst-libav：--auto-features=disabled 关掉文档与测试；RUNPATH 指向私有库目录（打包时再去掉暂存目录）
+	cd "$_gst"
+	PKG_CONFIG_PATH="$srcdir"/ffmpeg-pc \
+	LDFLAGS="$LDFLAGS -Wl,-rpath,$_libdir" \
+	abuild-meson \
+		--auto-features=disabled \
+		-Dpackage-origin="Loong OS" \
+		. output
+	meson compile -C output -j "${JOBS:-2}"
+}
+
+package() {
+	# 只要运行时的共享库（头文件、pkg-config、链接用的 .so 符号链接都不装：gst-libav 在本包里编好了）
+	install -d "$pkgdir"$_libdir
+	cp -P "$srcdir"/ffmpeg-stage$_libdir/lib*.so.* "$pkgdir"$_libdir/
+
+	DESTDIR="$pkgdir" meson install --no-rebuild -C "$_gst"/output
+	# RUNPATH 只留 /usr/lib/ffmpeg-loong（meson 可能留下暂存目录）
+	chrpath -r $_libdir "$pkgdir"/usr/lib/gstreamer-1.0/libgstlibav.so
+}
+
+_gstlibav() {
+	pkgdesc="GStreamer libav plugin for Loong OS (avdec_h264, avdec_aac) against ffmpeg-loong"
+	url="https://gstreamer.freedesktop.org"
+	license="LGPL-2.1-or-later"
+	# 与 Alpine 的 gst-libav 互斥：插件同名同路径（/usr/lib/gstreamer-1.0/libgstlibav.so）。
+	# 对 ffmpeg-loong 的依赖由 abuild 按 so:ffmpeg-loong:libavcodec.so.* 自动加上
+	depends="!gst-libav"
+	amove usr/lib/gstreamer-1.0
+}
+
+sha512sums="
+acc7dbacde58c91bbc4a86fa589d317515d40bc9bc1ca5f9c020034bb54bf3c8cd61ed70ce437b962bd50332ea8378b3ad52da1942cfdb29e380c33a90d2f0c1  ffmpeg-8.1.3.tar.xz
+b675ad6a6600e643430cd0055879ef4c3d2428749ffb2a116b929504f24dfcf99e9c51c6135738f0a4ce0e95d078dfb1c4d8a04f5a540c9182060d8ad64f8bd6  gst-libav-1.28.3.tar.xz
+337d9abed626f3d77440fbfd5bf4d9c012dd545ef279e7bb9cc7f272484e9264a6b4220ae4c829ec903fd7551d727d113c36c52e9cdf6b093e07eb15ebe65175  gst-libav-decoders-only.patch
+"

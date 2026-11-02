@@ -8,6 +8,7 @@
 //! 切到另一种状态时，位置和速度都是连续的。
 
 pub mod apps;
+pub mod control_center;
 pub mod geometry;
 pub mod gesture;
 pub mod ink;
@@ -16,6 +17,8 @@ pub mod layout;
 pub mod lock;
 pub mod status;
 pub mod switcher;
+pub mod system;
+pub mod webapps;
 
 use loong_motion::{Animatable, Decay, Spring, SpringAnimation, VelocityTracker, snap};
 use loong_ui::theme::Theme;
@@ -24,6 +27,7 @@ use smithay::{desktop::Window, reexports::wayland_server::protocol::wl_surface::
 pub use self::ink::{InkDab, Reveal, RevealMode};
 use self::{
     apps::AppEntry,
+    control_center::ControlCenter,
     geometry::{RectF, WindowPlacement, lerp, smoothstep},
     gesture::{Axis, lock_axis, rubber_clamp, rubber_clamp_inverse},
     ink::{InkLayer, InkState},
@@ -35,6 +39,8 @@ use self::{
     lock::LockScreen,
     status::{Basis, StatusBar, StatusInk},
     switcher::{PauseDetector, SwitcherLayout},
+    system::{ActionSink, StatusGlyphs, SystemStatus},
+    webapps::HomeState,
 };
 
 /// 应用打开时主屏放大的倍数（营造“进入”的纵深感）。
@@ -100,12 +106,16 @@ pub enum TexKey {
     KeyPreview,
     /// 长按备选条（含四周墨影）。
     KeyAlternates,
+    /// 控制中心的各部分（见 [`control_center::Part`]）。
+    ControlCenter(control_center::Part),
     /// 候选栏左侧的拼音（预编辑），与所占格子等大。
     CandidatePreedit,
     /// 候选栏的第 i 格（候选或翻页箭头），与格子等大。
     CandidateCell(usize),
     /// 高亮候选下方的一笔浓墨（拉伸绘制）。
     CandidateMark,
+    /// 长按已安装应用弹出的菜单面板（含四周墨影 [`webapps::MENU_SHADOW`]，见 [`webapps`]）。
+    HomeMenu,
 }
 
 /// 画面中的一个元素。
@@ -334,6 +344,10 @@ enum Gesture {
         slot: u32,
         start: (f64, f64),
     },
+    /// 控制中心的触摸（拉出、拖动面板、点按模块、拖动亮度滑块），细节由 [`ControlCenter`] 管。
+    ControlCenter {
+        slot: u32,
+    },
 }
 
 /// 系统界面。
@@ -386,17 +400,25 @@ pub struct Shell {
     pub keyboard: ScreenKeyboard,
     /// 状态栏的墨（浓墨 / 月白）与交叉淡化。
     status: StatusBar,
+    /// loong-sysd 报告的系统状态（状态栏右侧、控制中心）。
+    pub system: SystemStatus,
+    /// 控制中心。
+    pub control_center: ControlCenter,
+    /// 控制中心的操作交给谁（`LoongState` 设置：loong-sysd / 外观文件）。
+    actions: ActionSink,
+    /// 主屏排列、已安装的 Web 应用（落印、收墨、长按菜单），见 [`webapps`]。
+    home_state: HomeState,
 }
 
 impl Shell {
     pub fn new(w: f64, h: f64, screen_radius: f64) -> Self {
         let apps = apps::builtin_apps();
-        let in_dock: Vec<bool> = apps.iter().map(|a| a.in_dock).collect();
+        let home_state = HomeState::new(&apps);
         Shell {
             w,
             h,
             screen_radius,
-            layout: Layout::compute(w, h, &in_dock),
+            layout: home_state.layout(&apps, w, h),
             switcher: SwitcherLayout::new(w, h),
             apps,
             home: SpringAnimation::at_rest(Spring::SMOOTH, [1.0, 0.0], 0.0),
@@ -421,6 +443,32 @@ impl Shell {
             mist: SpringAnimation::at_rest(MIST_SPRING, 0.0, 0.0).with_rest_thresholds(0.2, 2.0),
             keyboard: ScreenKeyboard::new(w, h, 0.0),
             status: StatusBar::default(),
+            system: SystemStatus::absent(),
+            control_center: ControlCenter::new(w, h),
+            actions: Box::new(|action| tracing::debug!("没有处理者：{action:?}")),
+            home_state,
+        }
+    }
+
+    /// 控制中心的操作（亮度、Wi‑Fi、外观）交给谁。
+    pub fn set_action_sink(&mut self, sink: ActionSink) {
+        self.actions = sink;
+    }
+
+    /// loong-sysd 的最新快照（后台线程经事件循环送来）。动画在下一次 `update` 中按帧时间处理。
+    pub fn set_system_status(&mut self, status: SystemStatus) {
+        self.system = status;
+    }
+
+    /// 状态栏右侧此刻该画的符号。
+    pub fn status_glyphs(&self) -> StatusGlyphs {
+        StatusGlyphs::from_status(&self.system)
+    }
+
+    /// 把控制中心产生的操作交出去。
+    fn flush_actions(&mut self) {
+        for action in self.control_center.take_actions() {
+            (self.actions)(action);
         }
     }
 
@@ -433,6 +481,7 @@ impl Shell {
     pub fn set_reduced_motion(&mut self, reduced: bool) {
         self.reduced_motion = reduced;
         self.ink.enabled = !reduced;
+        self.control_center.reduced_motion = reduced;
     }
 
     /// 屏幕逻辑尺寸。
@@ -522,6 +571,8 @@ impl Shell {
     #[allow(dead_code, reason = "电源键处理（M3/M4）")]
     pub fn lock_now(&mut self, now: f64) {
         self.lock.lock(now);
+        self.control_center.close_now(now);
+        self.flush_actions();
     }
 
     /// 动画是否都已停止、也没有进行中的手势（用于空闲时停止重绘）。
@@ -539,6 +590,8 @@ impl Shell {
             && self.mist.is_done(now)
             && self.keyboard.is_idle(now)
             && self.status.is_idle(now)
+            && self.control_center.is_idle(now)
+            && self.home_is_idle(now)
     }
 
     /// 前台应用的窗口（键盘焦点与输入框都跟随它）。主屏、多任务中为 `None`。
@@ -572,7 +625,7 @@ impl Shell {
 
     /// 打开应用：卡片从图标位置弹出到全屏。在多任务中则从该应用的卡片放大。
     pub fn launch(&mut self, app: usize, now: f64) {
-        if app >= self.apps.len() {
+        if app >= self.apps.len() || self.apps[app].removed {
             return;
         }
         match self.mode {
@@ -789,6 +842,8 @@ impl Shell {
             }
         }
         self.ink.update(now);
+        // 长按菜单、落印、收墨、落位（见 webapps）。
+        self.update_home(now);
         // 展卷：烟云层随翻页速度多飘一点，速度归零后由弹簧带回原位（速度连续）。
         let drift = if self.reduced_motion {
             0.0
@@ -823,6 +878,12 @@ impl Shell {
         self.keyboard.update(now);
         let target = self.status_target(now);
         self.status.update(target, now);
+        // 控制中心：锁屏上没有控制中心；补发节流的亮度、跟随外部亮度。
+        if self.lock.is_locked() && self.control_center.is_visible(now) {
+            self.control_center.close_now(now);
+        }
+        self.control_center.update(now, &self.system);
+        self.flush_actions();
     }
 
     /// 状态栏此刻该用的墨，以及依据（见 [`status`]）。
@@ -834,6 +895,10 @@ impl Shell {
         let system = StatusInk::for_theme(self.theme);
         let fallback = (system, Basis::System);
         if self.lock.is_visible(now) && self.lock.progress(now) < 0.5 {
+            return fallback;
+        }
+        // 控制中心的绢罩住了大半：按系统外观。
+        if self.control_center.progress(now) > 0.5 {
             return fallback;
         }
         if self.mode == Mode::Switcher {
@@ -1070,6 +1135,9 @@ impl Shell {
             self.lock.touch_down(slot, y, now);
             return TouchRoute::Shell;
         }
+        if let Some(route) = self.control_center_touch_down(slot, x, y, now) {
+            return route;
+        }
         // 屏幕键盘：底边手势区（系统手势优先）以外落在键盘上的手指都交给键盘，含多指快速连打。
         if self.mode == Mode::App && y < self.h - BOTTOM_EDGE && self.keyboard.contains(x, y, now) {
             let radius = self.keyboard.touch_down(slot, x, y, now);
@@ -1137,12 +1205,19 @@ impl Shell {
                 TouchRoute::Shell
             }
             Mode::Home => {
+                // 长按菜单打开时，触摸只给菜单。
+                if self.menu_touch_down(slot, x, y, now) {
+                    return TouchRoute::Shell;
+                }
                 self.begin_tracking(now, x, y);
                 // 手指按下即“接住”正在翻页的主屏。
                 let scroll = self.home_scroll.value(now);
                 pin(&mut self.home_scroll, scroll, now);
                 let page = (scroll / self.layout.page_width).round();
-                let icon = self.layout.hit(x, y, scroll);
+                let icon = self
+                    .layout
+                    .hit(x, y, scroll)
+                    .filter(|&i| self.icon_tappable(i));
                 self.press_home_ink(slot, x, y, icon, scroll, now);
                 self.gesture = Gesture::Home {
                     slot,
@@ -1158,6 +1233,39 @@ impl Shell {
                 TouchRoute::Shell
             }
         }
+    }
+
+    /// 控制中心：显示时独占所有触摸；收起时，空闲的手指落在顶边右侧 1/3 就开始拉出。
+    fn control_center_touch_down(
+        &mut self,
+        slot: u32,
+        x: f64,
+        y: f64,
+        now: f64,
+    ) -> Option<TouchRoute> {
+        let idle = matches!(self.gesture, Gesture::Idle);
+        if self.control_center.is_visible(now) {
+            if !idle || self.control_center.has_touch() {
+                // 多余的手指：控制中心是模态的，不交给应用。
+                return Some(TouchRoute::Shell);
+            }
+        } else if !(idle && control_center::in_pull_zone(x, y, self.w)) {
+            return None;
+        }
+        self.begin_tracking(now, x, y);
+        let pressed = self
+            .control_center
+            .touch_down(slot, x, y, now, &self.system);
+        self.gesture = Gesture::ControlCenter { slot };
+        if pressed.is_some() {
+            self.ink.press(slot, InkLayer::Overlay, x, y, 30.0, now);
+        }
+        // 从顶边拉出：笔迹从这里起笔；键盘留在原处（被绢盖住）。
+        if self.control_center.drag_start(slot).is_some() {
+            self.ink.stroke_to(x, y, 0.0, now);
+        }
+        self.flush_actions();
+        Some(TouchRoute::Shell)
     }
 
     /// 主屏上的点墨：墨滴落在主屏纸面上（图标之上、卡片之下），随翻页移动（Dock 上的不随翻页）。
@@ -1223,6 +1331,9 @@ impl Shell {
             }
             return TouchRoute::Shell;
         }
+        if self.menu_touch_motion(slot, x, y, now) {
+            return TouchRoute::Shell;
+        }
         match self.gesture {
             Gesture::Home { slot: s, .. } if s == slot => {
                 self.track(now, x, y);
@@ -1281,6 +1392,19 @@ impl Shell {
             Gesture::SwitcherEdge { slot: s, start } if s == slot => {
                 self.track(now, x, y);
                 self.trail_to(start, x, y, now);
+            }
+            Gesture::ControlCenter { slot: s } if s == slot => {
+                self.track(now, x, y);
+                if self
+                    .control_center
+                    .touch_motion(slot, x, y, now, &self.system)
+                {
+                    self.ink.release(slot, now);
+                }
+                if let Some(start) = self.control_center.drag_start(slot) {
+                    self.trail_to(start, x, y, now);
+                }
+                self.flush_actions();
             }
             Gesture::Forward { slot: s } if s == slot => {
                 self.keyboard.app_touch_motion(slot, x, y);
@@ -1439,6 +1563,9 @@ impl Shell {
             self.ink.release(slot, now);
             return TouchRoute::Shell;
         }
+        if self.menu_touch_up(slot, now) {
+            return TouchRoute::Shell;
+        }
         // 手指离开纸面：墨滴淡入纸中，笔画结束（已画的笔迹继续淡去）。
         self.ink.release(slot, now);
         if self.gesture_slot() == Some(slot) {
@@ -1531,6 +1658,11 @@ impl Shell {
                 self.keyboard.app_touch_up(slot, now);
                 return self.forward_route(now);
             }
+            Gesture::ControlCenter { slot: s } if s == slot => {
+                self.control_center
+                    .touch_up(slot, now, &self.system, self.theme);
+                self.flush_actions();
+            }
             other => self.gesture = other,
         }
         TouchRoute::Shell
@@ -1545,7 +1677,8 @@ impl Shell {
             | Gesture::SwitcherEnter { slot, .. }
             | Gesture::Forward { slot }
             | Gesture::Switcher { slot, .. }
-            | Gesture::SwitcherEdge { slot, .. } => Some(slot),
+            | Gesture::SwitcherEdge { slot, .. }
+            | Gesture::ControlCenter { slot } => Some(slot),
         }
     }
 
@@ -1730,6 +1863,10 @@ impl Shell {
             }
         }
 
+        // 控制中心（应用、键盘之上；点墨与笔迹、锁屏、状态栏在它之上）。
+        let brightness = self.system.brightness().is_some();
+        self.control_center.push_scene(&mut scene, brightness, now);
+
         // 最上层的墨迹：多任务中的点墨、系统手势的笔迹。
         for (layer, dab) in self.ink.drops(now) {
             if layer == InkLayer::Overlay {
@@ -1837,15 +1974,21 @@ impl Shell {
             .filter(|t| self.mode == Mode::App || t.homing)
             .map(|t| t.app);
         for i in 0..self.layout.icons.len() {
+            // 不在主屏上的（已移除的）、正在落印 / 收墨的（画在 push_home_extras 里）跳过。
+            if !self.layout.shown[i] || self.icon_in_overlay(i) {
+                continue;
+            }
+            let (ox, oy) = self.icon_offset(i, now);
             let rect = self.layout.icon_at(i, scroll);
+            let rect = RectF::new(rect.x + ox, rect.y + oy, rect.w, rect.h);
             // 其他页上的图标不画（名称比图标宽，留一些余量）。
             let margin = self.layout.icon;
             if Some(i) == hidden_app || rect.x + rect.w < -margin || rect.x > self.w + margin {
                 continue;
             }
             let r = rect.scaled_about(cx, cy, zoom);
-            // 宣纸小笺落在纸上的墨影（停在某页时，网格图标的墨影已画在整页山水里）。
-            if page.is_none() || self.layout.page_of[i].is_none() {
+            // 宣纸小笺落在纸上的墨影（停在某页时，内置应用网格图标的墨影已画在整页山水里）。
+            if page.is_none() || self.layout.page_of[i].is_none() || !self.shadow_baked(i) {
                 let s = r.w * ICON_SHADOW_SPREAD;
                 scene.push(DrawItem::Texture {
                     key: TexKey::IconShadow,
@@ -1914,6 +2057,8 @@ impl Shell {
                 ));
             }
         }
+        // 落印、收墨中的图标，长按菜单。
+        self.push_home_extras(scene, zoom, scroll, now);
         if dim > 0.001 {
             // 主屏退到后方：罩一层墨（亮色）/ 夜色（暗色）。
             let shade = match self.theme {
@@ -1985,7 +2130,8 @@ impl Shell {
             }
             _ => (ready * smoothstep(0.02, 0.4, q), None),
         };
-        let paper = rgba(self.theme.palette().paper_raised, alpha);
+        // 纸色底即启动闪屏：已安装的应用用 manifest 的 background_color（见 webapps）。
+        let paper = rgba(self.card_paper(task.app), alpha);
         scene.push(DrawItem::Solid {
             rect,
             color: paper,

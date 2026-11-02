@@ -16,11 +16,13 @@ mod ime;
 mod input;
 mod lunar;
 mod protocols;
+mod registry;
 mod render;
 mod script;
 mod shell;
 mod state;
 mod status_sample;
+mod sysd_client;
 
 use std::path::PathBuf;
 

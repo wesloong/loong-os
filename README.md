@@ -40,6 +40,12 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 |---|---|---|
 | ![屏幕键盘 · 组字中](docs/images/keyboard-light.png) | ![屏幕键盘 · 夜墨](docs/images/keyboard-committed-dark.png) | ![浏览器地址栏](docs/images/keyboard-browser-url.png) |
 
+控制中心（M4）：从右上角下拉出一张「绢」面板（背后是模糊的当前画面），状态栏的电量与 Wi‑Fi、控制中心的亮度和电池都来自 loong-sysd。下图是假 sysfs + 私有总线上的 loong-sysd（`crates/loong-shell/tests/control-center-headless.sh`）：电量从 57% 放电变成 80% 充电，拖动亮度滑块时假 sysfs 的 `brightness` 从 300 降到 21，点「夜墨」后整个系统界面换成夜墨（见[设计规范 §8.7](docs/design/设计规范.md#控制中心m4)，下拉手势见 [APNG](docs/images/control-center-gesture.png)）：
+
+| 状态栏：57% 放电 → 插上充电器 80% | 拖动亮度滑块（写入背光） | 点「夜墨」：系统界面随之切换 |
+|---|---|---|
+| ![状态栏电量](docs/images/control-center-statusbar.png) | ![控制中心](docs/images/control-center-brightness.png) | ![控制中心 · 夜墨](docs/images/control-center-dark.png) |
+
 完整系统在 QEMU 中启动后的画面（UEFI → systemd-boot → UKI → initramfs → 只读 erofs → OpenRC → `loong-shell` 走 DRM/KMS；镜像带 WPE WebKit、霞鹜文楷与拼音词库）：
 
 | 主屏 | 设置（经 JS bridge 读 loong-sysd） | 在设置里切到「夜墨」，系统界面随之切换 |
@@ -62,7 +68,7 @@ ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-she
 
 M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏览器）、M4（键盘、设置）、M5（OTA）的主体都已完成，并在 QEMU 或无屏幕模式下验证；M3（小米平板 5 适配）的镜像可以构建，还没有上真机。下一步主要是真机验证（触摸、GPU、Wi‑Fi、电池、120Hz、休眠）和继续瘦身（M6）。
 
-**体积**（M6，见[体积预算](docs/体积预算.md)）：按真机的配置（自编的 `mesa-loong`，不依赖 LLVM），带 WebKit 的完整镜像只读根从 327.7 MiB 降到 124.8 MiB，再换上按体积重编的 WebKit（r1）后为 **101.0 MiB**，已低于 150 MiB 的目标；补上音视频插件（`gst-plugins-loong` 与 libvpx、libmpg123，+3.0 MiB）后为 104.0 MiB。其中 rootfs 瘦身这一轮：思源黑体子集（88 MB → 4 MiB，可变字重）、内核模块与固件白名单、开发工具改为可选、清理文档等，以及 erofs 改用 64 KiB 物理簇；同时补上了中文 ICU 数据（`Intl` 中文格式、拼音排序、中文分词）。QEMU 机型默认用带 llvmpipe 的 Alpine mesa（TCG 下快得多），只读根 217.0 MiB。nabu 镜像（mesa-loong，暂不含 WebKit）68 MiB。WebKit 及其依赖压缩后从约 85 MiB 降到 61 MiB（库 123 → 85 MB：全局 `-Os`、热点 `-O2`、不生成 `.eh_frame`、关掉 v1 用不到的功能，见 [ADR 0003](docs/adr/0003-web-内核-wpe-webkit.md#m6-瘦身记录webkit-体积)），仍是最大的一块。
+**体积**（M6，见[体积预算](docs/体积预算.md)）：按真机的配置（自编的 `mesa-loong`，不依赖 LLVM），带 WebKit 的完整镜像只读根从 327.7 MiB 降到 124.8 MiB，再换上按体积重编的 WebKit（r1）后为 **101.0 MiB**，已低于 150 MiB 的目标；补上音视频插件（`gst-plugins-loong` 与 libvpx、libmpg123，+3.0 MiB）后为 104.0 MiB，再补上 MP4 的 H.264、AAC 软解（只含这两个解码器的 FFmpeg，+0.86 MiB）后为 104.9 MiB。其中 rootfs 瘦身这一轮：思源黑体子集（88 MB → 4 MiB，可变字重）、内核模块与固件白名单、开发工具改为可选、清理文档等，以及 erofs 改用 64 KiB 物理簇；同时补上了中文 ICU 数据（`Intl` 中文格式、拼音排序、中文分词）。QEMU 机型默认用带 llvmpipe 的 Alpine mesa（TCG 下快得多），只读根 217.0 MiB。nabu 镜像（mesa-loong，暂不含 WebKit）68 MiB。WebKit 及其依赖压缩后从约 85 MiB 降到 61 MiB（库 123 → 85 MB：全局 `-Os`、热点 `-O2`、不生成 `.eh_frame`、关掉 v1 用不到的功能，见 [ADR 0003](docs/adr/0003-web-内核-wpe-webkit.md#m6-瘦身记录webkit-体积)），仍是最大的一块。
 
 | 模块 | 状态 |
 |---|---|
@@ -71,18 +77,21 @@ M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏�
 | `crates/loong-motion`：弹簧、惯性衰减、橡皮筋、速度跟踪、吸附/分页、CSS `linear()` 缓动 | ✅ 已完成（含单元测试） |
 | `system/packages/wpewebkit`：WPE WebKit 2.54.2 APKBUILD 与 CI 工作流 | ✅ 已在 chroot 中编译出 APK（r1：31MB，安装后 81MiB；M6 按体积编译、关掉 v1 用不到的功能，r0 是 47MB / 119MiB，取舍与实测见 [ADR 0003](docs/adr/0003-web-内核-wpe-webkit.md#m6-瘦身记录webkit-体积)） |
 | `system/packages/mesa-loong`（M6）：自编 Mesa 26.1——freedreno（nabu）、virgl、softpipe，只有 EGL + GLES，不依赖 LLVM、X11、Vulkan；机型配置用 `MESA_FLAVOR` 选图形栈 | ✅ 图形栈安装后 241 MB → 14 MB，QEMU 根镜像（erofs）327 → 217 MiB；QEMU 中锁屏、主屏、手势动画、设置、浏览器显示正常（softpipe，比 llvmpipe 慢数倍）；aarch64 包可构建，freedreno 未上真机 |
-| `system/packages/gst-plugins-loong`：音视频的最小 GStreamer 插件集（autodetect、WebM/MP4/Ogg/MP3/WAV 解封装、VP8/VP9 与 MP3 软解、V4L2 硬解与 h264parse、MSE 用的 opusparse；不装 Alpine 的 gst-plugins-good 全家桶），见[媒体格式](docs/媒体格式.md) | ✅ 修好“任何 `<video>`/`<audio>` 都让网页进程崩溃”；QEMU 中 WebM（VP9+Opus）、Ogg（Theora+Vorbis）、MSE、`<audio>`（MP3、Opus）、Web Audio 同时播放正常，只读根 +3.0 MiB；没有 AAC 与 H.264 软解，nabu 的 Venus 硬解与扬声器路由未上真机 |
+| `system/packages/gst-plugins-loong`：音视频的最小 GStreamer 插件集（autodetect、WebM/MP4/Ogg/MP3/WAV 解封装、VP8/VP9 与 MP3 软解、V4L2 硬解与 h264parse、MSE 用的 opusparse；不装 Alpine 的 gst-plugins-good 全家桶），见[媒体格式](docs/媒体格式.md) | ✅ 修好“任何 `<video>`/`<audio>` 都让网页进程崩溃”；QEMU 中 WebM（VP9+Opus）、Ogg（Theora+Vorbis）、MSE、`<audio>`（MP3、Opus）、Web Audio 同时播放正常，只读根 +3.0 MiB；nabu 的 Venus 硬解未上真机 |
+| `system/packages/ffmpeg-loong`：MP4 的 H.264、AAC 软解——只编 `h264`、`aac` 两个解码器的 FFmpeg 8.1（LGPL，库在私有目录 `/usr/lib/ffmpeg-loong`）+ 只编解码器的 gst-libav（`gst-libav-loong`）；专利与发行方式见[媒体格式](docs/媒体格式.md#专利与许可证) | ✅ QEMU 中 MP4（H.264 High + AAC）、MSE fMP4、M4A、AAC 的 `decodeAudioData` 播放到结尾，`canPlayType` 对 `avc1`/`mp4a.40.*` 报告 probably、MSE 支持；只读根 +0.86 MiB；aarch64 包可构建。不编 HEVC 软解（nabu 走 Venus） |
 | `crates/loong-ui`：「墨韵」设计令牌（宣纸/夜墨）、连续圆角、文字（中文，霞鹜文楷）、水墨绘画工具（宣纸、毛笔笔触、山水长卷、宣纸小笺图标、印章） | ✅ 已完成 |
 | `crates/loong-shell`：headless 后端、主屏（分页）、打开应用 / 回主屏手势动画、多任务（上滑停顿进入、横向滚动吸附、点按打开、上滑关闭）、真实 Wayland 客户端（xdg-shell、子表面、linux-dmabuf v4、viewporter、分数缩放）、「墨韵」水墨动效（点墨、晕染、笔迹、展卷、墨散）、跟随系统外观、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证）；WebKit 走 GPU（dmabuf）要在有 GPU 的真机上验证 |
 | QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
 | 瘦身（M6）：`tools/image-size.sh`（体积报告）、`tools/qemu-bench.py`（开机与启动应用计时）、思源黑体子集（`font-noto-sans-sc-loong`）、`font-inter-loong`、中英文 ICU 数据（`icu-data-loong`）、内核模块与固件白名单 | 🚧 真机配置的只读根 327.7 → 124.8 MiB（连同 mesa-loong），WebKit 按体积重编后 101.0 MiB，见[体积预算](docs/体积预算.md) |
 | aarch64：qemu-user binfmt（`tools/setup-binfmt.sh`）、交叉编译（`tools/build-aarch64.sh`）、`qemu-aarch64` 镜像 | ✅ 在 QEMU virt（TCG）中启动到锁屏 |
-| 小米平板 5：`android-abl` 启动后端（boot.img、super 动态分区 A/B、userdata、qbootctl 回滚），见[适配说明](docs/devices/xiaomi-nabu.md) | 🚧 镜像可构建并通过离线自检，尚未上真机 |
+| 小米平板 5：`android-abl` 启动后端（boot.img、super 动态分区 A/B、userdata、qbootctl 回滚）；扬声器（开机/声卡出现时由 `loong-audio` 启用 UCM 的 HiFi 用例，ALSA 默认设备经 dmix 混音），见[适配说明](docs/devices/xiaomi-nabu.md) | 🚧 镜像可构建并通过离线自检，尚未上真机（扬声器的上机检查步骤见适配说明） |
 | `crates/loong-update` + `org.loong.Update1`：签名 OTA 更新包、写入非活动 slot、启动确认与自动回滚，见 [loong-update](docs/api/loong-update.md) | ✅ 在 QEMU 中验证（0.1.0 → 0.1.1 升级；系统界面起不来的更新 3 次后自动回滚；坏签名/坏哈希在写入前被拒绝）；`android-abl` 只有单元测试，未上真机；dm-verity 待做 |
 | `crates/loong-ime`：librime 拼音引擎（简体，词库 8MB）、iPad 式屏幕键盘模型（布局、命中测试、触摸状态机） | ✅ 已完成（含真实 librime 测试） |
 | 屏幕键盘（M4）：loong-shell 内的输入法、「墨韵」键盘与候选栏、`zwp_text_input_v3`、窗口避让、镜像中的预编译 Rime 数据（`loong-rime-data`） | ✅ 在无屏幕 loong-shell + WPE WebKit（loong-webapp、loong-browser）中端到端验证；还没上真机 |
+| 控制中心与状态栏数据（M4）：loong-shell 的 loong-sysd 客户端（后台线程订阅电量、Wi‑Fi、亮度，服务重启后自动恢复）、状态栏的真实电量与 Wi‑Fi、控制中心（右上角下拉、「绢」面板、无线局域网与夜墨开关、亮度笔触滑块、电池），见[设计规范 §8.7](docs/design/设计规范.md#控制中心m4) | ✅ 在无屏幕 loong-shell + 私有总线上的 loong-sysd（假 sysfs）中端到端验证（电量变化、拖动滑块写入背光、外部改亮度、切换夜墨）；还没上真机 |
 | `webrt/`：`loong-webapp`（每个应用一个进程、跟随系统外观）、系统应用的受限 JS bridge（`window.loong` → loong-sysd，见[说明](docs/api/loong-js-bridge.md)）、**设置**（无线局域网、显示与亮度、电池、关于本机） | ✅ 在无屏幕 loong-shell + WPE WebKit 中端到端验证（亮度滑块写入背光、电池读自 sysfs）；Wi‑Fi 用假 iwd 验证（还没有在真实网卡上试过） |
 | `webrt/platform`、`webrt/browser`：自写 `loong` WPEPlatform 后端（每个 view 一个 `wl_subsurface`）与系统浏览器 `loong-browser`（界面 + 网页同屏、标签页、「墨韵」界面、添加到主屏幕），见[下文](#浏览器) | ✅ 在 sway 与 loong-shell（无屏幕）中验证（M2） |
+| PWA 注册表 → 主屏（M2）：浏览器“添加到主屏幕”写 `~/.local/share/loong/webapps/<id>/`（manifest + 下载的图标），loong-shell 用 inotify 发现新应用、在主屏上落印入场；「墨韵」小笺（maskable 铺满、any 放在纸上、没有图标写首字）；点按以 loong-webapp 运行（作用域、主题色、背景色闪屏）；长按“移除应用”删除注册表与数据；`home.toml` 记主屏顺序，页数随应用增减，见 [PWA 注册表](docs/api/loong-webapps.md) | ✅ 在无屏幕 loong-shell + 真实的 loong-browser 与 loong-webapp 中端到端验证（`webrt/tests/pwa-headless.sh`）；还没在 QEMU 镜像里试过 |
 
 完整路线图（M0–M7）见[技术规划](docs/技术规划.md#五路线图)。
 
@@ -102,6 +111,7 @@ M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏�
 | `system/packages/wpewebkit/` | WPE WebKit 的 APKBUILD | 已有 |
 | `system/packages/mesa-loong/` | 精简的 Mesa（无 LLVM/X11/Vulkan）与 `libGL.so.1` 桩，镜像默认的图形栈 | 已有（M6） |
 | `system/packages/gst-plugins-loong/` | WebKit 播放音视频的最小 GStreamer 插件集（gst-plugins-good/bad 的子集），见[媒体格式](docs/媒体格式.md) | 已有 |
+| `system/packages/ffmpeg-loong/` | 只含 H.264、AAC 解码器的 FFmpeg 与对它编译的 gst-libav（子包 `gst-libav-loong`），见[媒体格式](docs/媒体格式.md) | 已有 |
 | `system/packages/loong-rime-data/` | 拼音输入法的 Rime 数据（构建时预编译词典，约 8 MiB） | 已有 |
 | `system/packages/loong-*/` | `loong-shell`、`loong-webrt`、`loong-base`、`loong-initramfs`、`loong-device-*` | 计划 |
 | `system/rootfs/` | OpenRC 服务：`loong-session`（系统界面）、`loong-boot-ok`（A/B 启动确认） | 已有 |
@@ -164,11 +174,14 @@ sudo tools/dev-chroot.sh run sh -c 'meson setup build/webrt webrt && ninja -C bu
 #    设置的端到端检查：假 sysfs + 私有总线上的 loong-sysd + 无屏幕 loong-shell + WPE WebKit（脚本开头有构建说明）
 sudo tools/dev-chroot.sh run webrt/tests/settings-headless.sh out/settings              # 亮度、外观、电池、关于本机
 sudo tools/dev-chroot.sh run env FAKE_IWD=1 webrt/tests/settings-headless.sh out/wifi  # Wi‑Fi（假 iwd）
+#    状态栏电量与控制中心的端到端检查（只要 loong-shell 与 loong-sysd 的 release 构建）
+sudo tools/dev-chroot.sh run crates/loong-shell/tests/control-center-headless.sh out/control-center
 #    在桌面浏览器里改设置的界面（演示数据）：打开 webrt/apps/settings/index.html，或 node tools/web-shot.mjs --only settings
 #    浏览器：在无屏幕 sway 里回放场景
 sudo tools/dev-chroot.sh run sh webrt/browser/tests/sway-run.sh 场景.txt out/browser http://127.0.0.1:8765/index.html
 #    场景文件每行一条命令（click / type / key / wheel / shot …，见脚本开头）；同时提供 webrt/browser/tests/pages/
 #    在 loong-shell 里点 Dock 图标启动、回放触摸：webrt/browser/tests/shell-run.sh 脚本.json out/shell [网址]
+#    PWA 安装 → 主屏落印 → 以 loong-webapp 运行 → 长按移除，端到端检查：sh webrt/tests/pwa-headless.sh（截图在 out/pwa）
 #    镜像：WITH_WPE=1 system/mkimage/mkimage.sh qemu-x86_64（安装 loong-webapp、loong-browser 与界面）
 #    瘦身用的本地包（字体子集、中英文 ICU 数据，几分钟）：构建后 mkimage 自动使用；WITH_DEVTOOLS=1 再装 foot 等开发工具
 sudo sh -c 'for p in font-noto-sans-sc-loong font-inter-loong icu-data-loong; do tools/build-pkg.sh $p; done'
@@ -195,7 +208,7 @@ loong-browser [--theme light|dark] [--search-url 'https://www.bing.com/search?q=
 
 - 主屏的“浏览器”图标启动它（`system/profiles/qemu-x86_64.apps.toml`）；再次启动时网址交给已运行的浏览器，开新标签页。
 - 数据目录 `~/.local/share/loong/browser/`，缓存 `~/.cache/loong/browser/`；搜索网址也可写在 `~/.config/loong/browser.ini` 的 `[browser] search-url=`。
-- “添加到主屏幕”把网页的 manifest 规范化后写入 `~/.local/share/loong/webapps/<id>/manifest.json`。
+- “添加到主屏幕”把网页的 manifest 规范化后写入 `~/.local/share/loong/webapps/<id>/manifest.json`，并下载一个图标；主屏随即出现新应用（见下文 [PWA 注册表](#pwa-注册表)）。
 - 调试：`LOONG_BROWSER_DEBUG=1` 打印网页控制台消息；`G_MESSAGES_DEBUG=loong-webrt` 打印后端的输入与能力日志。
 
 **loong-shell 为浏览器提供的能力**：
@@ -208,6 +221,16 @@ loong-browser [--theme light|dark] [--search-url 'https://www.bing.com/search?q=
 6. app_id `loong.browser`（以及 `loong.webapp.<id>`）在窗口第一次提交时对应到主屏的应用。
 7. 还缺：GPU 上的 DMA-BUF 路径要在真机（nabu）上实测（开发环境没有 GPU）。
 
+## PWA 注册表
+
+在浏览器里“添加到主屏幕”的网页就是已安装的应用：回到主屏时主屏展卷到它所在的页，图标“落印”入场；点按以 `loong-webapp` 独立运行（各自的数据目录，没有浏览器界面）；长按“移除应用”，确认后连同数据一起删除。格式、路径与动效见 [PWA 注册表](docs/api/loong-webapps.md)，端到端检查：`sudo tools/dev-chroot.sh run sh webrt/tests/pwa-headless.sh`。
+
+| 浏览器：添加到主屏幕 | 落印入场（盖下时纸上晕开一滴墨） | 以 loong-webapp 运行 |
+|---|---|---|
+| ![添加到主屏幕](docs/images/pwa-install.png) | ![落印](docs/images/pwa-entrance.png) | ![已安装的应用](docs/images/pwa-app.png) |
+| **长按：移除应用** | **确认** | **三种小笺：maskable、any、首字** |
+| ![长按菜单](docs/images/pwa-menu.png) | ![确认移除](docs/images/pwa-confirm.png) | ![三种小笺](docs/images/pwa-icons.png) |
+
 ## 文档
 
 - [技术规划](docs/技术规划.md)：技术选型、系统架构、多机型与手机形态、路线图、资源目标、风险
@@ -217,6 +240,7 @@ loong-browser [--theme light|dark] [--search-url 'https://www.bing.com/search?q=
 - [loong-sysd](docs/api/loong-sysd.md)：系统服务的 D-Bus 接口；[JS bridge](docs/api/loong-js-bridge.md)：系统 Web 应用如何调用它、安全模型、系统外观文件的约定
 - [loong-update](docs/api/loong-update.md)：OTA 更新包格式、A/B 写入与回滚、`org.loong.Update1`
 - [loong_app_v1](docs/api/loong-app-protocol.md)：应用与系统界面的私有 Wayland 协议；自适应状态栏（样式 > 主题色 > 取样 > 系统外观）
+- [PWA 注册表](docs/api/loong-webapps.md)：已安装 Web 应用的目录与 manifest 格式、图标、启动命令、主屏排列（home.toml）、落印与收墨
 
 ## 许可证
 

@@ -138,11 +138,11 @@ theme = "dark"    # "light"（宣纸）或 "dark"（夜墨）
 ```
 
 - **默认**：文件不存在、读不了、`theme` 缺失或不是这两个值之一时，按 `"light"` 处理（「墨韵」默认亮色）。读取方只认 `theme` 这一个键，忽略其他内容（以后可能增加键，例如自动切换的时间表）。
-- **写入**：只由“设置”（经 bridge）写入，方式是写临时文件再 `rename`（`g_file_set_contents_full`，`CONSISTENT`），读取方不会读到半个文件。文件权限 0644，目录 0700。
+- **写入**：由“设置”（经 bridge）或系统界面的控制中心（「夜墨」开关，`crates/loong-shell/src/appearance.rs` 的 `write`）写入，方式都是写同目录下的临时文件再 `rename`（“设置”用 `g_file_set_contents_full`，`CONSISTENT`），读取方不会读到半个文件。文件权限 0644，目录 0700，内容格式相同。
 - **生效**：
   - 每个 `loong-webapp` 启动时读取，并监视这个文件（inotify，`rename` 也能收到）。变化时更新 WPE 的 `WPE_SETTING_DARK_MODE`，页面的 `prefers-color-scheme` 随之切换——**所有 PWA 都跟随系统外观**，不只是系统应用；同时更新 WebView 的底色（宣纸 `#f3eee2` / 夜墨 `#15140f`），避免加载时闪白。
   - 启用了 bridge 的应用另外收到 `loong.appearance` 的 `'change'` 事件。设置页面切换时在 `<html>` 上设 `data-theme` 并用 View Transitions 交叉晕染。
-  - **loong-shell**（`crates/loong-shell/src/appearance.rs`，设备后端）：启动时读取该文件选择 `Theme::Light` / `Theme::Dark`，并用 inotify 监视所在目录（`rename` 替换也能收到），变化时重新生成状态栏、主屏、Dock、键盘、多任务等系统界面的位图。优先级：环境变量 `LOONG_THEME` > 外观文件 > `device.toml` 的 `theme` > 亮色。无屏幕后端（测试脚本）不读这个文件，外观由脚本的 `theme` 决定，保证截图可复现。切换时状态栏两种墨交叉淡化（`SMOOTH`），其余位图直接换下一帧。前台应用之上的状态栏不一定跟随系统外观，而是跟随应用顶部的颜色，见 [loong_app_v1](loong-app-protocol.md)。
+  - **loong-shell**（`crates/loong-shell/src/appearance.rs`，设备后端）：启动时读取该文件选择 `Theme::Light` / `Theme::Dark`，并用 inotify 监视所在目录（`rename` 替换也能收到），变化时重新生成状态栏、主屏、Dock、键盘、多任务等系统界面的位图。优先级：环境变量 `LOONG_THEME` > 外观文件 > `device.toml` 的 `theme` > 亮色。无屏幕后端（测试脚本）默认不读这个文件，外观由脚本的 `theme` 决定，保证截图可复现；脚本写 `"follow_appearance": true` 时与真机一样读取并监视它（控制中心的端到端测试用）。切换时状态栏两种墨交叉淡化（`SMOOTH`），其余位图直接换下一帧。前台应用之上的状态栏不一定跟随系统外观，而是跟随应用顶部的颜色，见 [loong_app_v1](loong-app-protocol.md)。
 
 ## 底层消息格式
 

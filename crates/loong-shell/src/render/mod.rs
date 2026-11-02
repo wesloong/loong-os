@@ -5,8 +5,10 @@
 //! - [`Painter`]：把位图上传为纹理，并按场景生成 Smithay 渲染元素；水墨印记（点墨、笔迹）
 //!   与晕染 / 墨散遮罩由着色器现算。
 
+mod control_center;
 pub mod element;
 mod keyboard;
+mod webapps;
 
 use std::collections::HashMap;
 
@@ -40,11 +42,13 @@ use self::element::{
 use crate::shell::{
     Align, DrawItem, InkDab, Reveal, RevealMode, Scene, Shell, TexKey,
     apps::AppEntry,
+    control_center::Part,
     geometry::{RectF, WindowPlacement},
     ink::DabKind,
-    layout::{ICON_SHADOW_SPREAD, LABEL_HALO},
+    layout::ICON_SHADOW_SPREAD,
     status::StatusInk,
     switcher::{self, SwitcherLayout},
+    system::StatusGlyphs,
 };
 
 /// 山水长卷的种子（固定：每次开机同一幅画）。
@@ -72,6 +76,15 @@ pub struct Assets {
     pending_sheets: HashMap<usize, std::thread::JoinHandle<Pixmap>>,
     /// 屏幕键盘的位图状态（见 `keyboard.rs`）。
     kb: keyboard::KeyboardAssets,
+    /// 状态栏右侧当前画的符号（变了才重画，见 [`StatusGlyphs`]）。
+    status_glyphs: StatusGlyphs,
+    /// 控制中心的位图状态（见 `control_center.rs`）。
+    cc: control_center::CcAssets,
+    /// 已画好的应用列表版本、每个应用的指纹、排列指纹、菜单面板版本（见 `webapps.rs`）。
+    apps_revision: u64,
+    app_prints: Vec<u64>,
+    layout_print: u64,
+    menu_revision: u64,
 }
 
 impl Assets {
@@ -89,6 +102,12 @@ impl Assets {
             backdrop: loong_ui::pixmap(1, 1),
             pending_sheets: HashMap::new(),
             kb: keyboard::KeyboardAssets::default(),
+            status_glyphs: shell.status_glyphs(),
+            cc: control_center::CcAssets::default(),
+            apps_revision: 0,
+            app_prints: Vec::new(),
+            layout_print: 0,
+            menu_revision: u64::MAX,
         };
         assets.build(shell);
         assets
@@ -100,8 +119,25 @@ impl Assets {
             tracing::info!("切换外观：{:?}", shell.theme);
             self.build(shell);
         }
+        // 安装、移除了应用，或长按菜单变了。
+        self.sync_apps(shell);
         self.refresh_clock(shell);
+        self.refresh_status(shell);
         self.sync_keyboard(shell);
+    }
+
+    /// 电量、Wi‑Fi 的符号变了：只重画状态栏右侧（两种墨各一张）。
+    fn refresh_status(&mut self, shell: &Shell) {
+        let glyphs = shell.status_glyphs();
+        if glyphs == self.status_glyphs {
+            return;
+        }
+        tracing::debug!("状态栏：{glyphs:?}");
+        self.status_glyphs = glyphs;
+        for ink in [StatusInk::Dark, StatusInk::Light] {
+            let pm = self.status_icons(ink);
+            self.put(TexKey::StatusIcons(ink), pm);
+        }
     }
 
     /// 山水各层的视差系数与纵向位置。
@@ -114,6 +150,8 @@ impl Assets {
         self.pixmaps.clear();
         // 旧外观的册页作废（线程分离，结果丢弃）。
         self.pending_sheets.clear();
+        // 控制中心的位图（含背后的取样）在下次显示时按新外观重画。
+        self.cc.reset();
         // 键盘背板在后台画（第一次弹出键盘时不必现画）。
         self.kb = keyboard::KeyboardAssets::prebuild(
             shell.theme,
@@ -149,11 +187,12 @@ impl Assets {
             };
             let l = &shell.layout;
             let s = l.icon * ICON_SHADOW_SPREAD;
-            for (r, _) in l
+            // 已安装的 Web 应用随时可能增删、移动，它们的墨影由 shell 单独画。
+            for (_, r) in l
                 .icons
                 .iter()
-                .zip(&l.page_of)
-                .filter(|(_, pg)| **pg == Some(p))
+                .enumerate()
+                .filter(|(i, _)| l.page_of[*i] == Some(p) && shell.shadow_baked(*i))
             {
                 let x = ((r.x - p as f64 * l.page_width - s) * scale).round() as i32;
                 let y = ((r.y - s) * scale).round() as i32;
@@ -210,28 +249,11 @@ impl Assets {
         };
         self.put(TexKey::PageDotActive, page_dot(active, scale));
 
-        // 图标名称：亮色浓墨、暗色月白，四周一圈纸色光晕（落在浓墨山体上也读得清）。
-        let label_style = TextStyle {
-            family: FontRole::Display,
-            size: ((theme::font::ICON_LABEL + 1.0) as f64 * scale) as f32,
-            weight: 400,
-            color: match theme {
-                Theme::Light => pal.ink(Ink::Nong),
-                Theme::Dark => pal.ink(Ink::Jiao),
-            },
-            shadow: false,
-        };
-        let halo = theme::hex(pal.paper, if theme == Theme::Light { 0.82 } else { 0.7 });
-        let halo_px = (LABEL_HALO * scale) as f32;
-        for (i, app) in shell.apps.iter().enumerate() {
-            self.put(TexKey::Icon(i), app_icon(app, theme, icon_px, i));
-            let label = self
-                .text
-                .render_halo(&app.name, &label_style, halo, halo_px);
-            self.put(TexKey::Label(i), label);
-            let card_label = self.card_label(app, i);
-            self.put(TexKey::CardLabel(i), card_label);
+        // 图标、名称（亮色浓墨、暗色月白，四周一圈纸色光晕，落在浓墨山体上也读得清）、多任务标签。
+        for i in 0..shell.apps.len() {
+            self.put_app_textures(shell, i);
         }
+        self.record_apps(shell);
         // 状态栏两种墨都画好：前台应用与系统外观不一致时换墨、交叉淡化（见 shell::status）。
         for ink in [StatusInk::Dark, StatusInk::Light] {
             let status_icons = self.status_icons(ink);
@@ -255,7 +277,7 @@ impl Assets {
     fn card_label(&mut self, app: &AppEntry, index: usize) -> Pixmap {
         let s = self.scale;
         let icon_px = px(switcher::LABEL_ICON, s);
-        let icon = app_icon(app, self.theme, icon_px, index);
+        let icon = self.app_icon_pixmap(app, index, icon_px);
         let text = self.text.render(
             &app.name,
             &TextStyle {
@@ -293,19 +315,38 @@ impl Assets {
         }
     }
 
-    /// 状态栏右侧：毛笔画的 Wi‑Fi、电量百分比（文楷）、毛笔画的电池。
+    /// 状态栏右侧：毛笔画的 Wi‑Fi（按信号格数着墨）、电量百分比（文楷）、毛笔画的电池（按电量
+    /// 填墨；20% 及以下朱砂，充电时石绿加闪电）。loong-sysd 不在、没有电池或 Wi‑Fi 没连上时
+    /// 相应的部分不画（见 [`StatusGlyphs`]）。
     fn status_icons(&mut self, ink: StatusInk) -> Pixmap {
         let s = self.scale as f32;
-        let percent = self.text.render("100%", &self.status_style(14.0, ink));
         let theme = ink.palette_theme();
-        let wifi = ink::wifi(theme, (16.0 * s).round() as u32, 3);
-        let battery = ink::battery(theme, (13.0 * s).round() as u32, 1.0, false);
+        let glyphs = self.status_glyphs;
+        if glyphs.is_empty() {
+            return loong_ui::pixmap(1, 1);
+        }
+        let mut parts = Vec::new();
+        if let Some(bars) = glyphs.wifi {
+            parts.push(ink::wifi(theme, (16.0 * s).round() as u32, bars));
+        }
+        if let Some(battery) = glyphs.battery {
+            let text = format!("{}%", battery.percent);
+            parts.push(self.text.render(&text, &self.status_style(14.0, ink)));
+            let level = f32::from(battery.percent) / 100.0;
+            parts.push(ink::battery(
+                theme,
+                (13.0 * s).round() as u32,
+                level,
+                battery.charging,
+            ));
+        }
         let gap = (6.0 * s).round() as i32;
-        let w = wifi.width() as i32 + gap + percent.width() as i32 + gap + battery.width() as i32;
-        let h = percent.height().max(wifi.height()).max(battery.height()) as i32;
+        let w =
+            parts.iter().map(|p| p.width() as i32).sum::<i32>() + gap * (parts.len() as i32 - 1);
+        let h = parts.iter().map(|p| p.height()).max().unwrap_or(1) as i32;
         let mut pm = loong_ui::pixmap(w as u32, h as u32);
         let mut x = 0;
-        for part in [&wifi, &percent, &battery] {
+        for part in &parts {
             draw(&mut pm, part, x, (h - part.height() as i32) / 2);
             x += part.width() as i32 + gap;
         }
@@ -429,13 +470,16 @@ impl Assets {
         );
     }
 
-    /// 取位图（占位画面按需生成）。
+    /// 取位图（占位画面、控制中心按需生成）。
     pub fn get(&mut self, key: TexKey, shell: &Shell) -> Option<&(Pixmap, u64)> {
         if let TexKey::Placeholder(app) = key
             && !self.pixmaps.contains_key(&key)
         {
             let pm = self.placeholder(shell, app);
             self.put(key, pm);
+        }
+        if let TexKey::ControlCenter(part) = key {
+            self.ensure_control_center(part, shell);
         }
         self.pixmaps.get(&key)
     }
@@ -864,13 +908,31 @@ impl Painter {
         assets.sync(shell);
         assets.prefetch(shell);
         self.frame = self.frame.wrapping_add(1);
+        let mut revealed_windows = Vec::new();
+        let mut out = self.build(renderer, scene, assets, shell, &mut revealed_windows)?;
+        self.release_backdrop(scene, assets);
+        self.revealed_windows = revealed_windows;
+        out.reverse();
+        Ok(out)
+    }
+
+    /// 生成渲染元素（下层在前），物理坐标按 `self.scale`（控制中心取样时临时改小）。
+    fn build(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        scene: &[DrawItem],
+        assets: &mut Assets,
+        shell: &Shell,
+        revealed_windows: &mut Vec<Window>,
+    ) -> Result<Vec<ShellElement>, GlesError> {
         let theme = shell.theme;
         let scale = self.scale;
+        // 位图的分辨率（物理像素 / 点）：取样时输出缩放变小，位图本身不变。
+        let texel = assets.scale;
         let mut out: Vec<ShellElement> = Vec::with_capacity(scene.len() + 8);
         let mut solid_index = 0;
         let mut ink_index = 0;
-        let mut revealed_windows = Vec::new();
-        for item in scene {
+        for (index, item) in scene.iter().enumerate() {
             match item {
                 DrawItem::Texture {
                     key,
@@ -882,6 +944,11 @@ impl Painter {
                 } => {
                     if *alpha <= 0.001 {
                         continue;
+                    }
+                    // 控制中心的绢底：取样排在它之前的画面（每次打开一次）。
+                    if *key == TexKey::ControlCenter(Part::Backdrop) && assets.needs_backdrop(shell)
+                    {
+                        self.capture_backdrop(renderer, &scene[..index], assets, shell);
                     }
                     if let Some((texture, id)) = self.texture(renderer, *key, assets, shell)? {
                         let uniforms = self.reveal_uniforms(reveal.as_ref(), theme);
@@ -924,7 +991,7 @@ impl Painter {
                         let key = TexKey::WallpaperLayer(i);
                         if let Some((texture, id)) = self.texture(renderer, key, assets, shell)? {
                             let size = texture.size();
-                            let layer_size = (size.w as f64 / scale, size.h as f64 / scale);
+                            let layer_size = (size.w as f64 / texel, size.h as f64 / texel);
                             let r = layer_rect(*rect, *scroll, *drift, info, layer_size, sw);
                             let mut layer =
                                 self.layer(id, texture, to_physical(r, scale), 1.0, 0.0, [1.0; 4]);
@@ -952,7 +1019,7 @@ impl Painter {
                     }
                     if let Some((texture, id)) = self.texture(renderer, *key, assets, shell)? {
                         let size = texture.size();
-                        let (w, h) = (size.w as f64 / scale * extra, size.h as f64 / scale * extra);
+                        let (w, h) = (size.w as f64 / texel * extra, size.h as f64 / texel * extra);
                         let x0 = match align {
                             Align::Left => *x,
                             Align::Center => x - w / 2.0,
@@ -1040,8 +1107,6 @@ impl Painter {
                 }
             }
         }
-        self.revealed_windows = revealed_windows;
-        out.reverse();
         Ok(out)
     }
 

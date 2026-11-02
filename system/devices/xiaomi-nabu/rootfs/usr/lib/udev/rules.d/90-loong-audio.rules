@@ -1,0 +1,4 @@
+# Loong OS（nabu）：声卡注册完成（控制设备 controlC<N> 出现）时启用 UCM 的放音用例（HiFi / Speaker）。
+# 声卡要等 ADSP 启动后才出现，ADSP 重启后会重新注册，所以按设备事件处理，而不是只在开机时设一次。
+# 见 /usr/libexec/loong-audio-setup 与 /etc/init.d/loong-audio。
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", RUN+="/usr/libexec/loong-audio-setup %n"

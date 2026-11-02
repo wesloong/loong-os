@@ -23,6 +23,7 @@
 | `qbootctl` | A/B slot 查询、切换、标记启动成功（由 `loong-boot-ok` 调用） |
 | `tqftpserv`、`pd-mapper@pmos`、`rmtfs`（及各自的 `-openrc`） | 远程处理器需要的 QRTR 服务：ADSP（音频）、CDSP、modem（Wi‑Fi 芯片 WCN3990 由 modem 子系统承载） |
 | `alsa-ucm-conf` + `system/devices/xiaomi-nabu/rootfs/usr/share/alsa/ucm2/` | 音频路由（nabu 的 UCM 文件来自 pmaports，作者 map220v，MIT） |
+| `alsa-utils` + 机型目录里的 `loong-audio` 服务 | 开机/声卡出现时用 `alsaucm` 启用 UCM 的 `HiFi` 用例与 `Speaker`；`aplay`、`amixer`、`speaker-test` 供上机调试，见下文“音频” |
 | `mesa-loong`（`MESA_FLAVOR=loong`，见下文“构建 mesa-loong”） | 自编的 Mesa：freedreno GPU 驱动（Adreno 640）+ EGL/GLES，不依赖 LLVM |
 
 ## 启动链与分区布局
@@ -77,6 +78,8 @@ pmOS 的 sm8150 内核配置（pmaports `config-postmarketos-qcom-sm8150.aarch64
 sudo tools/setup-binfmt.sh                                    # 注册 qemu-aarch64 binfmt（每次开机一次）
 sudo tools/dev-chroot.sh run tools/build-aarch64.sh            # 交叉编译 aarch64 的 loong-shell
 sudo ARCH=aarch64 JOBS=2 tools/build-pkg.sh mesa-loong         # aarch64 的 mesa-loong（约 1 小时，见下文；只需一次）
+sudo ARCH=aarch64 JOBS=2 tools/build-pkg.sh gst-plugins-loong  # 带 WebKit（WITH_WPE=1）时要：音视频插件
+sudo ARCH=aarch64 JOBS=2 tools/build-pkg.sh ffmpeg-loong       # 同上：H.264/AAC 软解（经 qemu-user 约 13 分钟）
 sudo tools/dev-chroot.sh run system/mkimage/mkimage.sh xiaomi-nabu
 ```
 
@@ -159,6 +162,64 @@ qbootctl -u a       # 把 slot a 标记为不可启动
 
 - 在 fastboot 中也可以切换：`fastboot --set-active=b`。
 - OTA（M5，`loong-update apply`，见 [loong-update](../api/loong-update.md)）：先 `qbootctl -u <另一个 slot>` 作废它，把新系统写入 `/dev/mapper/system_<另一个 slot>`、新 boot.img 写入 `boot_<另一个 slot>`，回读校验后 `qbootctl -s <另一个 slot>`，重启生效。新系统如果没能启动到系统界面，ABL 用完重试次数后会自动回到旧 slot。**这条流程只用假设备和模拟的 qbootctl 做过单元测试，尚未在真机上运行**；重试次数的具体值、`qbootctl -s` 对 successful 标志的处理等 ABL 行为需要在真机上确认。更新包：`UPDATE_BUNDLE=1 system/mkimage/mkimage.sh xiaomi-nabu`。
+
+## 音频（扬声器）
+
+声卡由 ADSP 承载：远程处理器启动、`pd-mapper`/`tqftpserv`/`rmtfs` 经 QRTR 把音频服务注册好之后，ASoC 声卡才出现（驱动名 `sm8150`，长名 “Xiaomi Pad 5”，开机后若干秒）。放音通路是 PCM 设备 0（MultiMedia1）→ `QUAT_TDM_RX_0` → 四个 CS35L41 功放（TL/TR/BL/BR）；麦克风是 WCD9341 经 SLIMbus 到 PCM 设备 1（MultiMedia2）。这些混音器开关默认都是关的，要由 UCM 的 `HiFi` 用例打开（`ucm2/Xiaomi/nabu/HiFi.conf`：接上 MultiMedia1、设功放音量、接上麦克风）——没有这一步，`alsasink` 能打开设备、播放也不报错，但扬声器没有声音。
+
+镜像里的做法（不上 PipeWire，机型目录 `system/devices/xiaomi-nabu/rootfs/` 里四个文件，加 `DEVICE_PKGS` 里的 `alsa-utils`）：
+
+| 文件 | 作用 |
+|---|---|
+| `/usr/libexec/loong-audio-setup` | 对每块声卡：UCM 里有 `HiFi` 用例就运行 `alsaucm -c hw:<卡号> set _verb HiFi set _enadev Speaker`，其余声卡（USB 声卡等）跳过；结果写进内核日志（`dmesg \| grep loong-audio`，镜像里没有 syslog）。用例设置写进内核的混音器控件，`alsaucm` 退出后仍然有效 |
+| `/usr/lib/udev/rules.d/90-loong-audio.rules` | 声卡的控制设备 `controlC<N>` 出现时调用上面的脚本。声卡出现得晚、ADSP 崩溃重启（SSR）后声卡会重新注册并回到默认值，都靠这条规则 |
+| `/etc/init.d/loong-audio` | OpenRC 服务（`DEVICE_SERVICES` 里的 `loong-audio:default`，在 udev、pd-mapper 之后、loong-session 之前）：开机时对已有的声卡做一次；手动重做用 `rc-service loong-audio restart` |
+| `/usr/share/alsa/cards/sm8150.conf` | ALSA 的 `default` 设备：放音经 `dmix`（PCM 0，48 kHz、S16_LE、立体声），录音经 `dsnoop`（PCM 1），`plug` 负责转换。alsa-lib 按声卡驱动名加载这个文件，不依赖卡号与卡 ID |
+
+**多个网页同时出声**：没有 `sm8150.conf` 时 `default` 直接打开硬件设备，同时只能一个程序放音，第二个网页进程的 `alsasink` 打不开设备、`autoaudiosink` 退回 `fakesink`（静音）。dmix 在进程之间用 SysV 共享内存与信号量，各进程以 `O_APPEND` 共用同一个硬件 PCM，不需要服务进程。WPE WebKit 的网页进程沙箱（bubblewrap）只读绑定 `/etc`、`/usr/share`，绑定 `/dev/snd`，不隔离 IPC 命名空间（`--unshare-ipc` 只在 GTK 的 Wayland 分支里加，见 `BubblewrapLauncher.cpp`），所以所有网页进程、所有应用共用同一个 dmix；loong 用户在 `audio` 组（dmix 的 `ipc_gid`）。离线检查：在开发 chroot 里用 alsa-lib 载入 `sm8150.conf` 并展开 `cards.sm8150.pcm.default:CARD=0`，得到 `asym` → `plug` → `dmix:CARD=0,DEV=0,FORMAT=S16_LE,RATE=48000`（录音同理），没有语法错误。
+
+**QEMU 里的替身检查**（一次性的，脚本没有提交）：给 QEMU x86_64 加一块 HDA 声卡（`ich9-intel-hda` + `hda-output`，声音写进宿主机上的 WAV 文件），从测试盘加载 linux-virt 的 `snd-hda-intel`（镜像的模块白名单里没有声卡），把 `sm8150.conf` 只改驱动名前缀（`sm8150.` → `HDA-Intel.`）后绑定挂载到 `/usr/share/alsa/cards/HDA-Intel.conf`，再开两个 `loong-webapp`（两个沙箱里的网页进程）：
+
+- 第一个网页放 M4A（AAC，770 Hz）：录下的 WAV 里 122 秒都是 770 Hz、幅度与编码时的音量（0.2）相符，除了循环回到开头的那一秒没有断续——AAC 经 `avdec_aac` → `alsasink` → `default` → dmix → 声卡这一路是通的。硬件参数 `S16_LE`、48000 Hz、2 声道、周期 1024 帧（这块 HDA 允许 16 个周期，缓冲 16384 帧）。
+- 第二个网页（MP4）在第一个放音的同时打开了 `default`：两个 `WPEWebProcess` 都打开着 `/dev/snd/pcmC0D0p`，dmix 的共享内存段（`ipcs -m`：key `0x0056a4d5`/`0x0056a4d6`，owner loong，权限 660）`nattch` 为 2，第二个进程没有 “Could not open audio device”。没有 dmix 时第二次打开硬件设备会失败（`EBUSY`），`autoaudiosink` 退回 `fakesink`。这证实沙箱里的网页进程能共用一个 dmix。
+- 没测到的：两路声音真正叠在一起的录音——loong-shell 只把第一个从命令行启动的应用窗口放到前台，第二个窗口在后台，点按落不到它上面，它的 `play()` 一直等不到用户手势。混音本身是 alsa-lib 的 dmix 做的，上机时按下面第 4 步用两个 `speaker-test` 听。
+
+**代价与以后**：`alsa-utils` 连同依赖（`fftw-single-libs`、`dialog`、ncurses）原大小 4.7 MiB，只读根 +2.3 MiB（见[体积预算](../体积预算.md#nabu)），其中真正用到的只有几十 KB 的 `alsaucm`。适配阶段要用它的 `aplay`、`amixer`、`speaker-test` 上机检查，所以先装着；之后由 loong-sysd 经 alsa-lib 的 `snd_use_case_set()` 设用例（几十行代码），去掉 `alsa-utils`。再往后上 PipeWire + WirePlumber（按 UCM 自动切换扬声器、耳机、蓝牙，音量与路由策略由会话管理器负责）：需要 GStreamer 的 `pipewiresink`（或 PulseAudio 兼容层加 `pulsesink`），并让网页进程的沙箱连到它的 socket（WebKit 目前只绑定 PulseAudio 的 socket），体积另算；那时删掉 `sm8150.conf` 与 `loong-audio`。耳机孔、蓝牙不在这次的范围内。
+
+### 上机检查步骤（尚未在真机上做过）
+
+以 root 在串口或 USB 键盘上运行（`DEV_IMAGE=1` 的镜像 root 无密码）：
+
+```sh
+# 1. 声卡出现了吗（要等 ADSP 启动，开机后若干秒）
+cat /proc/asound/cards                     # 应有 “sm8150 - Xiaomi Pad 5”，记下卡号 N
+dmesg | grep loong-audio                   # 应有 “声卡 N（…）：已启用 HiFi / Speaker”
+rc-service loong-audio status
+# 没有声卡时：ADSP 与 QRTR 服务
+cat /sys/class/remoteproc/*/name /sys/class/remoteproc/*/state
+rc-service pd-mapper status; dmesg | grep -iE "q6|apr|gpr|remoteproc|adsp"
+
+# 2. UCM 用例与混音器
+alsaucm -c hw:N list _verbs                # HiFi
+amixer -c N cget name='QUAT_TDM_RX_0 Audio Mixer MultiMedia1'   # values=on
+amixer -c N cget name='TL Analog PCM Volume'                     # 8（TR、BL、BR 同样）
+dmesg | grep -i cs35l41                    # 四个功放都探测到、固件加载成功（cirrus/ 下的文件在 FIRMWARE 白名单里）
+
+# 3. 绕过 dmix 直接放音（确认硬件通路；会独占设备，先关掉正在出声的应用）
+speaker-test -D hw:N,0 -c 2 -r 48000 -F S16_LE -t sine -f 440 -l 1
+
+# 4. 经默认设备（dmix）两路同时放音：两个音都要听得到，两个命令都不报 “Device or resource busy”
+speaker-test -D default -c 2 -t sine -f 440 -l 3 & speaker-test -D default -c 2 -t sine -f 660 -l 3; wait
+cat /proc/asound/cardN/pcm0p/sub0/hw_params    # 放音时：format S16_LE，rate 48000，channels 2
+ipcs                                            # 放音时有 dmix 的共享内存段与信号量
+
+# 5. ADSP 重启后自动恢复（可选）：让 ADSP 重启，声卡重新出现后 dmesg 里应再有一条 loong-audio 的记录
+echo stop > /sys/class/remoteproc/remoteprocX/state; echo start > /sys/class/remoteproc/remoteprocX/state   # X 为 adsp
+```
+
+6. 网页：用 `webrt/tests/media/` 的检查页（`mkclips.sh` 生成，经 HTTP 打开，见[媒体格式](../媒体格式.md#qemu-验证)），点按后 WebM、MP4、M4A 应同时出声；再打开浏览器播放另一个网页的视频，两边都有声音。`GST_DEBUG=alsa*:4` 可以看 `alsasink` 打开的是哪个设备。
+
+可能的问题：`speaker-test -D default` 报参数错误时，先试 `plughw:N,0` 确认硬件能放，再把 `sm8150.conf` 里的格式改成 `S24_LE`；默认设备落到了别的声卡（开机时插着 USB 声卡，它成了 0 号）时，用 `ALSA_CARD=<ID>` 或在 `/etc/asound.conf` 里设 `defaults.pcm.card`。
 
 ## 已验证的内容（离线，在 x86_64 沙箱中）
 

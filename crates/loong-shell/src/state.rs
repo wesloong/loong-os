@@ -24,8 +24,15 @@ use smithay::{
 };
 
 use crate::{
-    app_protocol::AppProtocolState, device::DeviceConfig, dmabuf::DmabufSupport,
-    protocols::SurfaceProtocols, shell::Shell,
+    app_protocol::AppProtocolState,
+    device::DeviceConfig,
+    dmabuf::DmabufSupport,
+    protocols::SurfaceProtocols,
+    shell::{
+        Shell,
+        system::{ActionSink, SystemAction},
+    },
+    sysd_client::{self, BusTarget, SysdClient},
 };
 
 /// 合成器状态。
@@ -64,6 +71,8 @@ pub struct LoongState {
     pub shell: Shell,
     /// 当前时间（秒），由后端驱动（真实时间或测试用虚拟时钟）。
     pub now: f64,
+    /// PWA 注册表（`registry::service::init` 之后才有）。
+    pub registry: Option<crate::registry::service::Service>,
 }
 
 impl LoongState {
@@ -103,6 +112,8 @@ impl LoongState {
         let mut shell = Shell::new(w, h, device.screen.corner_radius);
         shell.set_theme(device.theme());
         shell.set_reduced_motion(crate::device::reduced_motion());
+        // 控制中心的操作：外观写文件；亮度、Wi‑Fi 在连上 loong-sysd 后才有去处（start_sysd）。
+        shell.set_action_sink(action_sink(None));
 
         Ok(LoongState {
             display_handle: dh,
@@ -125,6 +136,7 @@ impl LoongState {
             output: None,
             shell,
             now: 0.0,
+            registry: None,
         })
     }
 
@@ -179,6 +191,24 @@ impl LoongState {
         Ok(())
     }
 
+    /// 连接 loong-sysd（后台线程，见 `sysd_client`）：状态栏的电量与 Wi‑Fi、控制中心。
+    /// 总线由环境变量 `LOONG_SYSD_BUS` 决定，没有时用 `default`（`None` 为不连接）。
+    pub fn start_sysd<D: 'static>(
+        &mut self,
+        handle: &LoopHandle<'static, D>,
+        get: fn(&mut D) -> &mut LoongState,
+        default: Option<BusTarget>,
+    ) {
+        let Some(target) = BusTarget::from_env(default) else {
+            tracing::info!("不连接 loong-sysd：状态栏不显示电量与 Wi‑Fi");
+            return;
+        };
+        match sysd_client::start(target, handle, get) {
+            Ok(client) => self.shell.set_action_sink(action_sink(Some(client))),
+            Err(e) => tracing::warn!("{e}"),
+        }
+    }
+
     /// 标记需要重画（客户端提交新画面时调用）。
     pub fn mark_damaged(&mut self) {
         self.damaged = true;
@@ -188,6 +218,24 @@ impl LoongState {
     pub fn take_damage(&mut self) -> bool {
         std::mem::take(&mut self.damaged)
     }
+}
+
+/// 控制中心的操作交给谁：外观写 `appearance.toml`（之后由外观文件的监视切换），
+/// 亮度与 Wi‑Fi 交给 loong-sysd 客户端（不阻塞主线程）。
+fn action_sink(sysd: Option<SysdClient>) -> ActionSink {
+    Box::new(move |action| match action {
+        SystemAction::Theme(theme) => match crate::appearance::path() {
+            Some(path) => match crate::appearance::write(&path, theme) {
+                Ok(()) => tracing::info!("控制中心：外观改为 {theme:?}（{}）", path.display()),
+                Err(e) => tracing::warn!("写入 {} 失败: {e}", path.display()),
+            },
+            None => tracing::warn!("没有 HOME/XDG_CONFIG_HOME，无法保存外观"),
+        },
+        other => match &sysd {
+            Some(client) => client.request(other),
+            None => tracing::debug!("没有连接 loong-sysd，忽略 {other:?}"),
+        },
+    })
 }
 
 /// 每个客户端附带的数据。

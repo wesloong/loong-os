@@ -12,7 +12,8 @@
 //!   "record": { "every": 2, "scale": 0.5 }
 //! }
 //! ```
-//! 坐标单位为逻辑点，时间单位为毫秒。
+//! 坐标单位为逻辑点，时间单位为毫秒。`tap` 按住 `hold` 毫秒后抬起（默认 60；长按主屏上已安装的应用
+//! 弹出菜单要 ≥ 500，例如 `{ "at": 3000, "tap": [721, 124], "hold": 800 }`）。
 //!
 //! `record` 还可以只录一段时间、一块区域（例如全分辨率的状态栏一条）：
 //! `{ "every": 1, "scale": 1, "from_ms": 9000, "to_ms": 12000, "crop": [0, 0, 1280, 96] }`。
@@ -32,6 +33,17 @@
 //!   每次按住 `hold` 毫秒（默认 60；超过 500 即长按，弹出备选条）；
 //! - `candidate`：点按候选栏本页第 i 个候选；
 //! - `key`：点按功能键：`shift` / `lang` / `123` / `symbols` / `abc` / `hide` / `space` / `return` / `backspace`。
+//!
+//! 状态栏与控制中心的数据（loong-sysd）：默认不连接（状态栏右侧只有时间以外的空白，截图可复现）。
+//! `status` 给出固定的演示数据；设置环境变量 `LOONG_SYSD_BUS` 时连接真正的 loong-sysd（配合
+//! `--realtime`，见 `tests/control-center-headless.sh`）：
+//!
+//! ```json
+//! "status": { "battery": 57, "charging": false, "wifi": 80, "ssid": "听雨轩", "brightness": 0.3 }
+//! ```
+//!
+//! `"follow_appearance": true`：读并监视外观文件（`$XDG_CONFIG_HOME/loong/appearance.toml`），
+//! 与真机相同——控制中心的「夜墨」写入它之后，整个系统界面随之切换。
 
 use loong_ime::{
     ContentPurpose,
@@ -39,7 +51,12 @@ use loong_ime::{
 };
 use serde::Deserialize;
 
-use crate::shell::keyboard::ScreenKeyboard;
+use crate::shell::{
+    keyboard::ScreenKeyboard,
+    system::{
+        BacklightStatus, PowerState, PowerStatus, Service, SystemStatus, WifiState, WifiStatus,
+    },
+};
 
 fn default_fps() -> u32 {
     60
@@ -69,12 +86,71 @@ pub struct Script {
     /// 外观（`"light"` / `"dark"`），覆盖设备描述与环境变量，保证截图可复现。
     #[serde(default)]
     pub theme: Option<String>,
+    /// 读并监视外观文件（默认不读）。
+    #[serde(default)]
+    pub follow_appearance: bool,
+    /// 状态栏与控制中心的演示数据（不连接 loong-sysd 时使用）。
+    #[serde(default)]
+    pub status: Option<DemoStatus>,
     #[serde(default)]
     pub events: Vec<Event>,
     #[serde(default)]
     pub screenshots: Vec<u64>,
     #[serde(default)]
     pub record: Option<Record>,
+}
+
+/// 演示用的系统状态。
+#[derive(Debug, Deserialize)]
+pub struct DemoStatus {
+    /// 电量 0–100；不写表示没有电池。
+    #[serde(default)]
+    pub battery: Option<f64>,
+    #[serde(default)]
+    pub charging: bool,
+    /// 已连接网络的信号强度 0–100；不写表示 Wi‑Fi 已关闭。
+    #[serde(default)]
+    pub wifi: Option<u32>,
+    #[serde(default)]
+    pub ssid: Option<String>,
+    /// 亮度 0–1；不写表示没有背光。
+    #[serde(default)]
+    pub brightness: Option<f64>,
+}
+
+impl DemoStatus {
+    pub fn to_status(&self) -> SystemStatus {
+        SystemStatus {
+            service: Service::Demo,
+            power: Some(PowerStatus {
+                has_battery: self.battery.is_some(),
+                percentage: self.battery.unwrap_or(0.0),
+                state: if self.charging {
+                    PowerState::Charging
+                } else {
+                    PowerState::Discharging
+                },
+                time_to_empty: 0,
+                time_to_full: 0,
+                ac_online: self.charging,
+            }),
+            wifi: Some(WifiStatus {
+                available: true,
+                enabled: self.wifi.is_some(),
+                state: if self.wifi.is_some() {
+                    WifiState::Connected
+                } else {
+                    WifiState::Off
+                },
+                ssid: self.wifi.and(self.ssid.clone()).unwrap_or_default(),
+                strength: self.wifi.unwrap_or(0),
+            }),
+            backlight: Some(BacklightStatus {
+                available: self.brightness.is_some(),
+                brightness: self.brightness.unwrap_or(1.0),
+            }),
+        }
+    }
 }
 
 /// 一个操作。
@@ -97,7 +173,7 @@ pub struct Event {
     /// `type` 中相邻两次点按的间隔（毫秒）。
     #[serde(default = "default_type_interval")]
     pub interval: u64,
-    /// `type` / `candidate` / `key` 每次按住多久再抬起（毫秒）。
+    /// `tap` / `type` / `candidate` / `key` 每次按住多久再抬起（毫秒）。
     #[serde(default = "default_key_hold")]
     pub hold: u64,
     /// 点按候选栏本页第 i 个候选。
@@ -224,6 +300,8 @@ impl Script {
             date: None,
             locked: false,
             theme: None,
+            follow_appearance: false,
+            status: None,
             events: vec![],
             screenshots: vec![0],
             record: None,
@@ -238,7 +316,7 @@ impl Script {
             let slot = i as u32;
             if let Some([x, y]) = e.tap {
                 out.push((t0, Action::Down { slot, x, y }));
-                out.push((t0 + 0.06, Action::Up { slot }));
+                out.push((t0 + e.hold.max(1) as f64 / 1000.0, Action::Up { slot }));
             }
             if let Some(s) = &e.swipe {
                 let dur = s.duration as f64 / 1000.0;
@@ -363,6 +441,25 @@ mod tests {
         assert_eq!(a.last().unwrap().1, Action::Up { slot: 0 });
         assert_eq!(a.len(), 2 + 12);
         assert!(a.windows(2).all(|w| w[0].0 <= w[1].0));
+    }
+
+    #[test]
+    fn taps_hold_for_the_given_time() {
+        let s = Script::parse(
+            r#"{"duration_ms": 2000, "events": [{"at": 100, "tap": [1, 2]}, {"at": 500, "tap": [3, 4], "hold": 800}]}"#,
+        )
+        .unwrap();
+        let ups: Vec<f64> = s
+            .expand()
+            .iter()
+            .filter(|(_, a)| matches!(a, Action::Up { .. }))
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(ups.len(), 2);
+        assert!(
+            (ups[0] - 0.16).abs() < 1e-9 && (ups[1] - 1.3).abs() < 1e-9,
+            "{ups:?}"
+        );
     }
 
     #[test]

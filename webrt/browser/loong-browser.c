@@ -13,7 +13,9 @@
  *   盖在网页内容之上。
  * - 数据目录 $XDG_DATA_HOME/loong/browser/，缓存 $XDG_CACHE_HOME/loong/browser/。
  * - “添加到主屏幕”：读取网页的 W3C manifest，规范化后写入
- *   $XDG_DATA_HOME/loong/webapps/<id>/manifest.json（系统界面据此生成图标，见 ADR 0003）。
+ *   $XDG_DATA_HOME/loong/webapps/<id>/manifest.json；挑一个最合适的图标（够大的 PNG 或 SVG，
+ *   优先 maskable）经浏览器的网络会话下载为同目录的 icon.png / icon.svg。loong-shell 监视这个目录，
+ *   新应用在主屏上“落印”入场（格式见 docs/api/loong-webapps.md）。
  * - 单实例：第二次启动时把网址交给已运行的浏览器（$XDG_RUNTIME_DIR/loong-browser.sock），
  *   在新标签页中打开，不依赖 D-Bus。
  * - 系统状态栏叠在界面顶部的 24pt 留白上：经 Loong 私有协议 loong_app_v1 告诉 loong-shell
@@ -27,6 +29,7 @@
 #include <gio/gio.h>
 #include <gio/gunixsocketaddress.h>
 #include <glib/gstdio.h>
+#include <libsoup/soup.h>
 #include <locale.h>
 #include <stdio.h>
 #include <string.h>
@@ -447,7 +450,11 @@ query_page_info(Tab *tab)
 
 /* ───────────────────────── 添加到主屏幕（PWA 安装） ───────────────────────── */
 
-/* 在页面的隔离 world 中读取并规范化 manifest（相对地址按 manifest 地址解析），没有 manifest 时由页面信息合成。 */
+/* 在页面的隔离 world 中读取并规范化 manifest（相对地址按 manifest 地址解析），没有 manifest 时由页面信息合成。
+ * 颜色经 canvas 规范化成 #rrggbb（任何 CSS 颜色写法都行，无效的丢弃）。
+ * 另外挑一个图标给主屏用：只要 PNG 或 SVG（loong-shell 能解码的），够大（≥192px 或矢量）最要紧，
+ * 其次 maskable（铺满小笺），再次 PNG，同等条件下取最接近 256px 的。返回两份 manifest：
+ * 带 loong_icon 的（图标下载成功时写入）与不带的。 */
 static const char install_script[] =
     "const abs = (u, base) => { try { return new URL(u, base).href; } catch (e) { return null; } };"
     "const link = document.querySelector('link[rel~=\"manifest\"]');"
@@ -458,6 +465,16 @@ static const char install_script[] =
     "}"
     "if (typeof m !== 'object' || m === null || Array.isArray(m)) m = {};"
     "const meta = (n) => { const e = document.querySelector('meta[name=\"' + n + '\"]'); return e ? e.content : null; };"
+    "const ctx = document.createElement('canvas').getContext('2d');"
+    "const color = (c) => {"
+    "  if (typeof c !== 'string' || !c.trim() || !ctx) return null;"
+    "  const probe = (d) => { ctx.fillStyle = d; ctx.fillStyle = c; return ctx.fillStyle; };"
+    "  const a = probe('#000000');"
+    "  if (a !== probe('#ffffff')) return null;"
+    "  if (/^#[0-9a-f]{6}$/i.test(a)) return a.toLowerCase();"
+    "  const v = /^rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)/.exec(a);"
+    "  return v ? '#' + v.slice(1, 4).map((x) => (+x).toString(16).padStart(2, '0')).join('') : null;"
+    "};"
     "const out = {};"
     "out.name = String(m.name || m.short_name || meta('application-name') || document.title || location.hostname).slice(0, 80);"
     "out.short_name = String(m.short_name || out.name).slice(0, 40);"
@@ -468,8 +485,8 @@ static const char install_script[] =
     "out.scope = scope;"
     "out.id = m.id ? abs(m.id, out.start_url) : out.start_url.split('#')[0];"
     "out.display = ['fullscreen','standalone','minimal-ui','browser'].includes(m.display) ? m.display : 'standalone';"
-    "if (typeof m.theme_color === 'string') out.theme_color = m.theme_color; else if (meta('theme-color')) out.theme_color = meta('theme-color');"
-    "if (typeof m.background_color === 'string') out.background_color = m.background_color;"
+    "const theme = color(m.theme_color) || color(meta('theme-color')); if (theme) out.theme_color = theme;"
+    "const background = color(m.background_color); if (background) out.background_color = background;"
     "if (typeof m.description === 'string') out.description = m.description.slice(0, 300);"
     "if (typeof m.lang === 'string') out.lang = m.lang;"
     "out.icons = [];"
@@ -482,9 +499,40 @@ static const char install_script[] =
     "if (!out.icons.length) for (const l of document.querySelectorAll('link[rel~=\"icon\"], link[rel=\"apple-touch-icon\"]')) {"
     "  if (l.href && /^https?:/.test(l.href)) out.icons.push(l.sizes && l.sizes.value ? { src: l.href, sizes: l.sizes.value } : { src: l.href });"
     "}"
+    "const kindOf = (i) => {"
+    "  const t = String(i.type || (i.src.startsWith('data:') ? i.src.slice(5).split(/[;,]/)[0] : '')).toLowerCase();"
+    "  const p = i.src.startsWith('data:') ? '' : new URL(i.src).pathname.toLowerCase();"
+    "  if (t === 'image/png' || (!t && /\\.png$/.test(p))) return 'png';"
+    "  if (t === 'image/svg+xml' || (!t && /\\.svg$/.test(p))) return 'svg';"
+    "  if (!t && !/\\.[a-z0-9]+$/.test(p)) return 'png';"
+    "  return null;"
+    "};"
+    "const sizeOf = (i, kind) => {"
+    "  if (kind === 'svg') return 4096;"
+    "  let best = 0;"
+    "  for (const v of String(i.sizes || '').toLowerCase().split(/\\s+/)) { if (v === 'any') return 4096; best = Math.max(best, parseInt(v, 10) || 0); }"
+    "  return best;"
+    "};"
+    "let pick = null;"
+    "for (const i of out.icons) {"
+    "  const kind = kindOf(i); if (!kind) continue;"
+    "  const purposes = String(i.purpose || 'any').toLowerCase().split(/\\s+/);"
+    "  for (const purpose of ['maskable', 'any']) {"
+    "    if (!purposes.includes(purpose)) continue;"
+    "    const size = sizeOf(i, kind);"
+    "    const score = (size >= 192 ? 1000 : size >= 96 ? 500 : size > 0 ? 100 : 300) + (purpose === 'maskable' ? 50 : 0)"
+    "      + (kind === 'png' ? 10 : 0) - Math.abs(Math.min(size, 1024) - 256) / 100;"
+    "    if (!pick || score > pick.score) pick = { score, src: i.src, purpose, kind };"
+    "  }"
+    "}"
     "const u = new URL(out.id);"
     "const slug = (u.host + u.pathname.replace(/\\/index\\.html?$/, '/')).toLowerCase().replace(/^www\\./, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');"
-    "return { slug: slug || 'app', manifest: JSON.stringify(out, null, 2), name: out.name };";
+    "const result = { slug: slug || 'app', manifest: JSON.stringify(out, null, 2), name: out.name };"
+    "if (pick) {"
+    "  result.icon_src = pick.src; result.icon_kind = pick.kind;"
+    "  result.manifest_icon = JSON.stringify({ ...out, loong_icon: { file: 'icon.' + pick.kind, purpose: pick.purpose, src: pick.src } }, null, 2);"
+    "}"
+    "return result;";
 
 /* 应用 id 只允许 [a-z0-9-]，最长 64（与 loong-webapp 的规则一致）。 */
 static char *
@@ -505,6 +553,151 @@ sanitize_app_id(const char *slug)
     return g_string_free(s, FALSE);
 }
 
+#define ICON_MAX_BYTES (1024 * 1024) /* 与 loong-shell 的上限一致 */
+#define ICON_TIMEOUT_S 15
+
+/* 一次“添加到主屏幕”：先下载图标，再（原子地）写 manifest——loong-shell 读到 manifest 时图标已经就位。 */
+typedef struct {
+    Browser *browser;
+    char *name;          /* 提示里显示的名称 */
+    char *dir;           /* $XDG_DATA_HOME/loong/webapps/<id> */
+    char *manifest;      /* 不带图标的 manifest */
+    char *manifest_icon; /* 带 loong_icon 的 manifest（图标下载成功时写入） */
+    char *icon_kind;     /* "png" / "svg" */
+    char *tmp;           /* 下载中的临时文件（loong-shell 只看 manifest.json 与 icon.*，不理会它） */
+    WebKitDownload *download;
+    guint timeout;
+    gboolean failed;
+} Install;
+
+static void
+install_free(Install *in)
+{
+    if (in->timeout)
+        g_source_remove(in->timeout);
+    if (in->download) {
+        g_signal_handlers_disconnect_by_data(in->download, in);
+        g_object_unref(in->download);
+    }
+    if (in->tmp)
+        g_unlink(in->tmp);
+    g_free(in->name);
+    g_free(in->dir);
+    g_free(in->manifest);
+    g_free(in->manifest_icon);
+    g_free(in->icon_kind);
+    g_free(in->tmp);
+    g_free(in);
+}
+
+/* 内容是不是声明的那种图标（PNG 签名；SVG 为开头 1 KiB 内有 <svg 的文本），大小有上限。 */
+static gboolean
+icon_valid(const char *kind, GBytes *bytes)
+{
+    gsize len = 0;
+    const char *data = bytes ? g_bytes_get_data(bytes, &len) : NULL;
+    if (!data || !len || len > ICON_MAX_BYTES)
+        return FALSE;
+    if (g_strcmp0(kind, "png") == 0)
+        return len > 8 && memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0;
+    if (g_strcmp0(kind, "svg") == 0)
+        return g_strstr_len(data, MIN(len, 1024), "<svg") != NULL;
+    return FALSE;
+}
+
+/* 写入图标（有效时）与 manifest，提示结果，释放 `in`。 */
+static void
+install_finish(Install *in, GBytes *icon)
+{
+    Browser *b = in->browser;
+    g_autoptr(GError) error = NULL;
+    g_autofree char *png = g_build_filename(in->dir, "icon.png", NULL);
+    g_autofree char *svg = g_build_filename(in->dir, "icon.svg", NULL);
+    g_autofree char *path = g_build_filename(in->dir, "manifest.json", NULL);
+    const char *manifest = in->manifest;
+    if (in->manifest_icon && icon_valid(in->icon_kind, icon)) {
+        gsize len = 0;
+        const char *data = g_bytes_get_data(icon, &len);
+        const char *target = g_strcmp0(in->icon_kind, "svg") == 0 ? svg : png;
+        if (g_file_set_contents(target, data, (gssize)len, &error)) {
+            g_unlink(target == svg ? png : svg);
+            manifest = in->manifest_icon;
+        } else {
+            g_warning("写入图标 %s 失败: %s", target, error->message);
+            g_clear_error(&error);
+        }
+    } else {
+        if (in->icon_kind)
+            g_message("没有取到可用的图标，主屏用名称首字");
+        g_unlink(png);
+        g_unlink(svg);
+    }
+    if (!g_file_set_contents(path, manifest, -1, &error)) {
+        g_warning("写入 %s 失败: %s", path, error->message);
+        toast(b, "error", "无法添加到主屏幕");
+    } else {
+        g_message("已添加到主屏幕：%s → %s%s", in->name, path, manifest == in->manifest_icon ? "（含图标）" : "");
+        toast(b, "installed", in->name);
+    }
+    install_free(in);
+}
+
+static gboolean
+on_icon_decide_destination(WebKitDownload *download, const char *suggested, Install *in)
+{
+    webkit_download_set_allow_overwrite(download, TRUE);
+    webkit_download_set_destination(download, in->tmp);
+    return TRUE;
+}
+
+static void
+on_icon_received(WebKitDownload *download, guint64 length, Install *in)
+{
+    if (!in->failed && webkit_download_get_received_data_length(download) > ICON_MAX_BYTES) {
+        g_warning("图标超过 %d 字节，放弃", ICON_MAX_BYTES);
+        in->failed = TRUE;
+        webkit_download_cancel(download);
+    }
+}
+
+static void
+on_icon_failed(WebKitDownload *download, GError *error, Install *in)
+{
+    if (!in->failed)
+        g_warning("下载图标失败: %s", error ? error->message : "未知错误");
+    in->failed = TRUE;
+}
+
+static void
+on_icon_finished(WebKitDownload *download, Install *in)
+{
+    WebKitURIResponse *response = webkit_download_get_response(download);
+    guint status = response ? webkit_uri_response_get_status_code(response) : 0;
+    g_autoptr(GBytes) bytes = NULL;
+    if (!in->failed && (status == 0 || (status >= 200 && status < 300))) {
+        char *data = NULL;
+        gsize len = 0;
+        if (g_file_get_contents(in->tmp, &data, &len, NULL))
+            bytes = g_bytes_new_take(data, len);
+    } else if (!in->failed) {
+        g_warning("下载图标失败：HTTP %u", status);
+    }
+    install_finish(in, bytes);
+}
+
+static gboolean
+on_icon_timeout(Install *in)
+{
+    g_warning("下载图标超时（%d 秒）", ICON_TIMEOUT_S);
+    in->timeout = 0;
+    WebKitDownload *download = g_steal_pointer(&in->download);
+    g_signal_handlers_disconnect_by_data(download, in);
+    webkit_download_cancel(download);
+    g_object_unref(download);
+    install_finish(in, NULL);
+    return G_SOURCE_REMOVE;
+}
+
 static void
 install_ready(GObject *object, GAsyncResult *result, gpointer data)
 {
@@ -518,21 +711,45 @@ install_ready(GObject *object, GAsyncResult *result, gpointer data)
     }
     g_autofree char *slug = js_string(value, "slug");
     g_autofree char *manifest = js_string(value, "manifest");
+    g_autofree char *manifest_icon = js_string(value, "manifest_icon");
     g_autofree char *name = js_string(value, "name");
-    if (!manifest || strlen(manifest) > 64 * 1024) {
+    g_autofree char *icon_src = js_string(value, "icon_src");
+    g_autofree char *icon_kind = js_string(value, "icon_kind");
+    if (!manifest || strlen(manifest) > 64 * 1024 || (manifest_icon && strlen(manifest_icon) > 64 * 1024)) {
         toast(b, "error", "无法添加到主屏幕");
         return;
     }
     g_autofree char *id = sanitize_app_id(slug);
     g_autofree char *dir = g_build_filename(g_get_user_data_dir(), "loong", "webapps", id, NULL);
-    g_autofree char *path = g_build_filename(dir, "manifest.json", NULL);
-    if (g_mkdir_with_parents(dir, 0700) < 0 || !g_file_set_contents(path, manifest, -1, &error)) {
-        g_warning("写入 %s 失败: %s", path, error ? error->message : g_strerror(errno));
+    if (g_mkdir_with_parents(dir, 0700) < 0) {
+        g_warning("创建 %s 失败: %s", dir, g_strerror(errno));
         toast(b, "error", "无法添加到主屏幕");
         return;
     }
-    g_message("已添加到主屏幕：%s → %s", name ? name : id, path);
-    toast(b, "installed", name ? name : id);
+    Install *in = g_new0(Install, 1);
+    in->browser = b;
+    in->name = g_strdup(name ? name : id);
+    in->dir = g_steal_pointer(&dir);
+    in->manifest = g_steal_pointer(&manifest);
+    in->manifest_icon = g_steal_pointer(&manifest_icon);
+    in->icon_kind = g_steal_pointer(&icon_kind);
+    if (!icon_src || !in->manifest_icon) {
+        install_finish(in, NULL);
+        return;
+    }
+    if (g_str_has_prefix(icon_src, "data:")) {
+        g_autoptr(GBytes) bytes = soup_uri_decode_data_uri(icon_src, NULL);
+        install_finish(in, bytes);
+        return;
+    }
+    /* 经浏览器自己的网络会话下载（代理、Cookie 与网页一致，不受 CORS 限制）。 */
+    in->tmp = g_build_filename(in->dir, ".icon-download", NULL);
+    in->download = webkit_network_session_download_uri(b->session, icon_src);
+    g_signal_connect(in->download, "decide-destination", G_CALLBACK(on_icon_decide_destination), in);
+    g_signal_connect(in->download, "received-data", G_CALLBACK(on_icon_received), in);
+    g_signal_connect(in->download, "failed", G_CALLBACK(on_icon_failed), in);
+    g_signal_connect(in->download, "finished", G_CALLBACK(on_icon_finished), in);
+    in->timeout = g_timeout_add_seconds(ICON_TIMEOUT_S, (GSourceFunc)on_icon_timeout, in);
 }
 
 static void

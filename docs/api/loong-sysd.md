@@ -193,4 +193,22 @@ tools/dev-chroot.sh run sh -c 'cargo test -p loong-sysd'   # 单元测试 + 私�
 4. **为什么不能只靠 loong-sysd 的 uid 检查**：所有 Web 应用都是 uid 1000，loong-sysd 看到的只是“会话用户在调用”。因此：
    - 网页内容运行在 WebContent 进程里（WebKit 自带的 bubblewrap 沙箱，我们的 WPE 包保留了 `BUBBLEWRAP_SANDBOX`），沙箱不能暴露系统总线套接字（`/run/dbus/system_bus_socket`）；只有 UI 进程（可信的 C 代码）连接系统总线。实现 bridge 时需要验证这一点。
    - 以后如需更细的权限（例如只允许设置应用改 Wi‑Fi），可以让 loong-webapp 为系统应用使用单独的 uid/组，或由 loong-sysd 核对调用进程的 `/proc/<pid>/exe` 与应用 id，策略文件和 `access.rs` 相应收紧。
-5. **系统界面**：`loong-shell`（Rust）直接用 zbus 连接系统总线，读取状态栏的电量、Wi‑Fi 图标，控制中心的亮度滑块调用 `SetBrightness(value, true)`，收到 `LowBattery` 时弹出提醒。
+5. **系统界面**：`loong-shell`（Rust）直接用 zbus 连接系统总线（已实现，见下节），读取状态栏的电量、Wi‑Fi 图标，控制中心的亮度滑块调用 `SetBrightness(value, true)`、无线局域网开关调用 `Wifi.SetEnabled`。收到 `LowBattery` 时弹出提醒（待做，等通知横幅）。
+
+## 系统界面如何调用（loong-shell）
+
+源码：[`crates/loong-shell/src/sysd_client.rs`](../../crates/loong-shell/src/sysd_client.rs)；界面一侧的数据模型在 [`shell/system.rs`](../../crates/loong-shell/src/shell/system.rs)，状态栏与控制中心的规则见[设计规范 §8.2、§8.7](../design/设计规范.md#82-状态栏)。
+
+```
+ 主线程（calloop）                          后台线程 loong-sysd-client（async-io 执行器）
+ Shell ── SystemAction ──▶ async_channel ──▶ 合并亮度请求 → SetBrightness / SetEnabled
+ Shell ◀── SystemStatus ── calloop channel ◀── PropertiesChanged / GetAll / NameOwnerChanged
+```
+
+- **线程**：zbus 5（`async-io`，与 loong-sysd 同一份依赖）跑在自己的线程里；主线程只往无界通道里放请求、从 calloop 通道里取快照，从不等待 D-Bus。每份快照是三个对象的完整状态（电量、Wi‑Fi、亮度），只在有变化时发送；主线程收到后在下一帧按帧时间处理（例如滑块跟随外部亮度的弹簧）。
+- **订阅再读**：先订阅三个对象的 `PropertiesChanged` 与 `org.loong.System1` 的 `NameOwnerChanged`，再 `GetAll`，之后只靠信号更新。
+- **服务重启**：所有者消失时快照变为“不在”（状态栏右侧不画，控制中心显示“不可用”）；新的所有者出现时重新 `GetAll`。总线连接本身断了（dbus-daemon 重启）就按 1、2、4、5 秒退避重连。服务不在时到来的请求直接丢弃。
+- **请求**：控制中心拖动亮度时按帧率节流（每 1/60 秒最多一次，最后一个值一定发出）；后台线程在一次调用返回前积压的亮度请求只发最后一个。都带 `animate = true`，由 loong-sysd 的弹簧平滑过渡。
+- **总线**：环境变量 `LOONG_SYSD_BUS`（`system` / `session` / D-Bus 地址 / `off`）优先；真机后端默认系统总线；无屏幕后端默认不连接（截图可复现），测试时把它指向私有总线，见 [`crates/loong-shell/tests/control-center-headless.sh`](../../crates/loong-shell/tests/control-center-headless.sh)（假 sysfs + 私有总线上的 loong-sysd：电量从 57% 放电变成 80% 充电、拖动亮度滑块写进假 sysfs、外部改亮度时滑块跟随、点「夜墨」切换外观）。
+- **权限**：loong-shell 以会话用户 `loong`（uid 1000）运行，属于策略文件与 `access.rs` 放行的写操作调用者。
+- **测试**：`sysd_client` 的单元测试在私有 dbus-daemon 上起一个假的 `org.loong.System1`（zbus 实现），验证读取、属性变化、请求、服务退出与重启；没有 `dbus-daemon` 时跳过。

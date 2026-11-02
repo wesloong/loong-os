@@ -4,8 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>媒体检查</title>
-<!-- Loong OS 的音视频检查页（WebKit + gst-plugins-loong）。片段由同目录的 mkclips.sh 生成。
-     地址参数 ?only=webm,ogg,mse,vp8,mp3,opus,webaudio 只运行其中几项（默认除 vp8 外全部）。
+<!-- Loong OS 的音视频检查页（WebKit + gst-plugins-loong + gst-libav-loong）。片段由同目录的 mkclips.sh 生成。
+     地址参数 ?only=webm,ogg,mse,vp8,mp4,msemp4,mp3,opus,m4a,webaudio 只运行其中几项（默认除 vp8 外全部），
+     加上 &loop 时循环播放。
      每 2 秒在控制台输出一行 MEDIA {...}（loong-webapp 设 LOONG_WEBAPP_CONSOLE=1 时写到标准输出）。
      要经 HTTP 打开：file:// 时 GStreamer 在 Web 进程里直接读文件，bubblewrap 沙箱里看不到 /home 下的片段，
      MSE 的 blob: 地址在 file://（null 源）下也会被拒绝。 -->
@@ -37,12 +38,18 @@
     <video id="mse"></video><pre class="st" id="st-mse"></pre></figure>
   <figure data-case="vp8"><figcaption>WebM · VP8 + Vorbis</figcaption>
     <video id="vp8" src="vp8-vorbis.webm" preload="auto"></video><pre class="st" id="st-vp8"></pre></figure>
+  <figure data-case="mp4"><figcaption>MP4 · H.264 + AAC</figcaption>
+    <video id="mp4" src="h264-aac.mp4" preload="auto"></video><pre class="st" id="st-mp4"></pre></figure>
+  <figure data-case="msemp4"><figcaption>MSE · fMP4 H.264 + AAC</figcaption>
+    <video id="msemp4"></video><pre class="st" id="st-msemp4"></pre></figure>
 </div>
 <div class="row">
   <figure data-case="mp3"><figcaption>&lt;audio&gt; · MP3（ID3v2）</figcaption>
     <audio id="mp3" src="tone.mp3" controls preload="auto"></audio><pre class="st" id="st-mp3"></pre></figure>
   <figure data-case="opus"><figcaption>&lt;audio&gt; · Ogg Opus</figcaption>
     <audio id="opus" src="tone.opus" controls preload="auto"></audio><pre class="st" id="st-opus"></pre></figure>
+  <figure data-case="m4a"><figcaption>&lt;audio&gt; · M4A（AAC）</figcaption>
+    <audio id="m4a" src="tone.m4a" controls preload="auto"></audio><pre class="st" id="st-m4a"></pre></figure>
   <figure data-case="webaudio"><figcaption>Web Audio</figcaption>
     <pre class="st" id="st-webaudio">等待…</pre></figure>
 </div>
@@ -51,7 +58,8 @@
 <script>
 "use strict";
 const params = new URLSearchParams(location.search);
-const only = params.get("only") ? params.get("only").split(",") : ["webm", "ogg", "mse", "mp3", "opus", "webaudio"];
+const only = params.get("only") ? params.get("only").split(",")
+  : ["webm", "ogg", "mse", "mp4", "msemp4", "mp3", "opus", "m4a", "webaudio"];
 const enabled = (c) => only.includes(c);
 document.querySelectorAll("figure[data-case]").forEach((f) => {
   if (enabled(f.dataset.case)) return;
@@ -60,11 +68,15 @@ document.querySelectorAll("figure[data-case]").forEach((f) => {
   f.remove();
 });
 
+// ?loop：循环播放（例如检查两个网页同时出声时，让先开始的一路不会先放完）
+if (params.has("loop")) document.querySelectorAll("video, audio").forEach((m) => { m.loop = true; });
+
 const notes = {};          // 每项的事件/错误
 const webaudio = { state: "未开始" };
 const note = (id, s) => { notes[id] = s; };
 const fmt = (x) => (typeof x === "number" ? x.toFixed(2) : String(x));
-const mediaIds = ["webm", "ogg", "mse", "vp8", "mp3", "opus"].filter(enabled);
+const mediaIds = ["webm", "ogg", "mse", "vp8", "mp4", "msemp4", "mp3", "opus", "m4a"].filter(enabled);
+const mseIds = ["mse", "msemp4"];
 
 function state(id) {
   const el = document.getElementById(id);
@@ -109,7 +121,7 @@ for (const id of mediaIds) {
 function start(id) {
   document.getElementById(id).play().then(() => note(id, "play() ok"), (e) => note(id, "play() 失败：" + e.name));
 }
-for (const id of mediaIds) if (id !== "mse") start(id);
+for (const id of mediaIds) if (!mseIds.includes(id)) start(id);
 
 // 有声音的媒体与 AudioContext 要有用户手势才能开始：WPE 默认的自动播放策略是 ALLOW_WITHOUT_SOUND
 // （静音的可以自动播放）。点按页面（触摸屏上 pointerdown 不算手势，click 算）时把还没开始的都开始。
@@ -118,28 +130,29 @@ document.addEventListener("click", () => {
   if (window.audioCtx) window.audioCtx.resume();
   for (const id of mediaIds) {
     const el = document.getElementById(id);
-    if (el.paused && !el.ended && (id !== "mse" || el.src)) start(id);
+    if (el.paused && !el.ended && (!mseIds.includes(id) || el.src)) start(id);
   }
 });
 
-// MSE：整个 WebM 一次 append，再 endOfStream
+// MSE：整段片段（WebM，或 fMP4 的初始化段 + 全部分片）一次 append，再 endOfStream
 function b64(s) { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
-if (enabled("mse")) {
-  const v = document.getElementById("mse");
-  const type = 'video/webm; codecs="vp9,opus"';
+function mse(id, type, data) {
+  const v = document.getElementById(id);
   if (!window.MediaSource || !MediaSource.isTypeSupported(type)) {
-    note("mse", "isTypeSupported = false");
-  } else {
-    const ms = new MediaSource();
-    v.src = URL.createObjectURL(ms);
-    ms.addEventListener("sourceopen", () => {
-      const sb = ms.addSourceBuffer(type);
-      sb.addEventListener("updateend", () => { ms.endOfStream(); note("mse", "appended"); start("mse"); }, { once: true });
-      sb.addEventListener("error", () => note("mse", "SourceBuffer error"));
-      sb.appendBuffer(b64(window.MEDIA_DATA.mseWebm));
-    }, { once: true });
+    note(id, "isTypeSupported = false");
+    return;
   }
+  const ms = new MediaSource();
+  v.src = URL.createObjectURL(ms);
+  ms.addEventListener("sourceopen", () => {
+    const sb = ms.addSourceBuffer(type);
+    sb.addEventListener("updateend", () => { ms.endOfStream(); note(id, "appended"); start(id); }, { once: true });
+    sb.addEventListener("error", () => note(id, "SourceBuffer error"));
+    sb.appendBuffer(b64(data));
+  }, { once: true });
 }
+if (enabled("mse")) mse("mse", 'video/webm; codecs="vp9,opus"', window.MEDIA_DATA.mseWebm);
+if (enabled("msemp4")) mse("msemp4", 'video/mp4; codecs="avc1.64001E, mp4a.40.2"', window.MEDIA_DATA.mseMp4);
 
 // Web Audio：decodeAudioData（经 GStreamer 解码与 deinterleave）+ 振荡器（输出经 autoaudiosink）
 if (enabled("webaudio")) {
@@ -147,6 +160,12 @@ if (enabled("webaudio")) {
   ctx.decodeAudioData(b64(window.MEDIA_DATA.beepWav).buffer).then((buf) => {
     webaudio.decoded = { duration: +buf.duration.toFixed(3), channels: buf.numberOfChannels, rate: buf.sampleRate };
   }, (e) => { webaudio.decoded = "失败：" + e; });
+  // AAC（M4A）经 avdec_aac 解码；网页游戏、播放器常这样加载音效
+  if (window.MEDIA_DATA.beepM4a) {
+    ctx.decodeAudioData(b64(window.MEDIA_DATA.beepM4a).buffer).then((buf) => {
+      webaudio.decodedAac = { duration: +buf.duration.toFixed(3), channels: buf.numberOfChannels, rate: buf.sampleRate };
+    }, (e) => { webaudio.decodedAac = "失败：" + e; });
+  }
   const osc = new OscillatorNode(ctx, { frequency: 220 });
   const gain = new GainNode(ctx, { gain: 0.05 });
   osc.connect(gain).connect(ctx.destination);
@@ -155,10 +174,11 @@ if (enabled("webaudio")) {
   window.audioCtx = ctx;
   setInterval(() => {
     webaudio.state = ctx.state; webaudio.ct = +ctx.currentTime.toFixed(2);
-    const d = webaudio.decoded;
+    const desc = (d) => (d ? (typeof d === "string" ? d : `${d.duration} s, ${d.channels} 声道, ${d.rate} Hz`) : "…");
     document.getElementById("st-webaudio").textContent =
       `AudioContext ${ctx.state}  currentTime ${fmt(ctx.currentTime)} s\n` +
-      `decodeAudioData(WAV): ${d ? (typeof d === "string" ? d : `${d.duration} s, ${d.channels} 声道, ${d.rate} Hz`) : "…"}`;
+      `decodeAudioData(WAV): ${desc(webaudio.decoded)}\n` +
+      `decodeAudioData(AAC): ${desc(webaudio.decodedAac)}`;
   }, 250);
 }
 
@@ -166,8 +186,10 @@ if (enabled("webaudio")) {
 const types = [
   'video/webm; codecs="vp9, opus"', 'video/webm; codecs="vp8, vorbis"', 'video/ogg; codecs="theora, vorbis"',
   'audio/ogg; codecs="opus"', 'audio/ogg; codecs="vorbis"', 'audio/webm; codecs="opus"', "audio/mpeg", "audio/wav",
-  'audio/flac', 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"', 'video/mp4; codecs="hvc1.1.6.L93.B0"',
-  'video/mp4; codecs="vp09.00.10.08"', 'audio/mp4; codecs="mp4a.40.2"', 'video/mp4; codecs="av01.0.05M.08"',
+  'audio/flac', 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"', 'video/mp4; codecs="avc1.64001F, mp4a.40.2"',
+  'video/mp4; codecs="avc1.640028"', 'video/mp4; codecs="hvc1.1.6.L93.B0"',
+  'video/mp4; codecs="vp09.00.10.08"', 'audio/mp4; codecs="mp4a.40.2"', 'audio/mp4; codecs="mp4a.40.5"',
+  'audio/aac', 'video/mp4; codecs="av01.0.05M.08"',
 ];
 const table = document.getElementById("types");
 const probe = document.createElement("video");

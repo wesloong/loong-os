@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+# 启用扬声器的放音通路（ALSA UCM 的 HiFi 用例 + Speaker 设备）。
+#
+# 实际的设置在 /usr/libexec/loong-audio-setup。声卡出现时 udev 会调用它（90-loong-audio.rules：nabu 的声卡要等
+# ADSP 启动后才注册，通常晚于本服务）；这里在开机时对已经存在的声卡再做一次，也用于手动重做：
+#   rc-service loong-audio restart
+# 多个程序（各个网页进程）同时出声靠 ALSA 默认设备经过 dmix，见 /usr/share/alsa/cards/sm8150.conf。
+
+description="启用扬声器的放音通路（ALSA UCM）"
+
+depend() {
+	after udev udev-settle pd-mapper alsasound
+	before loong-session
+}
+
+start() {
+	ebegin "启用扬声器（UCM）"
+	# 还没有声卡不算失败：声卡出现时由 udev 处理
+	/usr/libexec/loong-audio-setup
+	eend 0
+}

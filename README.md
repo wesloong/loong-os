@@ -88,6 +88,7 @@ M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏�
 | `crates/loong-ime/` | 中文拼音输入法：librime 绑定、屏幕键盘模型 | 已有（M4） |
 | `crates/loong-sysd/` | 系统服务（D-Bus `org.loong.System1`）：背光、电源、Wi‑Fi（iwd）；另提供系统更新 `org.loong.Update1`。接口见 [docs/api/loong-sysd.md](docs/api/loong-sysd.md) | 已有（M4 进行中） |
 | `crates/loong-update/` | A/B 系统更新：签名更新包（ed25519）、写入非活动 slot、启动确认与回滚（`uefi-sdboot` / `android-abl`）。见 [docs/api/loong-update.md](docs/api/loong-update.md) | 已有（M5） |
+| `protocols/` | Loong 私有 Wayland 协议：`loong-app-v1.xml`（状态栏样式、主题色），见 [docs/api/loong-app-protocol.md](docs/api/loong-app-protocol.md) | 已有 |
 | `webrt/` | C/meson：`webapp/`（loong-webapp 与 JS bridge）、`apps/`（系统 Web 应用：设置）、`platform/`（`loong` WPEPlatform 后端）、`browser/`（loong-browser 与测试工具）、`loongkit/`、`demo/` | 已有（M2 进行中） |
 | `system/packages/wpewebkit/` | WPE WebKit 的 APKBUILD | 已有 |
 | `system/packages/loong-rime-data/` | 拼音输入法的 Rime 数据（构建时预编译词典，约 8 MiB） | 已有 |
@@ -195,6 +196,7 @@ loong-browser [--theme light|dark] [--search-url 'https://www.bing.com/search?q=
 - [loong-ime](docs/api/loong-ime.md)：输入法架构、text-input-v3 对接、词库体积与延迟
 - [loong-sysd](docs/api/loong-sysd.md)：系统服务的 D-Bus 接口；[JS bridge](docs/api/loong-js-bridge.md)：系统 Web 应用如何调用它、安全模型、系统外观文件的约定
 - [loong-update](docs/api/loong-update.md)：OTA 更新包格式、A/B 写入与回滚、`org.loong.Update1`
+- [loong_app_v1](docs/api/loong-app-protocol.md)：应用与系统界面的私有 Wayland 协议；自适应状态栏（样式 > 主题色 > 取样 > 系统外观）
 
 ## 许可证
 

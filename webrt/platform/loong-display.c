@@ -5,7 +5,8 @@
  * 可选：wp_viewporter + wp_fractional_scale_manager_v1（分数缩放）、
  *       wp_single_pixel_buffer_manager_v1（根表面的纯色底不占内存）、
  *       zwp_linux_dmabuf_v1（DMA-BUF 零拷贝；没有时 WebKit 走共享内存）、
- *       zwp_text_input_manager_v3（输入法）。
+ *       zwp_text_input_manager_v3（输入法）、
+ *       loong_app_manager_v1（Loong 私有协议：状态栏样式与顶部颜色，只有 loong-shell 提供）。
  *
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
@@ -243,6 +244,9 @@ registry_global(void *data, struct wl_registry *registry, uint32_t name, const c
         }
     } else if (!strcmp(interface, zwp_text_input_manager_v3_interface.name)) {
         self->text_input_manager = wl_registry_bind(registry, name, &zwp_text_input_manager_v3_interface, 1);
+    } else if (!strcmp(interface, loong_app_manager_v1_interface.name)) {
+        if (!self->app_manager)
+            self->app_manager = wl_registry_bind(registry, name, &loong_app_manager_v1_interface, 1);
     }
 }
 
@@ -314,9 +318,10 @@ loong_display_connect(WPEDisplay *display, GError **error)
     g_source_attach(source, g_main_context_get_thread_default());
     self->source = source;
 
-    g_debug("loong 平台已连接：viewporter=%d fractional-scale=%d single-pixel=%d linux-dmabuf=%d text-input-v3=%d",
+    g_debug("loong 平台已连接：viewporter=%d fractional-scale=%d single-pixel=%d linux-dmabuf=%d text-input-v3=%d "
+            "loong-app-v1=%d",
             !!self->viewporter, !!self->fractional_scale_manager, !!self->single_pixel, !!self->dmabuf,
-            !!self->text_input_manager);
+            !!self->text_input_manager, !!self->app_manager);
     return TRUE;
 }
 
@@ -397,6 +402,7 @@ loong_display_dispose(GObject *object)
     }
     g_clear_pointer(&self->text_input, zwp_text_input_v3_destroy);
     g_clear_pointer(&self->text_input_manager, zwp_text_input_manager_v3_destroy);
+    g_clear_pointer(&self->app_manager, loong_app_manager_v1_destroy);
     g_clear_pointer(&self->dmabuf_feedback, zwp_linux_dmabuf_feedback_v1_destroy);
     g_clear_pointer(&self->dmabuf, zwp_linux_dmabuf_v1_destroy);
     g_clear_pointer(&self->single_pixel, wp_single_pixel_buffer_manager_v1_destroy);
@@ -456,6 +462,13 @@ loong_display_has_fractional_scale(LoongDisplay *display)
 {
     g_return_val_if_fail(LOONG_IS_DISPLAY(display), FALSE);
     return display->fractional_scale_manager && display->viewporter;
+}
+
+gboolean
+loong_display_has_app_protocol(LoongDisplay *display)
+{
+    g_return_val_if_fail(LOONG_IS_DISPLAY(display), FALSE);
+    return display->app_manager != NULL;
 }
 
 LoongScreen *

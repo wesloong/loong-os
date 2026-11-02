@@ -10,6 +10,10 @@
  * - 超出应用作用域（scope，默认是起始 URL 的源）的页面跳转、window.open 交给系统浏览器打开。
  * - 系统外观（$XDG_CONFIG_HOME/loong/appearance.toml）同步到 WPE 的 dark-mode 设置，
  *   页面的 prefers-color-scheme 随系统切换（loong-appearance.c）。
+ * - 页面的主题色（<meta name="theme-color">，随 prefers-color-scheme 变化）经 Loong 私有协议
+ *   loong_app_v1 告诉 loong-shell，状态栏据此选浓墨或月白（loong-app-surface.c，
+ *   docs/api/loong-app-protocol.md）。页面没有主题色时不发颜色：loong-shell 先读窗口顶部的
+ *   像素（共享内存缓冲），读不到再按系统外观——也就是退回纸色。
  * - --bridge=system：给系统应用（设置等）提供 window.loong（loong-bridge.c）。只有起始页位于
  *   受信任目录（LOONG_WEB_ROOT，默认 /usr/share/loong/web）下时才允许，否则拒绝启动；
  *   此时作用域收紧到受信任目录，任何框架都不能跳转到目录以外。见 docs/api/loong-js-bridge.md。
@@ -23,7 +27,9 @@
 #include <string.h>
 #include <wpe/webkit.h>
 #include <wpe/wpe-platform.h>
+#include <wpe/wayland/wpe-wayland.h>
 
+#include "loong-app-surface.h"
 #include "loong-appearance.h"
 #include "loong-bridge-core.h"
 #include "loong-bridge.h"
@@ -43,6 +49,7 @@ typedef struct {
     WebKitWebView *view;
     LoongAppearance *appearance;
     LoongBridge *bridge;
+    LoongAppSurface *app_surface; /* loong_app_v1（合成器不是 loong-shell 时为 NULL） */
 } LoongWebApp;
 
 /* 应用 id 只允许 [a-z0-9-]，用于目录名和 Wayland app_id。 */
@@ -183,6 +190,48 @@ on_theme_changed(LoongAppearance *appearance, GParamSpec *pspec, LoongWebApp *wa
     apply_appearance(wa);
 }
 
+/* 页面主题色 → loong-shell（状态栏的墨）。没有主题色时发 0（未设置）：loong-shell 读得到窗口
+ * 顶部的像素就按像素，读不到（GPU 缓冲）就按系统外观，与页面加载前的纸色底一致。 */
+static void
+update_theme_color(LoongWebApp *wa)
+{
+    WebKitColor color;
+    guint32 argb = 0;
+    if (webkit_web_view_get_theme_color(wa->view, &color) && color.alpha > 0) {
+        guint32 a = (guint32)(CLAMP(color.alpha, 0, 1) * 255 + 0.5);
+        guint32 r = (guint32)(CLAMP(color.red, 0, 1) * 255 + 0.5);
+        guint32 g = (guint32)(CLAMP(color.green, 0, 1) * 255 + 0.5);
+        guint32 b = (guint32)(CLAMP(color.blue, 0, 1) * 255 + 0.5);
+        argb = a << 24 | r << 16 | g << 8 | b;
+    }
+    loong_app_surface_set_theme_color(wa->app_surface, argb);
+}
+
+static void
+on_theme_color_changed(WebKitWebView *view, GParamSpec *pspec, LoongWebApp *wa)
+{
+    update_theme_color(wa);
+}
+
+/* WPE 自带的 Wayland 平台：用公开接口取 wl_display 与窗口的 wl_surface，建立 loong_app_v1。
+ * 其他平台（headless、DRM）没有 Wayland 窗口，什么也不做。 */
+static void
+setup_app_surface(LoongWebApp *wa, WPEToplevel *toplevel)
+{
+    WPEDisplay *display = webkit_web_view_get_display(wa->view);
+    if (!WPE_IS_DISPLAY_WAYLAND(display) || !WPE_IS_TOPLEVEL_WAYLAND(toplevel))
+        return;
+    struct wl_display *wl_display = wpe_display_wayland_get_wl_display(WPE_DISPLAY_WAYLAND(display));
+    struct wl_surface *surface = wpe_toplevel_wayland_get_wl_surface(WPE_TOPLEVEL_WAYLAND(toplevel));
+    if (!wl_display || !surface)
+        return;
+    wa->app_surface = loong_app_surface_new(wl_display, surface);
+    if (!wa->app_surface)
+        return;
+    g_signal_connect(wa->view, "notify::theme-color", G_CALLBACK(on_theme_color_changed), wa);
+    update_theme_color(wa);
+}
+
 static void
 on_activate(GApplication *app, LoongWebApp *wa)
 {
@@ -230,6 +279,7 @@ on_activate(GApplication *app, LoongWebApp *wa)
         wpe_toplevel_set_title(toplevel, wa->name);
         /* 平板上应用总是全屏（系统界面也会强制）。 */
         wpe_toplevel_fullscreen(toplevel);
+        setup_app_surface(wa, toplevel);
     }
 
     g_application_hold(app);
@@ -299,6 +349,7 @@ main(G_GNUC_UNUSED int argc, char **argv)
     wa.app = app;
     g_signal_connect(app, "activate", G_CALLBACK(on_activate), &wa);
     int status = g_application_run(app, 0, NULL);
+    loong_app_surface_free(wa.app_surface);
     loong_bridge_free(wa.bridge);
     g_clear_object(&wa.appearance);
     g_object_unref(app);

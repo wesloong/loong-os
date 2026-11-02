@@ -9,7 +9,27 @@ gnome = import('gnome')
 
 wpe_webkit = dependency('wpe-webkit-2.0', version: '>= 2.54')
 wpe_platform = dependency('wpe-platform-2.0', version: '>= 2.54')
+# WPE 自带 Wayland 平台的公开接口（wl_display、窗口的 wl_surface），loong-webapp 用它接上私有协议。
+wpe_platform_wayland = dependency('wpe-platform-wayland-2.0', version: '>= 2.54')
 gio = dependency('gio-2.0', version: '>= 2.74')
+wayland_client = dependency('wayland-client', version: '>= 1.22')
+wayland_scanner = find_program(dependency('wayland-scanner', native: true).get_variable('wayland_scanner'))
+
+# Loong 私有协议 loong_app_v1（状态栏样式、主题色）。XML 在仓库顶层 protocols/，loong-shell 用同一份
+# 生成服务端代码；这里生成客户端代码，loong-webapp 与 loong 平台后端（浏览器）共用。
+loong_app_xml = meson.project_source_root() / '..' / 'protocols' / 'loong-app-v1.xml'
+loong_app_protocol = [
+  custom_target('loong-app-v1-code',
+    input: loong_app_xml,
+    output: 'loong-app-v1-protocol.c',
+    command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'],
+  ),
+  custom_target('loong-app-v1-header',
+    input: loong_app_xml,
+    output: 'loong-app-v1-client-protocol.h',
+    command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
+  ),
+]
 
 add_project_arguments('-Wno-unused-parameter', '-DG_LOG_DOMAIN="loong-webrt"', language: 'c')
 
@@ -34,10 +54,12 @@ executable('loong-webapp',
   'webapp/loong-webapp.c',
   'webapp/loong-bridge.c',
   'webapp/loong-appearance.c',
+  'webapp/loong-app-surface.c',
+  loong_app_protocol,
   resources,
   c_args: ['-DLOONG_WEB_ROOT="@0@"'.format(web_root)],
   link_with: bridge_core,
-  dependencies: [wpe_webkit, wpe_platform, gio],
+  dependencies: [wpe_webkit, wpe_platform, wpe_platform_wayland, wayland_client, gio],
   install: true,
 )
 

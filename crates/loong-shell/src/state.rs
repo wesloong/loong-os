@@ -24,7 +24,8 @@ use smithay::{
 };
 
 use crate::{
-    device::DeviceConfig, dmabuf::DmabufSupport, protocols::SurfaceProtocols, shell::Shell,
+    app_protocol::AppProtocolState, device::DeviceConfig, dmabuf::DmabufSupport,
+    protocols::SurfaceProtocols, shell::Shell,
 };
 
 /// 合成器状态。
@@ -50,6 +51,8 @@ pub struct LoongState {
     pub dmabuf: DmabufSupport,
     /// viewporter、单像素缓冲、分数缩放（只需持有）。
     _surface_protocols: SurfaceProtocols,
+    /// Loong 私有协议 loong_app_v1（状态栏样式、主题色，只需持有）。
+    _app_protocol: AppProtocolState,
 
     /// 所有客户端窗口（含后台应用）。
     pub windows: Vec<Window>,
@@ -84,6 +87,7 @@ impl LoongState {
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let surface_protocols = SurfaceProtocols::new(&dh);
+        let app_protocol = AppProtocolState::new(&dh);
 
         let mut seat_state = SeatState::new();
         let mut seat: Seat<Self> = seat_state.new_wl_seat(&dh, "seat0");
@@ -115,6 +119,7 @@ impl LoongState {
             seat,
             dmabuf: DmabufSupport::default(),
             _surface_protocols: surface_protocols,
+            _app_protocol: app_protocol,
             windows: Vec::new(),
             client_touches: Vec::new(),
             output: None,

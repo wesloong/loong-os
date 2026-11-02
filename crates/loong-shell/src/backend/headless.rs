@@ -72,6 +72,8 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
             .with_context(|| format!("未知外观 {name}（应为 light 或 dark）"))?;
         state.shell.set_theme(theme);
     }
+    // 已安装的 Web 应用（PWA 注册表），并监视新的安装。
+    crate::registry::service::init(&mut state, &event_loop.handle(), |s: &mut LoongState| s);
     // 系统状态：脚本给出的演示数据，或者（设置了 LOONG_SYSD_BUS 时）真正的 loong-sysd。
     if let Some(status) = &opts.script.status {
         state.shell.set_system_status(status.to_status());
@@ -212,6 +214,7 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
         }
         event_loop.dispatch(Some(Duration::ZERO), &mut state)?;
         state.import_pending_dmabufs(&mut renderer);
+        state.sync_registry();
         state.shell.update(now);
         state.sync_ime();
         for app in state.shell.take_pending_spawns() {

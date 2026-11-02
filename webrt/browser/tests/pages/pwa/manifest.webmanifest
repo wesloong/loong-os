@@ -1,0 +1,14 @@
+{
+  "name": "墨记 · 随手笔记",
+  "short_name": "墨记",
+  "description": "Loong OS 的 PWA 安装测试：maskable PNG 图标、主题色与背景色。",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "theme_color": "#3f7d68",
+  "background_color": "#f6f1e4",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "../icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

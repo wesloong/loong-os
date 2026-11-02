@@ -12,7 +12,8 @@
 //!   "record": { "every": 2, "scale": 0.5 }
 //! }
 //! ```
-//! 坐标单位为逻辑点，时间单位为毫秒。
+//! 坐标单位为逻辑点，时间单位为毫秒。`tap` 按住 `hold` 毫秒后抬起（默认 60；长按主屏上已安装的应用
+//! 弹出菜单要 ≥ 500，例如 `{ "at": 3000, "tap": [721, 124], "hold": 800 }`）。
 //!
 //! `record` 还可以只录一段时间、一块区域（例如全分辨率的状态栏一条）：
 //! `{ "every": 1, "scale": 1, "from_ms": 9000, "to_ms": 12000, "crop": [0, 0, 1280, 96] }`。
@@ -172,7 +173,7 @@ pub struct Event {
     /// `type` 中相邻两次点按的间隔（毫秒）。
     #[serde(default = "default_type_interval")]
     pub interval: u64,
-    /// `type` / `candidate` / `key` 每次按住多久再抬起（毫秒）。
+    /// `tap` / `type` / `candidate` / `key` 每次按住多久再抬起（毫秒）。
     #[serde(default = "default_key_hold")]
     pub hold: u64,
     /// 点按候选栏本页第 i 个候选。
@@ -315,7 +316,7 @@ impl Script {
             let slot = i as u32;
             if let Some([x, y]) = e.tap {
                 out.push((t0, Action::Down { slot, x, y }));
-                out.push((t0 + 0.06, Action::Up { slot }));
+                out.push((t0 + e.hold.max(1) as f64 / 1000.0, Action::Up { slot }));
             }
             if let Some(s) = &e.swipe {
                 let dur = s.duration as f64 / 1000.0;
@@ -440,6 +441,25 @@ mod tests {
         assert_eq!(a.last().unwrap().1, Action::Up { slot: 0 });
         assert_eq!(a.len(), 2 + 12);
         assert!(a.windows(2).all(|w| w[0].0 <= w[1].0));
+    }
+
+    #[test]
+    fn taps_hold_for_the_given_time() {
+        let s = Script::parse(
+            r#"{"duration_ms": 2000, "events": [{"at": 100, "tap": [1, 2]}, {"at": 500, "tap": [3, 4], "hold": 800}]}"#,
+        )
+        .unwrap();
+        let ups: Vec<f64> = s
+            .expand()
+            .iter()
+            .filter(|(_, a)| matches!(a, Action::Up { .. }))
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(ups.len(), 2);
+        assert!(
+            (ups[0] - 0.16).abs() < 1e-9 && (ups[1] - 1.3).abs() < 1e-9,
+            "{ups:?}"
+        );
     }
 
     #[test]

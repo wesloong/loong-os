@@ -8,6 +8,7 @@
 mod control_center;
 pub mod element;
 mod keyboard;
+mod webapps;
 
 use std::collections::HashMap;
 
@@ -44,7 +45,7 @@ use crate::shell::{
     control_center::Part,
     geometry::{RectF, WindowPlacement},
     ink::DabKind,
-    layout::{ICON_SHADOW_SPREAD, LABEL_HALO},
+    layout::ICON_SHADOW_SPREAD,
     status::StatusInk,
     switcher::{self, SwitcherLayout},
     system::StatusGlyphs,
@@ -79,6 +80,11 @@ pub struct Assets {
     status_glyphs: StatusGlyphs,
     /// 控制中心的位图状态（见 `control_center.rs`）。
     cc: control_center::CcAssets,
+    /// 已画好的应用列表版本、每个应用的指纹、排列指纹、菜单面板版本（见 `webapps.rs`）。
+    apps_revision: u64,
+    app_prints: Vec<u64>,
+    layout_print: u64,
+    menu_revision: u64,
 }
 
 impl Assets {
@@ -98,6 +104,10 @@ impl Assets {
             kb: keyboard::KeyboardAssets::default(),
             status_glyphs: shell.status_glyphs(),
             cc: control_center::CcAssets::default(),
+            apps_revision: 0,
+            app_prints: Vec::new(),
+            layout_print: 0,
+            menu_revision: u64::MAX,
         };
         assets.build(shell);
         assets
@@ -109,6 +119,8 @@ impl Assets {
             tracing::info!("切换外观：{:?}", shell.theme);
             self.build(shell);
         }
+        // 安装、移除了应用，或长按菜单变了。
+        self.sync_apps(shell);
         self.refresh_clock(shell);
         self.refresh_status(shell);
         self.sync_keyboard(shell);
@@ -175,11 +187,12 @@ impl Assets {
             };
             let l = &shell.layout;
             let s = l.icon * ICON_SHADOW_SPREAD;
-            for (r, _) in l
+            // 已安装的 Web 应用随时可能增删、移动，它们的墨影由 shell 单独画。
+            for (_, r) in l
                 .icons
                 .iter()
-                .zip(&l.page_of)
-                .filter(|(_, pg)| **pg == Some(p))
+                .enumerate()
+                .filter(|(i, _)| l.page_of[*i] == Some(p) && shell.shadow_baked(*i))
             {
                 let x = ((r.x - p as f64 * l.page_width - s) * scale).round() as i32;
                 let y = ((r.y - s) * scale).round() as i32;
@@ -236,28 +249,11 @@ impl Assets {
         };
         self.put(TexKey::PageDotActive, page_dot(active, scale));
 
-        // 图标名称：亮色浓墨、暗色月白，四周一圈纸色光晕（落在浓墨山体上也读得清）。
-        let label_style = TextStyle {
-            family: FontRole::Display,
-            size: ((theme::font::ICON_LABEL + 1.0) as f64 * scale) as f32,
-            weight: 400,
-            color: match theme {
-                Theme::Light => pal.ink(Ink::Nong),
-                Theme::Dark => pal.ink(Ink::Jiao),
-            },
-            shadow: false,
-        };
-        let halo = theme::hex(pal.paper, if theme == Theme::Light { 0.82 } else { 0.7 });
-        let halo_px = (LABEL_HALO * scale) as f32;
-        for (i, app) in shell.apps.iter().enumerate() {
-            self.put(TexKey::Icon(i), app_icon(app, theme, icon_px, i));
-            let label = self
-                .text
-                .render_halo(&app.name, &label_style, halo, halo_px);
-            self.put(TexKey::Label(i), label);
-            let card_label = self.card_label(app, i);
-            self.put(TexKey::CardLabel(i), card_label);
+        // 图标、名称（亮色浓墨、暗色月白，四周一圈纸色光晕，落在浓墨山体上也读得清）、多任务标签。
+        for i in 0..shell.apps.len() {
+            self.put_app_textures(shell, i);
         }
+        self.record_apps(shell);
         // 状态栏两种墨都画好：前台应用与系统外观不一致时换墨、交叉淡化（见 shell::status）。
         for ink in [StatusInk::Dark, StatusInk::Light] {
             let status_icons = self.status_icons(ink);
@@ -281,7 +277,7 @@ impl Assets {
     fn card_label(&mut self, app: &AppEntry, index: usize) -> Pixmap {
         let s = self.scale;
         let icon_px = px(switcher::LABEL_ICON, s);
-        let icon = app_icon(app, self.theme, icon_px, index);
+        let icon = self.app_icon_pixmap(app, index, icon_px);
         let text = self.text.render(
             &app.name,
             &TextStyle {

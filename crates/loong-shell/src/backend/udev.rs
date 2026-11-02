@@ -234,6 +234,10 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
         .shell
         .set_locked(std::env::var_os("LOONG_NO_LOCK").is_none());
     (state.shell.clock_text, state.shell.date_text) = crate::clock::now_strings();
+    // 已安装的 Web 应用（PWA 注册表），并监视新的安装。
+    crate::registry::service::init(&mut state, &event_loop.handle(), |d: &mut Data| {
+        &mut d.state
+    });
     let assets = Assets::new(&state.shell, scale);
     let mut renderer = renderer;
     let painter = Painter::new(&mut renderer, scale)?;
@@ -389,6 +393,7 @@ fn render(d: &mut Data) {
     }
     let now = b.start.elapsed().as_secs_f64();
     d.state.now = now;
+    d.state.sync_registry();
     d.state.shell.update(now);
     let scene = d.state.shell.scene(now);
     let elements = match b

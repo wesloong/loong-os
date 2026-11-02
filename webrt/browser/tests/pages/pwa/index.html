@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#3f7d68">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<title>墨记</title>
+<style>
+  body { margin: 0; font: 17px/1.7 "Noto Sans CJK SC", sans-serif; background: #f6f1e4; color: #2a2824; }
+  header { background: #3f7d68; color: #f3eee2; padding: 40px 48px 20px; }
+  h1 { font: 34px/1.3 "LXGW WenKai Screen", serif; margin: 0; }
+  header p { margin: 4px 0 0; opacity: .85; }
+  main { padding: 16px 48px; }
+  .note { padding: 16px 0; border-bottom: 1px solid #e0d8c6; }
+  .note h2 { font: 22px/1.4 "LXGW WenKai Screen", serif; margin: 0 0 4px; }
+  .when { color: #7d7970; font-size: 14px; }
+  #mode { display: inline-block; margin-top: 12px; padding: 2px 12px; border-radius: 12px; background: #e9e1cf; color: #3f7d68; font-size: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>墨记</h1>
+  <p>随手记下的几行字。</p>
+</header>
+<main>
+  <div id="mode"></div>
+  <div class="note"><h2>山居秋暝</h2><div class="when">今天 9:20</div>空山新雨后，天气晚来秋。明月松间照，清泉石上流。</div>
+  <div class="note"><h2>待办</h2><div class="when">昨天</div>给砚台换水；把那卷宣纸裁成小笺。</div>
+  <div class="note"><h2>读书</h2><div class="when">周一</div>“墨分五色”：焦、浓、重、淡、清。</div>
+</main>
+<script>
+  // 作为已安装的应用运行时（start_url 带 ?source=pwa）显示一行标记，截图里看得出来。
+  const pwa = new URLSearchParams(location.search).get('source') === 'pwa';
+  document.getElementById('mode').textContent = pwa ? '已安装的应用（loong-webapp）' : '在浏览器中打开';
+</script>
+</body>
+</html>

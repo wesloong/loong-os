@@ -71,6 +71,8 @@ pub struct LoongState {
     pub shell: Shell,
     /// 当前时间（秒），由后端驱动（真实时间或测试用虚拟时钟）。
     pub now: f64,
+    /// PWA 注册表（`registry::service::init` 之后才有）。
+    pub registry: Option<crate::registry::service::Service>,
 }
 
 impl LoongState {
@@ -134,6 +136,7 @@ impl LoongState {
             output: None,
             shell,
             now: 0.0,
+            registry: None,
         })
     }
 

@@ -1,0 +1,12 @@
+{
+  "fps": 60,
+  "duration_ms": 4500,
+  "clock": "9:41",
+  "theme": "light",
+  "events": [
+    { "at": 300, "swipe": { "from": [1000, 400], "to": [250, 400], "duration": 250 } },
+    { "at": 2000, "tap": [883, 124], "hold": 700 },
+    { "at": 3500, "tap": [883, 228] }
+  ],
+  "screenshots": [1500, 3200, 4300]
+}

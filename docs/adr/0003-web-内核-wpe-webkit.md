@@ -21,9 +21,9 @@ Loong OS 不建设原生应用生态，所有应用都是 PWA，浏览器要基�
 
 - 采用 **WPE WebKit 2.54.2**，使用从 2.54 起稳定并成为默认的 **WPEPlatform API**。开启 Wayland 与 Headless 平台后端，关闭 DRM 后端和旧版 libwpe API（`ENABLE_WPE_LEGACY_API=OFF`）。
 - **自行打包 APK**（`system/packages/wpewebkit/APKBUILD`），musl 配置参考 Chimera Linux：
-  - 编译：clang + lld，`-O2`（JSC 性能比体积更重要），`-U_FORTIFY_SOURCE`，不开 LTO，有 ccache 时自动启用。
-  - 关闭：QT_API、DOCUMENTATION、INTROSPECTION、JOURNALD_LOG、WEBDRIVER、SPELLCHECK、GAMEPAD、SPEECH_SYNTHESIS、SAMPLING_PROFILER、API/LAYOUT_TESTS；`USE_ATK/FLITE/LIBBACKTRACE/LIBHYPHEN/SYSPROF_CAPTURE=OFF`。
-  - 保留：BUBBLEWRAP_SANDBOX（运行时依赖 bubblewrap、xdg-dbus-proxy）、GBM、LIBDRM。
+  - 编译：clang + lld，`-U_FORTIFY_SOURCE`，不开 LTO，有 ccache 时自动启用。M6 起体积优先：全局 `-Os`，JavaScriptCore / WTF / bmalloc / Skia 用 `-O2`；不生成 `.eh_frame`；lld `--icf=safe`（详见文末“[M6 瘦身记录](#m6-瘦身记录webkit-体积)”）。
+  - 关闭：QT_API、DOCUMENTATION、INTROSPECTION、JOURNALD_LOG、WEBDRIVER、SPELLCHECK、GAMEPAD、SPEECH_SYNTHESIS、API/LAYOUT_TESTS；`USE_ATK/FLITE/LIBBACKTRACE/LIBHYPHEN/SYSPROF_CAPTURE=OFF`。M6 起还关闭 MEDIA_STREAM、MEDIA_RECORDER、WEB_RTC、WEB_CODECS、PDFJS、XSLT、GPU_PROCESS、MHTML、MEMORY_SAMPLER、WEBXR、ENCRYPTED_MEDIA、JAVASCRIPT_SHELL 与 `USE_AVIF/JPEGXL`；REMOTE_INSPECTOR、SAMPLING_PROFILER、RESOURCE_USAGE 只在开发构建（APKBUILD 的 `_devtools=ON`）里打开。
+  - 保留：BUBBLEWRAP_SANDBOX（运行时依赖 bubblewrap、xdg-dbus-proxy）、GBM、LIBDRM；VIDEO、MEDIA_SOURCE、WEB_AUDIO、GStreamer GL、WEBGL、WEBASSEMBLY 与 FTL JIT、NOTIFICATIONS 等（逐项理由见 M6 瘦身记录）。
   - MiniBrowser 单独打成 `wpewebkit-minibrowser` 子包，仅用于开发测试。
 - **运行时组件**放在 `webrt/`（C，meson），直接基于 WPEPlatform 编写：
   - `loong-webapp`：每个 PWA 一个进程，使用独立的 WebKit 数据目录；超出 manifest scope 的导航交给浏览器。
@@ -56,7 +56,7 @@ Loong OS 不建设原生应用生态，所有应用都是 PWA，浏览器要基�
 - **编译成本高**：4 核约需 3–6 小时。GitHub 托管 runner 单个任务最长 6 小时（`wpewebkit.yml` 超时设为 355 分钟）；ARM runner 只对公开仓库免费，私有仓库的 runner 只有 2 核。应对办法：使用 ccache；必要时在开发机或自托管 runner 上构建，再把 APK 发布到 Release。
 - **打包与升级由我们维护**：每次升级 WPE 都要重新验证 musl 兼容性和编译选项。
 - **自写 WPEPlatform 后端是 M2 的关键风险**：如果首选方案受阻，就退回到由 shell 绘制浏览器工具栏。
-- **体积与内存**：WebKit 是系统中最大的组件。M6 计划做 ICU 裁剪（只保留中英文）、设置 WebKit 内存上限、字体子集化。
+- **体积与内存**：WebKit 是系统中最大的组件。M6 已按体积重新编译并关掉 v1 用不到的功能（见文末“M6 瘦身记录”）；还计划做 ICU 裁剪（只保留中英文）、设置 WebKit 内存上限、字体子集化。
 - **许可证**：WPE WebKit 采用 LGPL-2.0-or-later AND BSD-2-Clause。我们的组件以动态链接方式使用它，保持 MIT/Apache；如果修改 WebKit 本身，需要按 LGPL 提供修改后的源码。
 - **架构**：loongarch64 上的 WebKit 没有 JIT，性能需要单独评估。
 

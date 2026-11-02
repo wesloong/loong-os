@@ -10,7 +10,7 @@
 //! - [`paper`]：宣纸/绢的纹理与毛边；
 //! - [`brush`]：毛笔笔触（起收笔、飞白、积墨、晕开）；
 //! - `landscape`：山水长卷；`icon`：宣纸小笺与册页；`seal`：印章；`status`：电池与 Wi‑Fi；
-//!   `panel`：绢面板与墨影。
+//!   `panel`：绢面板与墨影；`web_icon`：已安装 Web 应用（PWA）的小笺、图标解码与颜料选择。
 //!
 //! 约定：所有尺寸为物理像素；颜色为 0xRRGGBB；同样的参数与 `seed` 必须得到完全相同的结果。
 
@@ -27,9 +27,14 @@ pub mod paper;
 pub mod raster;
 mod seal;
 mod status;
+mod web_icon;
 
 pub use icon::{pigment_on, stroke_ink, suggested_pigment};
 pub use landscape::{PARALLAX, composite};
+pub use web_icon::{
+    ANY_ICON_SCALE, IconFormat, WebIconArt, WebIconSpec, decode_icon, fallback_pigment,
+    pigment_for_color, png_size, sniff_icon, web_app_icon,
+};
 
 /// 山水长卷的一层。
 pub struct Layer {

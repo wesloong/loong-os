@@ -45,6 +45,7 @@ pub fn builtin_symbol(name: &str) -> Option<&'static str> {
         "ruler" => include_str!("../assets/icons/ruler.svg"),
         "scan-line" => include_str!("../assets/icons/scan-line.svg"),
         "terminal" => include_str!("../assets/icons/terminal.svg"),
+        "trash-2" => include_str!("../assets/icons/trash-2.svg"),
         _ => return None,
     })
 }

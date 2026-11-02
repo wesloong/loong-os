@@ -14,6 +14,7 @@ pub mod ink;
 pub mod keyboard;
 pub mod layout;
 pub mod lock;
+pub mod status;
 pub mod switcher;
 
 use loong_motion::{Animatable, Decay, Spring, SpringAnimation, VelocityTracker, snap};
@@ -27,8 +28,12 @@ use self::{
     gesture::{Axis, lock_axis, rubber_clamp, rubber_clamp_inverse},
     ink::{InkLayer, InkState},
     keyboard::ScreenKeyboard,
-    layout::{BOTTOM_EDGE, ICON_SHADOW_SPREAD, LABEL_HALO, Layout, PAGE_DOT, PAGE_DOT_GAP},
+    layout::{
+        BOTTOM_EDGE, ICON_SHADOW_SPREAD, LABEL_HALO, Layout, PAGE_DOT, PAGE_DOT_GAP,
+        STATUS_BAR_HEIGHT,
+    },
     lock::LockScreen,
+    status::{Basis, StatusBar, StatusInk},
     switcher::{PauseDetector, SwitcherLayout},
 };
 
@@ -68,8 +73,10 @@ pub enum TexKey {
     /// 图标下方的墨影（所有图标共用，四周各留 [`ICON_SHADOW_SPREAD`] × 边长）。
     IconShadow,
     Label(usize),
-    StatusTime,
-    StatusIcons,
+    /// 状态栏时间（两种墨各一张，换墨时交叉淡化，见 [`status`]）。
+    StatusTime(StatusInk),
+    /// 状态栏右侧的 Wi‑Fi、电量、电池（两种墨各一张）。
+    StatusIcons(StatusInk),
     /// 没有真实窗口的演示应用的占位画面。
     Placeholder(usize),
     /// 锁屏整张“纸”：山水 + 大号时间、农历日期、印章、“上滑解锁”提示（合成为一张纹理，
@@ -377,6 +384,8 @@ pub struct Shell {
     mist: SpringAnimation<f64>,
     /// 屏幕键盘与拼音输入。
     pub keyboard: ScreenKeyboard,
+    /// 状态栏的墨（浓墨 / 月白）与交叉淡化。
+    status: StatusBar,
 }
 
 impl Shell {
@@ -411,6 +420,7 @@ impl Shell {
             ink: InkState::new(),
             mist: SpringAnimation::at_rest(MIST_SPRING, 0.0, 0.0).with_rest_thresholds(0.2, 2.0),
             keyboard: ScreenKeyboard::new(w, h, 0.0),
+            status: StatusBar::default(),
         }
     }
 
@@ -528,6 +538,7 @@ impl Shell {
             && self.ink.is_idle()
             && self.mist.is_done(now)
             && self.keyboard.is_idle(now)
+            && self.status.is_idle(now)
     }
 
     /// 前台应用的窗口（键盘焦点与输入框都跟随它）。主屏、多任务中为 `None`。
@@ -810,6 +821,53 @@ impl Shell {
         let allowed = self.keyboard_allowed(now);
         self.keyboard.set_allowed(allowed, now);
         self.keyboard.update(now);
+        let target = self.status_target(now);
+        self.status.update(target, now);
+    }
+
+    /// 状态栏此刻该用的墨，以及依据（见 [`status`]）。
+    ///
+    /// 锁屏（盖住大半屏幕时）、多任务、主屏跟随系统外观。应用卡片（前台的、正在打开的、
+    /// 正在飞回主屏的）盖住状态栏区域的大半、内容也已显现时，用这个应用的墨：打开应用时卡片
+    /// 快铺满屏幕才换，回主屏时卡片一离开顶边就换回来。
+    fn status_target(&self, now: f64) -> (StatusInk, Basis) {
+        let system = StatusInk::for_theme(self.theme);
+        let fallback = (system, Basis::System);
+        if self.lock.is_visible(now) && self.lock.progress(now) < 0.5 {
+            return fallback;
+        }
+        if self.mode == Mode::Switcher {
+            return fallback;
+        }
+        let Some(task) = self
+            .tasks
+            .last()
+            .filter(|t| self.mode == Mode::App || t.homing)
+        else {
+            return fallback;
+        };
+        let [x, y, w, h, _] = task.rect.value(now);
+        let coverage = status::strip_coverage(RectF::new(x, y, w, h), self.w, STATUS_BAR_HEIGHT);
+        if coverage < 0.5 || task.content.value(now) < 0.5 {
+            return fallback;
+        }
+        // 没有窗口的演示应用：占位画面按系统外观画。
+        let Some(window) = &task.window else {
+            return fallback;
+        };
+        let Some(surface) = window.toplevel().map(|t| t.wl_surface().clone()) else {
+            return fallback;
+        };
+        let hints = crate::app_protocol::hints(&surface);
+        // 应用窗口画在卡片的纸上（半透明的主题色、像素合成到它上面）。
+        let paper = self.theme.palette().paper_raised;
+        let strip = (self.w, STATUS_BAR_HEIGHT).into();
+        status::choose(
+            &hints,
+            paper,
+            || crate::status_sample::sample_window(window, strip, paper),
+            system,
+        )
     }
 
     /// 主屏翻页的速度（点/秒，向后翻为正）：手指拖动时取手指速度（滚动位置被手指“按住”，
@@ -1686,23 +1744,48 @@ impl Shell {
         }
 
         // 状态栏（始终在最上层）
-        scene.push(DrawItem::Natural {
-            key: TexKey::StatusTime,
-            x: 20.0,
-            y: 2.0,
-            align: Align::Left,
-            alpha: 1.0,
-            scale: 1.0,
-        });
-        scene.push(DrawItem::Natural {
-            key: TexKey::StatusIcons,
-            x: self.w - 18.0,
-            y: 2.0,
-            align: Align::Right,
-            alpha: 1.0,
-            scale: 1.0,
-        });
+        self.push_status(&mut scene, now);
         scene
+    }
+
+    /// 状态栏：占多数的墨在下层，另一种墨按份额叠在上面（见 [`status::crossfade_layers`]）。
+    fn push_status(&self, scene: &mut Scene, now: f64) {
+        // 第一次 update 之前（还没有画过）：直接用目标墨。
+        let mix = self
+            .status
+            .mix(now)
+            .unwrap_or_else(|| match self.status_target(now).0 {
+                StatusInk::Dark => 0.0,
+                StatusInk::Light => 1.0,
+            });
+        let (bottom, top, top_alpha) = status::crossfade_layers(mix);
+        for (ink, alpha) in [(bottom, 1.0), (top, top_alpha)] {
+            if alpha <= 0.001 {
+                continue;
+            }
+            scene.push(DrawItem::Natural {
+                key: TexKey::StatusTime(ink),
+                x: 20.0,
+                y: 2.0,
+                align: Align::Left,
+                alpha,
+                scale: 1.0,
+            });
+            scene.push(DrawItem::Natural {
+                key: TexKey::StatusIcons(ink),
+                x: self.w - 18.0,
+                y: 2.0,
+                align: Align::Right,
+                alpha,
+                scale: 1.0,
+            });
+        }
+    }
+
+    /// 状态栏此刻的墨（交叉淡化中取占多数的那种）。
+    #[allow(dead_code, reason = "测试使用")]
+    pub fn status_ink(&self, now: f64) -> Option<StatusInk> {
+        self.status.mix(now).map(|m| status::crossfade_layers(m).0)
     }
 
     /// 主屏是否正停在某一页（图标与山水都在这一页的停稳位置，烟云不漂移）。

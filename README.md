@@ -60,6 +60,10 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 |---|---|---|
 | ![QEMU 状态栏浅色](docs/images/qemu-statusbar-light.png) | ![QEMU 状态栏深色](docs/images/qemu-statusbar-dark.png) | ![QEMU 媒体播放](docs/images/qemu-media-b.png) |
 
+| 控制中心（右上角下滑；虚拟机里没有无线网卡、背光与电池，如实显示） | 小米平板 5 架构（aarch64）镜像里的设置（交叉编译的 WebKit） | 安装到主屏的网页应用（落印入场） |
+|---|---|---|
+| ![QEMU 控制中心](docs/images/qemu-control-center.png) | ![aarch64 设置](docs/images/qemu-aarch64-settings.png) | ![PWA 入场](docs/images/pwa-entrance.png) |
+
 ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-shell 为交叉编译）：
 
 ![QEMU aarch64 中的 Loong OS](docs/images/qemu-aarch64-home.png)

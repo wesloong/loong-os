@@ -14,6 +14,9 @@
 //! ```
 //! 坐标单位为逻辑点，时间单位为毫秒。
 //!
+//! `record` 还可以只录一段时间、一块区域（例如全分辨率的状态栏一条）：
+//! `{ "every": 1, "scale": 1, "from_ms": 9000, "to_ms": 12000, "crop": [0, 0, 1280, 96] }`。
+//!
 //! 屏幕键盘（键的位置在运行时按当前布局求出，脚本不写坐标）：
 //!
 //! ```json
@@ -145,6 +148,40 @@ pub struct Record {
     /// 录制分辨率相对屏幕的比例（0.5 = 一半）。
     #[serde(default = "default_record_scale")]
     pub scale: f64,
+    /// 只录这段时间（毫秒，含两端）；默认从头录到尾。
+    #[serde(default)]
+    pub from_ms: Option<u64>,
+    #[serde(default)]
+    pub to_ms: Option<u64>,
+    /// 只录这块区域（逻辑点 [x, y, 宽, 高]）；默认整屏。
+    #[serde(default)]
+    pub crop: Option<[f64; 4]>,
+}
+
+impl Record {
+    /// 第 `frame` 帧（`fps` 帧每秒）是否要录。
+    pub fn wants(&self, frame: u64, fps: u32) -> bool {
+        let ms = frame * 1000 / fps.max(1) as u64;
+        frame.is_multiple_of(self.every.max(1) as u64)
+            && self.from_ms.is_none_or(|t| ms >= t)
+            && self.to_ms.is_none_or(|t| ms <= t)
+    }
+
+    /// 录制区域（物理像素 x, y, 宽, 高），限制在 `width × height` 的屏幕内。
+    pub fn crop_px(&self, width: u32, height: u32, scale: f64) -> (u32, u32, u32, u32) {
+        let Some([x, y, w, h]) = self.crop else {
+            return (0, 0, width, height);
+        };
+        let px = |v: f64, max: u32| ((v * scale).round().max(0.0) as u32).min(max);
+        let (x0, y0) = (px(x, width - 1), px(y, height - 1));
+        let (x1, y1) = (px(x + w, width), px(y + h, height));
+        (
+            x0,
+            y0,
+            x1.saturating_sub(x0).max(1),
+            y1.saturating_sub(y0).max(1),
+        )
+    }
 }
 
 /// 展开后的底层动作。
@@ -326,6 +363,31 @@ mod tests {
         assert_eq!(a.last().unwrap().1, Action::Up { slot: 0 });
         assert_eq!(a.len(), 2 + 12);
         assert!(a.windows(2).all(|w| w[0].0 <= w[1].0));
+    }
+
+    #[test]
+    fn record_window_and_crop() {
+        let s = Script::parse(
+            r#"{"fps": 60, "duration_ms": 3000,
+                "record": {"every": 2, "scale": 1, "from_ms": 1000, "to_ms": 2000, "crop": [0, 0, 1280, 96]}}"#,
+        )
+        .unwrap();
+        let r = s.record.unwrap();
+        // 60 帧每秒：第 60 帧是 1000 ms。
+        assert!(!r.wants(58, 60));
+        assert!(r.wants(60, 60));
+        assert!(!r.wants(61, 60), "每 2 帧录一帧");
+        assert!(r.wants(120, 60));
+        assert!(!r.wants(122, 60));
+        // 2x 屏幕：裁剪区域按物理像素，超出屏幕的部分裁掉。
+        assert_eq!(r.crop_px(2560, 1600, 2.0), (0, 0, 2560, 192));
+        assert_eq!(r.crop_px(1000, 1600, 2.0), (0, 0, 1000, 192));
+        let full = Script::parse(r#"{"duration_ms": 10, "record": {}}"#)
+            .unwrap()
+            .record
+            .unwrap();
+        assert_eq!(full.crop_px(1280, 800, 1.0), (0, 0, 1280, 800));
+        assert!(full.wants(0, 60) && full.wants(600, 60));
     }
 
     #[test]

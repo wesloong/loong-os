@@ -11,6 +11,7 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include "fractional-scale-v1-client-protocol.h"
+#include "loong-app-v1-client-protocol.h"
 #include "linux-dmabuf-v1-client-protocol.h"
 #include "single-pixel-buffer-v1-client-protocol.h"
 #include "text-input-unstable-v3-client-protocol.h"
@@ -88,6 +89,7 @@ struct _LoongDisplay {
     struct zwp_linux_dmabuf_feedback_v1 *dmabuf_feedback;
     struct zwp_text_input_manager_v3 *text_input_manager;
     struct zwp_text_input_v3 *text_input;
+    struct loong_app_manager_v1 *app_manager; /* Loong 私有协议（只有 loong-shell 提供） */
     GArray *dmabuf_formats; /* LoongDmabufFormat */
     WPEDRMDevice *drm_device;
     GPtrArray *screens; /* LoongScreen */
@@ -113,6 +115,11 @@ struct _LoongToplevel {
     struct wp_viewport *viewport;
     struct wp_fractional_scale_v1 *fractional_scale;
     char *app_id;
+
+    /* loong_app_v1：状态栏样式与顶部颜色（合成器没有这个协议时 app_surface 为 NULL）。 */
+    struct loong_app_surface_v1 *app_surface;
+    LoongStatusBarStyle status_bar_style;
+    guint32 theme_color;
 
     guint32 background;
     struct wl_buffer *bg_buffer;

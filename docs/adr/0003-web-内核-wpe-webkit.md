@@ -56,7 +56,7 @@ Loong OS 不建设原生应用生态，所有应用都是 PWA，浏览器要基�
 - **编译成本高**：4 核约需 3–6 小时。GitHub 托管 runner 单个任务最长 6 小时（`wpewebkit.yml` 超时设为 355 分钟）；ARM runner 只对公开仓库免费，私有仓库的 runner 只有 2 核。应对办法：使用 ccache；必要时在开发机或自托管 runner 上构建，再把 APK 发布到 Release。
 - **打包与升级由我们维护**：每次升级 WPE 都要重新验证 musl 兼容性和编译选项。
 - **自写 WPEPlatform 后端是 M2 的关键风险**：如果首选方案受阻，就退回到由 shell 绘制浏览器工具栏。
-- **体积与内存**：WebKit 是系统中最大的组件。M6 已按体积重新编译并关掉 v1 用不到的功能（见文末“M6 瘦身记录”）；还计划做 ICU 裁剪（只保留中英文）、设置 WebKit 内存上限、字体子集化。
+- **体积与内存**：WebKit 是系统中最大的组件。M6 已按体积重新编译并关掉 v1 用不到的功能（见文末“M6 瘦身记录”）；ICU 数据（`icu-data-loong`，中英文 7 MiB）与字体子集也已完成，见[体积预算](../体积预算.md)；还计划设置 WebKit 内存上限。
 - **许可证**：WPE WebKit 采用 LGPL-2.0-or-later AND BSD-2-Clause。我们的组件以动态链接方式使用它，保持 MIT/Apache；如果修改 WebKit 本身，需要按 LGPL 提供修改后的源码。
 - **架构**：loongarch64 上的 WebKit 没有 JIT，性能需要单独评估。
 
@@ -114,7 +114,7 @@ Loong OS 不建设原生应用生态，所有应用都是 PWA，浏览器要基�
 - 合成器没有 viewporter 时，根表面的底色是整窗大小的缓冲（nabu 上约 16MB）。
 - **DMA-BUF 路径已实现、未实测**：开发环境没有 GPU（`LIBGL_ALWAYS_SOFTWARE` 下 WebKit 不会产出 DMA-BUF），测试用的 sway（pixman）也不提供 linux-dmabuf；要在 nabu 上或带 GPU 的合成器里验证。
 - 界面的子表面看不到网页的像素，`backdrop-filter` 模糊不到网页，对话框用不透明的素笺代替「绢」。
-- 没有：光标主题（平板不需要）、与其他应用共享的剪贴板（只有进程内的 WPE 剪贴板）、指针锁定、拖放、xdg-activation、presentation-time；loong 私有协议（theme-color → 状态栏前景、启动闪屏交接）还没有，之后加在这个后端里。
+- 没有：光标主题（平板不需要）、与其他应用共享的剪贴板（只有进程内的 WPE 剪贴板）、指针锁定、拖放、xdg-activation、presentation-time；启动闪屏交接还没有。Loong 私有协议 `loong_app_v1`（状态栏样式、主题色）已加入：浏览器按界面外观指定状态栏样式，网页全屏时改报网页的 theme-color；loong-webapp 在 WPE 自带的 Wayland 平台上也能用它（公开接口取 `wl_display` 与 `wl_surface`，单独的事件队列），见 [loong_app_v1](../api/loong-app-protocol.md)。
 - 浏览器功能上：下载、权限授权、历史 / 书签 / 会话恢复都还没有；后台标签页不丢弃（每个标签页一个 Web 进程）；通知没有转发。
 - loong-shell 侧还缺的能力（子表面已能显示）：见 README 的“浏览器”一节。
 

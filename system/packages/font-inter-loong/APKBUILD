@@ -1,0 +1,36 @@
+# Loong OS: Inter 可变字体（族名 “Inter”，光学尺寸固定为正文），替代镜像里的 font-inter
+# 构建: tools/build-pkg.sh font-inter-loong
+#
+# Alpine 的 font-inter（14 MB）里族名是 “Inter” 的只有静态字体合集 Inter.ttc（11 MB）；
+# 可变字体 InterVariable.ttf 的族名是 “Inter Variable”，界面和网页请求的 “Inter” 匹配不到它。
+# 这个包取 font-inter 里的可变字体，改名为 “Inter”，并把 opsz 轴固定在 14：一个 620 KB 的文件
+# 覆盖全部字重。斜体由 FreeType 倾斜合成。
+pkgname=font-inter-loong
+pkgver=4.1
+pkgrel=0
+pkgdesc="Inter variable font renamed to 'Inter', optical size fixed at text size"
+url="https://rsms.me/inter/"
+arch="noarch"
+license="OFL-1.1"
+depends="fontconfig"
+makedepends="font-inter python3 py3-fonttools"
+source="inter-LICENSE-$pkgver.txt::https://raw.githubusercontent.com/rsms/inter/v$pkgver/LICENSE.txt
+	build-font.py
+	"
+builddir="$srcdir"
+# 纯数据包；构建脚本会检查族名。
+options="!check"
+
+build() {
+	python3 -I "$srcdir"/build-font.py /usr/share/fonts/inter/InterVariable.ttf "$srcdir"/Inter-Loong.ttf
+}
+
+package() {
+	install -Dm644 "$srcdir"/Inter-Loong.ttf "$pkgdir"/usr/share/fonts/inter-loong/Inter-Loong.ttf
+	install -Dm644 "$srcdir"/inter-LICENSE-$pkgver.txt "$pkgdir"/usr/share/licenses/$pkgname/LICENSE.txt
+}
+
+sha512sums="
+593d608d18186478ee378027cbf8ec480055862acdbd437626f3c36b65b61f08024ac90d2ce007d718e55a4134e61f6e9df46e18ccbd5fcd7499737ede288b2b  inter-LICENSE-4.1.txt
+f8f9a566ccc3b786edc4b381c2bc1defa41a1271d8c411ab1f3f833ae8dc29c46f1dde0ad44e6f101133ff37af70591952e63d472c458abc88e98556fecb0271  build-font.py
+"

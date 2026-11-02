@@ -16,6 +16,9 @@
  *   $XDG_DATA_HOME/loong/webapps/<id>/manifest.json（系统界面据此生成图标，见 ADR 0003）。
  * - 单实例：第二次启动时把网址交给已运行的浏览器（$XDG_RUNTIME_DIR/loong-browser.sock），
  *   在新标签页中打开，不依赖 D-Bus。
+ * - 系统状态栏叠在界面顶部的 24pt 留白上：经 Loong 私有协议 loong_app_v1 告诉 loong-shell
+ *   用哪种墨——平时按界面的外观（宣纸 → 浓墨，夜墨 → 月白）；网页全屏时顶部是网页，
+ *   交给合成器按网页的 theme-color 决定（没有时合成器取样或按系统外观）。
  *
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
@@ -95,6 +98,7 @@ struct _Browser {
 static void push_state(Browser *b);
 static Tab *tab_new(Browser *b, WebKitWebView *related, const char *url, gboolean activate);
 static void tab_activate(Browser *b, Tab *tab);
+static void update_status_bar(Browser *b);
 
 /* ───────────────────────── 小工具 ───────────────────────── */
 
@@ -224,6 +228,38 @@ resolve_input(const char *input, const char *search_url)
 
 /* ───────────────────────── 布局 ───────────────────────── */
 
+/* WebKitColor → 0xAARRGGBB（没有或全透明时为 0）。 */
+static guint32
+color_argb(const WebKitColor *c)
+{
+    if (c->alpha <= 0)
+        return 0;
+    guint32 a = (guint32)(CLAMP(c->alpha, 0, 1) * 255 + 0.5);
+    guint32 r = (guint32)(CLAMP(c->red, 0, 1) * 255 + 0.5);
+    guint32 g = (guint32)(CLAMP(c->green, 0, 1) * 255 + 0.5);
+    guint32 bl = (guint32)(CLAMP(c->blue, 0, 1) * 255 + 0.5);
+    return a << 24 | r << 16 | g << 8 | bl;
+}
+
+/* 状态栏的墨（loong_app_v1）：平时窗口顶部是界面（宣纸 / 夜墨，随外观），直接指定样式；
+ * 网页全屏时顶部是网页，改回 auto，主题色用网页的 theme-color（没有时为 0，合成器取样或按系统外观）。 */
+static void
+update_status_bar(Browser *b)
+{
+    if (!b->toplevel)
+        return;
+    LoongToplevel *toplevel = LOONG_TOPLEVEL(b->toplevel);
+    if (b->fullscreen && b->active) {
+        WebKitColor color;
+        guint32 argb = webkit_web_view_get_theme_color(b->active->web_view, &color) ? color_argb(&color) : 0;
+        loong_toplevel_set_status_bar_style(toplevel, LOONG_STATUS_BAR_AUTO);
+        loong_toplevel_set_theme_color(toplevel, argb);
+    } else {
+        loong_toplevel_set_status_bar_style(toplevel, b->dark ? LOONG_STATUS_BAR_LIGHT_CONTENT : LOONG_STATUS_BAR_DARK_CONTENT);
+        loong_toplevel_set_theme_color(toplevel, 0xff000000 | (b->dark ? PAPER_DARK : PAPER_LIGHT));
+    }
+}
+
 static void
 layout(Browser *b)
 {
@@ -239,6 +275,7 @@ layout(Browser *b)
         else
             loong_view_set_geometry(tab->view, 0, chrome_h, width, MAX(1, height - chrome_h));
     }
+    update_status_bar(b);
 }
 
 static gboolean
@@ -318,6 +355,8 @@ push_state_idle(gpointer data)
 {
     Browser *b = data;
     b->push_idle = 0;
+    /* 当前标签页或它的 theme-color 变了：网页全屏时状态栏跟着变。 */
+    update_status_bar(b);
     if (!b->chrome_ready || !b->active)
         return G_SOURCE_REMOVE;
     WebKitWebView *v = b->active->web_view;
@@ -1140,6 +1179,7 @@ apply_theme(Browser *b)
     wpe_settings_set_boolean(wpe_settings, WPE_SETTING_DARK_MODE, b->dark, WPE_SETTINGS_SOURCE_APPLICATION, NULL);
     if (b->toplevel)
         loong_toplevel_set_background(LOONG_TOPLEVEL(b->toplevel), b->dark ? PAPER_DARK : PAPER_LIGHT);
+    update_status_bar(b);
 }
 
 static void

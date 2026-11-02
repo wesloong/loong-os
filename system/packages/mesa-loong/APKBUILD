@@ -1,0 +1,150 @@
+# Loong OS: 精简的 Mesa——只含 Loong OS 用得到的驱动与接口，不依赖 LLVM、X11、Vulkan
+# 构建: tools/build-pkg.sh mesa-loong（aarch64 见 docs/devices/xiaomi-nabu.md「构建 mesa-loong」）
+#
+# 基于 Alpine aports 的 main/mesa（3.24-stable，同一 Mesa 版本）。与发行版 mesa 的区别：
+#   - gallium 驱动：softpipe（软件渲染，QEMU 无 3D 时经 kms_swrast 使用）、virgl（virtio-gpu 3D），
+#     aarch64 另有 freedreno（小米平板 5 的 Adreno 640；kmsro 随 freedreno 自动构建）。
+#     没有 llvmpipe/lavapipe/radeonsi/zink 等需要 LLVM 的驱动，所以不依赖 llvm22-libs（182 MiB）
+#   - 平台只有 Wayland，加上 EGL 自带的 GBM（drm）与 surfaceless：没有 GLX 与 X11 EGL 平台，不依赖 libX11/xcb
+#   - 接口只有 EGL + GLES 2/3：没有 GLES1、桌面 OpenGL、Vulkan、OpenCL、VA-API
+#   - driconf 默认配置编译进库内（-Dxmlconfig=disabled），不依赖 expat、没有 /usr/share/drirc.d
+#   - 编译优化用 abuild 默认的 -Os（发行版是 -O2 -g1）。实测（x86_64）：-O2 的 libgallium 大 21%
+#     （16.7 vs 13.7 MB），softpipe 只快约 15%（无屏幕解锁动画平均每帧 1.7 s vs 2.0 s；llvmpipe 是 22 ms），
+#     软件渲染无论哪种都只够验证功能，所以选体积。freedreno 的 CPU 开销（状态提交、着色器编译）要上真机再量。
+#     详见 docs/技术规划.md 第六节“M6：自编 Mesa”
+# 构建耗时（4 核开发沙箱，-j2）：x86_64 约 7 分钟；aarch64 经 qemu-user 约 1 小时（见 docs/devices/xiaomi-nabu.md）
+#
+# 子包（so: 名由 abuild 自动生成，依赖这些 so: 名的包——wpewebkit、gst-plugins-base 等——由它们满足）：
+#   mesa-loong           libgallium-<版本>.so（全部驱动）、gbm/dri_gbm.so      对应发行版 mesa（+ mesa-dri-gallium）
+#   mesa-loong-egl       libEGL.so.1                                            对应 mesa-egl
+#   mesa-loong-gles      libGLESv2.so.2                                         对应 mesa-gles
+#   mesa-loong-gbm       libgbm.so.1                                            对应 mesa-gbm
+#   mesa-loong-glx-stub  libGL.so.1 桩：只报告“没有 GLX”（原因见 glx-stub.c）  对应 mesa-gl
+# 各库子包与发行版 mesa 互斥（!mesa）：发行版的 mesa-* 子包都依赖 mesa，所以 apk 不会把它们和 LLVM
+# 混装进来；也防止误装进开发 chroot（其他构建与无屏幕测试要用 chroot 里发行版 Mesa 的 llvmpipe）。
+# （互斥不能写在主包的 depends 里：abuild 会把它当作构建冲突，而构建用的 chroot 正装着发行版 mesa。）
+pkgname=mesa-loong
+pkgver=26.1.6
+pkgrel=0
+pkgdesc="Mesa for Loong OS (EGL/GLES on Wayland and GBM; freedreno, virgl, softpipe; no LLVM)"
+url="https://www.mesa3d.org"
+arch="aarch64 x86_64"
+license="MIT AND SGI-B-2.0 AND BSL-1.0"
+depends=""
+makedepends="
+	bison
+	flex
+	libdrm-dev
+	meson
+	py3-mako
+	py3-packaging
+	py3-yaml
+	python3
+	wayland-dev
+	wayland-protocols
+	zlib-dev
+	zstd-dev
+	"
+subpackages="
+	$pkgname-dev
+	$pkgname-egl:_egl
+	$pkgname-gles:_gles
+	$pkgname-gbm:_gbm
+	$pkgname-glx-stub:_glx_stub
+	"
+source="https://mesa.freedesktop.org/archive/mesa-$pkgver.tar.xz
+	glx-stub.c
+	"
+builddir="$srcdir/mesa-$pkgver"
+# 上游单元测试需要 -Dbuild-tests=true（会多编译大量测试程序），打包时不运行。
+options="!check"
+
+case "$CARCH" in
+aarch64) _gallium_drivers="freedreno,virgl,softpipe" ;;
+*) _gallium_drivers="virgl,softpipe" ;;
+esac
+
+build() {
+	abuild-meson \
+		-Db_ndebug=true \
+		-Dbackend_max_links=2 \
+		-Dplatforms=wayland \
+		-Dgallium-drivers=$_gallium_drivers \
+		-Dfreedreno-kmds=msm \
+		-Dvulkan-drivers= \
+		-Dvulkan-layers= \
+		-Dopengl=false \
+		-Dglx=disabled \
+		-Dglvnd=disabled \
+		-Degl=enabled \
+		-Dgbm=enabled \
+		-Dgles1=disabled \
+		-Dgles2=enabled \
+		-Dllvm=disabled \
+		-Dshared-llvm=disabled \
+		-Dspirv-tools=disabled \
+		-Dmicrosoft-clc=disabled \
+		-Dgallium-rusticl=false \
+		-Dgallium-va=disabled \
+		-Dgallium-extra-hud=false \
+		-Dvideo-codecs= \
+		-Dteflon=false \
+		-Dxmlconfig=disabled \
+		-Dexpat=disabled \
+		-Dshader-cache=enabled \
+		-Dzstd=enabled \
+		-Dallow-kcmp=enabled \
+		-Dvalgrind=disabled \
+		-Dlibunwind=disabled \
+		-Dlmsensors=disabled \
+		-Dperfetto=false \
+		-Dhtml-docs=disabled \
+		-Dbuild-tests=false \
+		. output
+
+	# 打印最终配置，便于核对驱动与平台
+	meson configure --no-pager output | grep -E '^ *(gallium-drivers|platforms|opengl|gles[12]|egl|gbm|glx|llvm|vulkan-drivers) ' || true
+	meson compile -C output -j "${JOBS:-2}"
+
+	# libGL.so.1 桩（GLX 入口全部返回失败），见 glx-stub.c
+	${CC:-cc} $CFLAGS -fPIC -fvisibility=hidden -shared -Wl,-soname,libGL.so.1 $LDFLAGS \
+		-o "$builddir"/libGL.so.1.0.0 "$srcdir"/glx-stub.c
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+	# /usr/lib/dri 下只有给 X 服务器（AIGLX）用的 libdril 桩；EGL 与 GBM 直接链接 libgallium
+	rm -rf "$pkgdir"/usr/lib/dri
+	install -Dm755 "$builddir"/libGL.so.1.0.0 "$pkgdir"/usr/lib/libGL.so.1.0.0
+	ln -s libGL.so.1.0.0 "$pkgdir"/usr/lib/libGL.so.1
+}
+
+_egl() {
+	pkgdesc="$pkgdesc (libEGL)"
+	depends="$pkgname=$pkgver-r$pkgrel !mesa"
+	amove usr/lib/libEGL.so.*
+}
+
+_gles() {
+	pkgdesc="$pkgdesc (libGLESv2)"
+	depends="$pkgname=$pkgver-r$pkgrel !mesa"
+	amove usr/lib/libGLESv2.so.*
+}
+
+_gbm() {
+	pkgdesc="$pkgdesc (libgbm)"
+	depends="$pkgname=$pkgver-r$pkgrel !mesa"
+	amove usr/lib/libgbm.so.*
+}
+
+_glx_stub() {
+	pkgdesc="libGL.so.1 stub for Loong OS: exports GLX entry points that report no GLX"
+	# 依赖主包：只在 Loong 图形栈里被选中，发行版 mesa 的镜像（MESA_FLAVOR=distro）仍用 mesa-gl
+	depends="$pkgname=$pkgver-r$pkgrel !mesa"
+	amove usr/lib/libGL.so.*
+}
+
+sha512sums="
+6746b73f5b87e8ff3723eee586b4b5f033dbe6d13cd0309d743b7fa484c350268859ec8ff21aadcbca7a04070cdaa7828146dd28dde4b1935bb879891d687f0b  mesa-26.1.6.tar.xz
+7377f24a5803b703af3bce0a197551ddecab4d1318815ab3750837ececb20695bbfb15e8e0a62954bdb4207d3e62e611ef0074a320e04c0344dec3099f47d5f1  glx-stub.c
+"

@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="loong_app_v1">
+  <copyright>
+    Copyright © 2026 Loong OS contributors
+
+    SPDX-License-Identifier: MIT OR Apache-2.0
+
+    Licensed under either of the Apache License, Version 2.0 or the MIT
+    license (see LICENSE-APACHE and LICENSE-MIT at the root of the Loong OS
+    repository), at your option.
+  </copyright>
+
+  <description summary="Loong OS app integration with the system shell">
+    Private protocol between Loong OS apps and the system shell
+    (loong-shell). It lets an app describe how the system UI drawn on top of
+    it should look. In version 1 this is the status bar: the time, Wi-Fi and
+    battery that loong-shell draws over the top 24 logical pixels of every
+    fullscreen app.
+
+    The status bar has two inks: ink (dark glyphs, for light backgrounds)
+    and moon-white (light glyphs, for dark backgrounds). For the app in front,
+    loong-shell picks the ink in this order:
+
+    1. the style set with loong_app_surface_v1.set_status_bar_style, unless
+       it is "auto";
+    2. the theme colour set with loong_app_surface_v1.set_theme_color: the
+       ink with the higher WCAG 2.x contrast ratio against that colour;
+    3. sampling the pixels under the status bar (only for wl_shm and
+       single-pixel buffers; GPU buffers are never read back);
+    4. the system appearance (light or dark).
+
+    The lock screen, the home screen and the app switcher always follow the
+    system appearance. Changes of ink are cross-faded by the shell, so the
+    state in this protocol is applied immediately (it is not double-buffered
+    on wl_surface.commit): a client does not have to commit its surface for
+    a change to take effect, which matters for clients whose surface commits
+    are driven by a toolkit (WebKit).
+
+    The global is only advertised by loong-shell. Clients must treat it as
+    optional and keep working without it.
+
+    Warning! This protocol is private to Loong OS and may change without
+    notice. Backward compatible changes are added together with a version
+    bump of the interfaces; incompatible changes get a new interface name.
+  </description>
+
+  <interface name="loong_app_manager_v1" version="1">
+    <description summary="factory for loong_app_surface_v1 objects">
+      A global used to attach Loong OS app state to the surfaces of an app.
+    </description>
+
+    <enum name="error">
+      <entry name="already_constructed" value="0"
+        summary="the surface already has a loong_app_surface_v1 object"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroy the manager. Objects created through it are not affected.
+      </description>
+    </request>
+
+    <request name="get_app_surface">
+      <description summary="extend a surface with Loong OS app state">
+        Create a loong_app_surface_v1 object for the given surface.
+
+        The surface should be the root wl_surface of an xdg_toplevel (the
+        surface that has the xdg_surface role, not one of its subsurfaces).
+        Objects created for other surfaces are accepted, but their state is
+        ignored in version 1.
+
+        If the surface already has a loong_app_surface_v1 object, the
+        already_constructed protocol error is raised.
+      </description>
+      <arg name="id" type="new_id" interface="loong_app_surface_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+  </interface>
+
+  <interface name="loong_app_surface_v1" version="1">
+    <description summary="Loong OS app state of a surface">
+      Describes how the system UI on top of an app window should be drawn.
+
+      All state starts unset ("auto", no theme colour) and is applied as soon
+      as the request is received (see the protocol description). If the
+      wl_surface is destroyed first, this object becomes inert: its requests
+      are ignored and it should be destroyed.
+    </description>
+
+    <enum name="error">
+      <entry name="invalid_style" value="0"
+        summary="set_status_bar_style was given an unknown style"/>
+    </enum>
+
+    <enum name="status_bar_style">
+      <description summary="ink of the status bar glyphs">
+        Named after the colour of the status bar content, like
+        UIStatusBarStyle: "dark_content" means dark glyphs.
+      </description>
+      <entry name="auto" value="0"
+        summary="let the shell decide (theme colour, sampling, system appearance)"/>
+      <entry name="dark_content" value="1"
+        summary="ink (dark) glyphs, for apps whose top area is light"/>
+      <entry name="light_content" value="2"
+        summary="moon-white (light) glyphs, for apps whose top area is dark"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the object">
+        Destroy the object. The status bar style goes back to "auto" and the
+        theme colour is unset.
+      </description>
+    </request>
+
+    <request name="set_status_bar_style">
+      <description summary="choose the status bar ink">
+        Set the ink of the status bar while this app is in front. "auto" (the
+        initial value) lets the shell decide from the theme colour, from
+        sampling the window, and finally from the system appearance.
+
+        Apps whose top area always matches the system appearance do not need
+        this request. Apps that draw their own light or dark top area
+        independently of the system appearance (a browser toolbar, a photo
+        viewer, a video player) should set it.
+
+        An unknown style raises the invalid_style protocol error.
+      </description>
+      <arg name="style" type="uint" enum="status_bar_style"/>
+    </request>
+
+    <request name="set_theme_color">
+      <description summary="colour of the top area of the app">
+        Set the colour of the area of the app behind the status bar (the top
+        24 logical pixels), for example the theme colour of a web page
+        (meta name="theme-color" or the theme_color of its manifest).
+
+        The colour is 0xAARRGGBB, not premultiplied. A value with zero alpha
+        (in particular 0) unsets the theme colour. A translucent colour is
+        composited over the paper colour of the system appearance before the
+        shell compares contrast ratios.
+
+        The theme colour is only used while the status bar style is "auto".
+      </description>
+      <arg name="argb" type="uint" summary="0xAARRGGBB, zero alpha unsets"/>
+    </request>
+  </interface>
+</protocol>

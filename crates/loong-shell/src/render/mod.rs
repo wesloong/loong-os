@@ -43,6 +43,7 @@ use crate::shell::{
     geometry::{RectF, WindowPlacement},
     ink::DabKind,
     layout::{ICON_SHADOW_SPREAD, LABEL_HALO},
+    status::StatusInk,
     switcher::{self, SwitcherLayout},
 };
 
@@ -231,8 +232,11 @@ impl Assets {
             let card_label = self.card_label(app, i);
             self.put(TexKey::CardLabel(i), card_label);
         }
-        let status_icons = self.status_icons();
-        self.put(TexKey::StatusIcons, status_icons);
+        // 状态栏两种墨都画好：前台应用与系统外观不一致时换墨、交叉淡化（见 shell::status）。
+        for ink in [StatusInk::Dark, StatusInk::Light] {
+            let status_icons = self.status_icons(ink);
+            self.put(TexKey::StatusIcons(ink), status_icons);
+        }
         self.backdrop = backdrop;
         self.refresh_clock(shell);
     }
@@ -278,22 +282,24 @@ impl Assets {
         pm
     }
 
-    fn status_style(&self, size: f32) -> TextStyle {
+    /// 状态栏文字：浓墨用宣纸调色板的浓墨，月白用夜墨调色板的浓墨（与系统外观无关）。
+    fn status_style(&self, size: f32, ink: StatusInk) -> TextStyle {
         TextStyle {
             family: FontRole::Display,
             size: size * self.scale as f32,
             weight: 500,
-            color: self.ink(Ink::Nong),
+            color: ink.palette_theme().palette().ink(Ink::Nong),
             shadow: false,
         }
     }
 
     /// 状态栏右侧：毛笔画的 Wi‑Fi、电量百分比（文楷）、毛笔画的电池。
-    fn status_icons(&mut self) -> Pixmap {
+    fn status_icons(&mut self, ink: StatusInk) -> Pixmap {
         let s = self.scale as f32;
-        let percent = self.text.render("100%", &self.status_style(14.0));
-        let wifi = ink::wifi(self.theme, (16.0 * s).round() as u32, 3);
-        let battery = ink::battery(self.theme, (13.0 * s).round() as u32, 1.0, false);
+        let percent = self.text.render("100%", &self.status_style(14.0, ink));
+        let theme = ink.palette_theme();
+        let wifi = ink::wifi(theme, (16.0 * s).round() as u32, 3);
+        let battery = ink::battery(theme, (13.0 * s).round() as u32, 1.0, false);
         let gap = (6.0 * s).round() as i32;
         let w = wifi.width() as i32 + gap + percent.width() as i32 + gap + battery.width() as i32;
         let h = percent.height().max(wifi.height()).max(battery.height()) as i32;
@@ -313,9 +319,11 @@ impl Assets {
         }
         self.clock_text = shell.clock_text.clone();
         self.date_text = shell.date_text.clone();
-        let style = self.status_style(15.0);
-        let pm = self.text.render(&self.clock_text, &style);
-        self.put(TexKey::StatusTime, pm);
+        for ink in [StatusInk::Dark, StatusInk::Light] {
+            let style = self.status_style(15.0, ink);
+            let pm = self.text.render(&self.clock_text, &style);
+            self.put(TexKey::StatusTime(ink), pm);
+        }
         let sheet = self.lock_sheet();
         self.put(TexKey::LockSheet, sheet);
     }

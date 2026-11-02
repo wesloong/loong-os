@@ -8,7 +8,11 @@
 #   - 平台只有 Wayland，加上 EGL 自带的 GBM（drm）与 surfaceless：没有 GLX 与 X11 EGL 平台，不依赖 libX11/xcb
 #   - 接口只有 EGL + GLES 2/3：没有 GLES1、桌面 OpenGL、Vulkan、OpenCL、VA-API
 #   - driconf 默认配置编译进库内（-Dxmlconfig=disabled），不依赖 expat、没有 /usr/share/drirc.d
-#   - 编译优化用 abuild 默认的 -Os（发行版是 -O2 -g1），实测对比见 docs/技术规划.md 的 M6
+#   - 编译优化用 abuild 默认的 -Os（发行版是 -O2 -g1）。实测（x86_64）：-O2 的 libgallium 大 21%
+#     （16.7 vs 13.7 MB），softpipe 只快约 15%（无屏幕解锁动画平均每帧 1.7 s vs 2.0 s；llvmpipe 是 22 ms），
+#     软件渲染无论哪种都只够验证功能，所以选体积。freedreno 的 CPU 开销（状态提交、着色器编译）要上真机再量。
+#     详见 docs/技术规划.md 第六节“M6：自编 Mesa”
+# 构建耗时（4 核开发沙箱，-j2）：x86_64 约 7 分钟；aarch64 经 qemu-user 约 1 小时（见 docs/devices/xiaomi-nabu.md）
 #
 # 子包（so: 名由 abuild 自动生成，依赖这些 so: 名的包——wpewebkit、gst-plugins-base 等——由它们满足）：
 #   mesa-loong           libgallium-<版本>.so（全部驱动）、gbm/dri_gbm.so      对应发行版 mesa（+ mesa-dri-gallium）

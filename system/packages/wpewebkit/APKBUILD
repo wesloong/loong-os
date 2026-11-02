@@ -1,13 +1,20 @@
 # Loong OS: WPE WebKit（使用 2.54 起默认的 WPEPlatform API，不再依赖 libwpe/Cog）
-# 构建: tools/dev-chroot.sh run sh -c 'cd /src/system/packages/wpewebkit && abuild -F -r'
+# 构建: tools/build-pkg.sh wpewebkit（中断后用 tools/resume-wpewebkit.sh 继续）
+#
+# 体积（M6 瘦身，取舍见 ADR 0003）：全局 -Os，JS 引擎、WebCore 的 DOM/样式/布局、Skia 等热点用 -O2；
+# 不生成 .eh_frame；关掉 v1 用不到的功能（摄像头/麦克风、WebRTC、WebCodecs、PDF.js、XSLT、AVIF/JPEG XL、
+# GPU 进程、远程 Web Inspector 等），去掉 libavif（连带 aom、dav1d、libyuv）、libjxl、libxslt 依赖。
 pkgname=wpewebkit
 pkgver=2.54.2
-pkgrel=0
+pkgrel=1
 pkgdesc="WPE WebKit web engine for embedded devices (WPEPlatform API)"
 url="https://wpewebkit.org/"
 arch="aarch64 x86_64"
 license="LGPL-2.0-or-later AND BSD-2-Clause"
 depends="bubblewrap xdg-dbus-proxy"
+# libavif-dev、libjxl-dev、libxslt-dev 不再需要（USE_AVIF、USE_JPEGXL、ENABLE_XSLT 已关闭）。
+# gst-plugins-bad-dev 仍然需要：开启视频时 FindGStreamer 必须找到 gstreamer-mpegts 的头文件
+# （运行时并不链接 libgstmpegts）。
 makedepends="
 	bison
 	clang
@@ -34,12 +41,10 @@ makedepends="
 	harfbuzz-dev
 	icu-dev
 	lcms2-dev
-	libavif-dev
 	libdrm-dev
 	libepoxy-dev
 	libgcrypt-dev
 	libjpeg-turbo-dev
-	libjxl-dev
 	libpng-dev
 	libseccomp-dev
 	libsoup3-dev
@@ -47,7 +52,6 @@ makedepends="
 	libwebp-dev
 	libxkbcommon-dev
 	libxml2-dev
-	libxslt-dev
 	mesa-dev
 	sqlite-dev
 	wayland-dev
@@ -56,28 +60,80 @@ makedepends="
 	zlib-dev
 	"
 subpackages="$pkgname-dev $pkgname-minibrowser"
-source="https://wpewebkit.org/releases/wpewebkit-$pkgver.tar.xz"
+source="https://wpewebkit.org/releases/wpewebkit-$pkgver.tar.xz
+	loong-opt-targets.cmake
+	"
 # 上游测试需要完整的测试基础设施（WebKitTestRunner 等），打包时不运行。
 options="!check"
+
+# 开发构建把它改成 ON（tools/build-pkg.sh 会清空环境变量，所以直接改这里）：
+# 打开远程 Web Inspector（运行时用 WEBKIT_INSPECTOR_HTTP_SERVER=127.0.0.1:9222 等启用）、
+# Inspector 的 JS 采样分析器与 CPU/内存时间线（SAMPLING_PROFILER、RESOURCE_USAGE），并安装 inspector.gresource（约 1.4MB）。
+# 发布构建保持 OFF：这些只服务于调试，还会给 GC 带来额外的内存统计开销。
+_devtools=OFF
+
+# 热点目标：用 -O2 而不是全局的 -Os（见 loong-opt-targets.cmake；子目标继承父目标的选项）。
+# JavaScriptCore（含子目标 JavaScriptCoreJIT）：JS 引擎的 C++ 部分（解析、字节码生成、GC、运行时慢路径、
+#   正则、JIT 调用的 operations、各级 JIT 编译器本身）；WTF、bmalloc（含 libpas 分配器）：几乎所有代码都在调用；
+# Skia：CPU 光栅化与 GPU 绘制的热循环；
+# WebCoreStyle（css、style、layout、rendering）、WebCoreDOMAndRendering（dom、html 解析、editing、page…）、
+#   WebCoreJSBindings（JS ↔ DOM 绑定）：系统界面和所有应用都是网页，样式计算与布局直接影响动画与滚动。
+#   只给 JSC 等 -O2 时，DOM/innerHTML+布局类测试比 r0 慢 16–18%；加上这三个后只慢 3–7%，库大 6.6MB（实测见 ADR 0003）。
+# 其余（WebCore 的 platform/Modules/loader 等、WebKit 的 IPC 与 UI 进程、ANGLE、PAL）用 -Os。
+_o2_targets="bmalloc;WTF;JavaScriptCore;Skia;WebCoreStyle;WebCoreDOMAndRendering;WebCoreJSBindings"
 
 build() {
 	export CC=clang
 	export CXX=clang++
-	# 平板上 JSC 性能更重要，用 -O2 而不是 Alpine 默认的 -Os。
+	# 优化级别：CFLAGS 里保留 Alpine 默认的 -Os。注意 CMAKE_BUILD_TYPE=Release 会在 CFLAGS 之后追加 CMake 的
+	# 默认 "-O3 -DNDEBUG"（r0 名义上是 -O2，实际是 -O3），所以把 CMAKE_*_FLAGS_RELEASE 改成只有 -DNDEBUG。
+	# 热点目标的 -O2 由 loong-opt-targets.cmake 加在目标上。
+	# -fno-asynchronous-unwind-tables / -fno-unwind-tables：不生成 .eh_frame（r0 中 .eh_frame + .eh_frame_hdr 约 13MB）。
+	# WebKit 全部用 -fno-exceptions 编译，库里没有 _Unwind_* 调用（不做 DWARF 栈回溯，USE_LIBBACKTRACE 也关了），
+	# 没有任何 C++ 异常需要穿过 WebKit 的栈帧；代价只是 gdb / perf 在 WebKit 帧里回溯不如以前可靠。
+	# WebKit 自己会把 -fasynchronous-unwind-tables 前置到 CMAKE_CXX_FLAGS，我们的标志排在后面，以我们的为准。
 	# fortify 与 WebKit 的部分代码不兼容（Alpine webkit2gtk 也关闭了它）。
-	export CFLAGS="${CFLAGS/-Os/-O2} -U_FORTIFY_SOURCE"
-	export CXXFLAGS="${CXXFLAGS/-Os/-O2} -U_FORTIFY_SOURCE"
+	local _flags="-U_FORTIFY_SOURCE -fno-asynchronous-unwind-tables -fno-unwind-tables"
+	export CFLAGS="$CFLAGS $_flags"
+	export CXXFLAGS="$CXXFLAGS $_flags"
 	# glib-dev 依赖 gettext-dev，它的 libintl.h 会把 bindtextdomain 等重定向到 GNU libintl，
 	# 必须显式链接 libintl（否则最后链接 libWPEWebKit 时报 libintl_bindtextdomain 未定义）。
-	export LDFLAGS="$LDFLAGS -fuse-ld=lld -lintl"
+	# WebKit 已经自带 -ffunction-sections -fdata-sections 与 --gc-sections（链接器支持时自动加）。
+	# --icf=safe：合并内容相同、且地址没有被拿去比较的函数（依据 clang 默认生成的 .llvm_addrsig）。
+	#   不用 --icf=all：JSC 会拿函数指针当身份标识选快路径（方法表里的函数与 JSObject 默认实现比较、
+	#   宿主函数与 callHostFunctionAsConstructor 比较等），不同函数被合并成同一地址后可能走错路径。
+	# -O2（lld）：可合并字符串常量再做尾部合并，.rodata 更小。
+	export LDFLAGS="$LDFLAGS -fuse-ld=lld -lintl -Wl,--icf=safe -Wl,-O2"
 
 	local launcher=""
 	command -v ccache >/dev/null && launcher="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
 
+	# 功能开关（v1 需要：PWA、系统浏览器、GStreamer 音视频、WebGL 与 GPU 合成、JS bridge（脚本消息处理器）、
+	# text-input-v3 输入法、暗色模式）。被关掉的：
+	#   MEDIA_STREAM / MEDIA_RECORDER / WEB_RTC：摄像头不纳入 v1（技术规划），浏览器也一律拒绝权限请求
+	#   WEB_CODECS：底层编解码 API，<video>/<audio>/MSE 播放不依赖它
+	#   PDFJS：内置 PDF 阅读器（约 3.7MB 的 JS 资源）；PDF 现在按“不能显示的内容”处理（浏览器提示暂不支持下载）
+	#   XSLT：网页几乎不用，主流浏览器也在移除；去掉 libxslt 依赖
+	#   USE_AVIF / USE_JPEGXL：网站会用 <picture>/Accept 回退到 WebP/JPEG；去掉 libavif（连带 aom、dav1d、libyuv）
+	#     与 libjxl（连带 libhwy）
+	#   GPU_PROCESS：WPE 上 WebGL、媒体、DOM 绘制默认都不走 GPU 进程（运行时开关默认关闭），WebGL 在 Web 进程里
+	#     经 ANGLE 渲染；关掉后不再编译 GPU 进程及其 IPC 代码，也少一个 WPEGPUProcess
+	#   MHTML、MEMORY_SAMPLER：保存网页为 MHTML、按环境变量周期性记录内存，都用不到
+	#   WEBXR、ENCRYPTED_MEDIA：默认就是关的（实验功能 / 需要 Thunder），这里写明
+	#   JAVASCRIPT_SHELL：jsc 命令行本来就不安装，不编译以节省时间
+	#   REMOTE_INSPECTOR、SAMPLING_PROFILER、RESOURCE_USAGE：跟随 _devtools
+	# 保留：VIDEO、MEDIA_SOURCE（流媒体网站）、WEB_AUDIO（游戏与音频类应用）、USE_GSTREAMER_GL、WEBGL、
+	#   WEBASSEMBLY 与 FTL JIT（性能）、NOTIFICATIONS、MEDIA_SESSION（以后做系统媒体控制）、CONTENT_EXTENSIONS
+	#   （以后做广告拦截）、USE_LCMS（带 ICC 配置的照片颜色正确）、WOFF2（Alpine 的 FreeType 自带解码）、
+	#   DARK_MODE_CSS、TOUCH_EVENTS、BUBBLEWRAP_SANDBOX。
 	# shellcheck disable=SC2086
 	cmake -B build -G Ninja $launcher \
 		-DPORT=WPE \
 		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_C_FLAGS_RELEASE=-DNDEBUG \
+		-DCMAKE_CXX_FLAGS_RELEASE=-DNDEBUG \
+		-DCMAKE_PROJECT_INCLUDE="$srcdir/loong-opt-targets.cmake" \
+		-DLOONG_O2_TARGETS="$_o2_targets" \
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DCMAKE_INSTALL_LIBDIR=lib \
 		-DCMAKE_INSTALL_LIBEXECDIR=lib \
@@ -94,11 +150,27 @@ build() {
 		-DENABLE_SPELLCHECK=OFF \
 		-DENABLE_GAMEPAD=OFF \
 		-DENABLE_SPEECH_SYNTHESIS=OFF \
-		-DENABLE_SAMPLING_PROFILER=OFF \
+		-DENABLE_MEDIA_STREAM=OFF \
+		-DENABLE_MEDIA_RECORDER=OFF \
+		-DENABLE_WEB_RTC=OFF \
+		-DENABLE_WEB_CODECS=OFF \
+		-DENABLE_PDFJS=OFF \
+		-DENABLE_XSLT=OFF \
+		-DENABLE_GPU_PROCESS=OFF \
+		-DENABLE_MHTML=OFF \
+		-DENABLE_MEMORY_SAMPLER=OFF \
+		-DENABLE_WEBXR=OFF \
+		-DENABLE_ENCRYPTED_MEDIA=OFF \
+		-DENABLE_JAVASCRIPT_SHELL=OFF \
+		-DENABLE_REMOTE_INSPECTOR=$_devtools \
+		-DENABLE_SAMPLING_PROFILER=$_devtools \
+		-DENABLE_RESOURCE_USAGE=$_devtools \
 		-DENABLE_BUBBLEWRAP_SANDBOX=ON \
 		-DENABLE_MINIBROWSER=ON \
 		-DENABLE_API_TESTS=OFF \
 		-DENABLE_LAYOUT_TESTS=OFF \
+		-DUSE_AVIF=OFF \
+		-DUSE_JPEGXL=OFF \
 		-DUSE_ATK=OFF \
 		-DUSE_FLITE=OFF \
 		-DUSE_LIBBACKTRACE=OFF \
@@ -111,6 +183,9 @@ build() {
 
 package() {
 	DESTDIR="$pkgdir" cmake --install build
+	# inspector.gresource 是 Web Inspector 前端，只有远程 Inspector 用得到（WPE 没有本地 Inspector 窗口）。
+	[ "$_devtools" = ON ] || rm -f "$pkgdir"/usr/share/wpe-webkit-2.0/inspector.gresource
+	rmdir "$pkgdir"/usr/share/wpe-webkit-2.0 2>/dev/null || true
 }
 
 minibrowser() {
@@ -124,4 +199,5 @@ minibrowser() {
 
 sha512sums="
 9af0718a7306c8051a9751802c434c8d66441abc515d839b53b736752f7a9e711f24188f61933ec90bbb486c5fad0f73a35f8c67669c626c4cff6d7f87165cd1  wpewebkit-2.54.2.tar.xz
+597a60c628456111fee16300a7988dd3178099b87d67f36696f465ba24d453282991ddb6657f9d95c7edabd20d3cb29eb204500fa753802ae5aa5a4887683e9f  loong-opt-targets.cmake
 "

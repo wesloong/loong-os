@@ -41,6 +41,7 @@ BOOT_BACKEND=uefi-sdboot
 ROOT_FS=erofs
 ROOT_FS_OPTS=${ROOT_FS_OPTS:-}  # 也可以在环境变量里指定（例如比较压缩参数时）
 KERNEL_MODULES=""
+FIRMWARE=""
 SERIAL_TTY=ttyS0
 EXTRA_REPOS=""
 EXTRA_KEYS=""
@@ -171,16 +172,16 @@ if [ -d "$LOCAL_REPO/packages/$ARCH" ]; then
 	# （wpewebkit 包没有声明这个依赖，开发 chroot 里碰巧有，所以无屏幕测试发现不了）
 	[ -n "${WITH_WPE:-}" ] && PACKAGES="$PACKAGES wpewebkit shared-mime-info"
 	[ -n "${WITH_WPE:-}" ] && [ "${WITH_DEVTOOLS:-0}" = 1 ] && PACKAGES="$PACKAGES wpewebkit-minibrowser"
+	# 中英文 ICU 数据（7 MiB；ICU 只有 WebKit 用）：tools/build-pkg.sh icu-data-loong。没有它时 icu-libs
+	# 带上 Alpine 的 icu-data-en（只有英文：Intl 的中文日期格式、拼音排序、中文分词都不可用）
+	[ -n "${WITH_WPE:-}" ] && ls "$LOCAL_REPO/packages/$ARCH"/icu-data-loong-*.apk >/dev/null 2>&1 && \
+		PACKAGES="$PACKAGES icu-data-loong"
 	# 思源黑体子集（GB2312 + 通用规范汉字表，可变字重 400–700）：tools/build-pkg.sh font-noto-sans-sc-loong
 	ls "$LOCAL_REPO/packages/$ARCH"/font-noto-sans-sc-loong-*.apk >/dev/null 2>&1 && \
 		CJK_FONT=font-noto-sans-sc-loong
 	# Inter 可变字体，族名改回 “Inter”（620 KB）：tools/build-pkg.sh font-inter-loong
 	ls "$LOCAL_REPO/packages/$ARCH"/font-inter-loong-*.apk >/dev/null 2>&1 && \
 		LATIN_FONT=font-inter-loong
-	# 中英文 ICU 数据（7 MiB）：tools/build-pkg.sh icu-data-loong。没有它时 icu-libs 带上 Alpine 的
-	# icu-data-en（只有英文：WebKit 里 Intl 的中文日期格式、拼音排序、中文分词都不可用）
-	ls "$LOCAL_REPO/packages/$ARCH"/icu-data-loong-*.apk >/dev/null 2>&1 && \
-		PACKAGES="$PACKAGES icu-data-loong"
 	# 「墨韵」展示字体（霞鹜文楷屏幕版）：tools/build-pkg.sh font-lxgw-wenkai-screen
 	ls "$LOCAL_REPO/packages/$ARCH"/font-lxgw-wenkai-screen-*.apk >/dev/null 2>&1 && \
 		PACKAGES="$PACKAGES font-lxgw-wenkai-screen"
@@ -334,26 +335,33 @@ rm -rf "$ROOT/boot"/* "$ROOT/var/cache/apk"/*
 	find usr/share/fonts/inter -type f ! -name 'InterVariable.ttf' -delete 2>/dev/null || true
 )
 
-# 内核模块白名单（机型的 KERNEL_MODULES，空 = 全部保留）：相对 lib/modules/<版本>/kernel/ 的路径模式，
-# “!模式”表示排除，后面的模式覆盖前面的（例如 "* !drivers/media/rc/*"）。保留匹配的模块、它们的依赖
-# 和 initramfs 要用的模块，其余删掉，再用 depmod 重新生成索引。
+# 按路径模式筛选（KERNEL_MODULES、FIRMWARE 共用）：标准输入每行一个路径，输出其中要保留的。
+# 模式是 shell 的 case 模式（* 也匹配 /），“!模式”表示排除，后面的模式覆盖前面的。
+# 参数：去掉的路径前缀（模式相对于它）、模式列表
+match_paths() {
+	set -f
+	while read -r p; do
+		want=0
+		for pat in $2; do
+			case "$pat" in
+				!*) case "${p#"$1"}" in ${pat#!}) want=0 ;; esac ;;
+				*) case "${p#"$1"}" in $pat) want=1 ;; esac ;;
+			esac
+		done
+		if [ "$want" = 1 ]; then echo "$p"; fi
+	done
+	set +f
+}
+
+# 内核模块白名单（机型的 KERNEL_MODULES，空 = 全部保留）：相对 lib/modules/<版本>/kernel/ 的路径模式
+# （例如 "* !drivers/media/rc/*"）。保留匹配的模块、它们的依赖和 initramfs 要用的模块，其余删掉，
+# 再用 depmod 重新生成索引。
 prune_modules() {
 	moddir="$ROOT/lib/modules/$KVER"
 	keep="$WORK/modules.keep"
 	all="$WORK/modules.all"
 	(cd "$moddir" && find kernel -name '*.ko*' | sort) > "$all"
-	set -f
-	while read -r m; do
-		want=0
-		for pat in $KERNEL_MODULES; do
-			case "$pat" in
-				!*) case "${m#kernel/}" in ${pat#!}) want=0 ;; esac ;;
-				*) case "${m#kernel/}" in $pat) want=1 ;; esac ;;
-			esac
-		done
-		if [ "$want" = 1 ]; then echo "$m"; fi
-	done < "$all" > "$keep"
-	set +f
+	match_paths kernel/ "$KERNEL_MODULES" < "$all" > "$keep"
 	for m in $INITRAMFS_MODULES; do
 		path=$(modinfo -b "$ROOT" -k "$KVER" -F filename "$m" 2>/dev/null | head -1) || true
 		case "$path" in "$moddir"/*) echo "${path#"$moddir"/}" >> "$keep" ;; esac
@@ -377,6 +385,22 @@ prune_modules() {
 	log "内核模块：保留 $(wc -l < "$keep")/$(wc -l < "$all") 个，$before KiB → $(du -sk "$moddir" | cut -f1) KiB"
 }
 [ -z "$KERNEL_MODULES" ] || prune_modules
+
+# 固件（机型的 FIRMWARE，空 = 全部保留）：相对 /lib/firmware 的路径模式，写法同上。linux-firmware 的
+# 子包按厂商打包（例如 linux-firmware-qcom 是所有高通芯片的固件，160 MB），机型只需要其中一小部分。
+prune_firmware() {
+	fwdir="$ROOT/lib/firmware"
+	all="$WORK/firmware.all"
+	(cd "$fwdir" && find . \( -type f -o -type l \) | sed 's|^\./||' | sort) > "$all"
+	match_paths "" "$FIRMWARE" < "$all" > "$WORK/firmware.keep"
+	before=$(du -sk "$fwdir" | cut -f1)
+	grep -vxF -f "$WORK/firmware.keep" "$all" | (cd "$fwdir" && xargs -r rm -f)
+	# 指向已删文件的链接、空目录
+	find "$fwdir" -type l ! -exec test -e {} \; -delete
+	find "$fwdir" -mindepth 1 -type d -empty -delete
+	log "固件：保留 $(find "$fwdir" \( -type f -o -type l \) | wc -l)/$(wc -l < "$all") 个文件，$before KiB → $(du -sk "$fwdir" | cut -f1) KiB"
+}
+[ -z "$FIRMWARE" ] || [ ! -d "$ROOT/lib/firmware" ] || prune_firmware
 
 # /var 的初始内容：首次启动时由 initramfs 复制到 data 分区
 mkdir -p "$ROOT/usr/share/loong"

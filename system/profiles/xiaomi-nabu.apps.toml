@@ -1,0 +1,6 @@
+# 主屏图标对应的启动命令（安装到 /usr/share/loong/apps.toml；与 qemu-x86_64.apps.toml 相同）。
+# 只有 WITH_WPE=1 的镜像才装 Web 运行时；aarch64 的 WebKit 与 webrt 是交叉编译的（docs/devices/xiaomi-nabu.md）。
+# 系统应用（设置等）带 --bridge=system，可以通过 window.loong 调用 loong-sysd（docs/api/loong-js-bridge.md）。
+[commands]
+browser = "loong-browser"
+settings = "loong-webapp --id settings --name 设置 --bridge=system file:///usr/share/loong/web/apps/settings/index.html"

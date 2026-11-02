@@ -1,0 +1,37 @@
+# Loong OS：在 x86_64 开发 chroot 里交叉编译 aarch64 Alpine（musl）程序的 meson 配置，做法同 aarch64-alpine.cmake。
+#
+#   meson setup --cross-file <sysroot.ini> --cross-file tools/cross/aarch64-alpine.meson <构建目录> <源码目录>
+#
+# 前一个文件只定义 sysroot 的路径（meson 的配置文件不能读环境变量）：
+#   [constants]
+#   sysroot = '/…/build/cross/webrt-aarch64/sysroot'
+# tools/cross-build-webrt.sh 会自动生成它。sysroot 的准备方法见 tools/cross-build-pkg.sh。
+#
+# 构建时运行的程序（wayland-scanner、glib-compile-resources 等）用 native: true 在宿主机上找；
+# 测试程序经 qemu-user 运行（exe_wrapper），meson test 可以直接用。
+
+[constants]
+triple = 'aarch64-alpine-linux-musl'
+target_args = ['--target=' + triple, '--sysroot=' + sysroot]
+
+[binaries]
+c = ['clang'] + target_args
+cpp = ['clang++'] + target_args
+c_ld = 'lld'
+cpp_ld = 'lld'
+ar = triple + '-ar'
+strip = triple + '-strip'
+objcopy = triple + '-objcopy'
+pkg-config = 'pkg-config'
+exe_wrapper = ['qemu-aarch64', '-L', sysroot]
+
+[properties]
+# 设置后 meson 调用 pkg-config 时带上 PKG_CONFIG_SYSROOT_DIR
+sys_root = sysroot
+pkg_config_libdir = [sysroot + '/usr/lib/pkgconfig', sysroot + '/usr/share/pkgconfig']
+
+[host_machine]
+system = 'linux'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'

@@ -44,9 +44,10 @@ SUPER_PART=""
 DTB=""
 APPEND_DTB=0
 SESSION_ENV=""
-MESA_FLAVOR=${MESA_FLAVOR:-loong}
 # shellcheck disable=SC1090
 . "$PROFILE_CONF"
+# 图形栈：环境变量 > 机型配置（QEMU 默认 distro，真机默认 loong）> loong
+MESA_FLAVOR=${MESA_FLAVOR:-loong}
 
 OUT="$SRC/build/image/$PROFILE"
 ROOT="$OUT/rootfs"

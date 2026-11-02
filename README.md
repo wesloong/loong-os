@@ -131,10 +131,10 @@ sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build -p loong-shell && \
 #    keyboard.json（屏幕键盘；用真实 WebKit 客户端打字见 docs/api/loong-ime.md 第 8.1 节）
 
 # 5. 构建 QEMU 系统镜像并启动（在 chroot 内运行 QEMU，TCG 软件模拟，较慢）
-#    镜像默认用自编的 mesa-loong（不依赖 LLVM），先打包一次（4 核约 7 分钟）。QEMU 里它用 softpipe 软件渲染，
-#    比 llvmpipe 慢数倍（解锁约 50 秒，设置约 6 分钟才显示）；交互调试时可在 mkimage 前加 MESA_FLAVOR=distro
-#    换回 Alpine 的 mesa（llvmpipe；根镜像会大约 110 MiB）
-sudo JOBS=2 tools/build-pkg.sh mesa-loong
+#    QEMU 镜像默认用 Alpine 的 mesa（llvmpipe，快）；真机镜像默认用自编的 mesa-loong（不依赖 LLVM，根镜像小约 110 MiB）。
+#    要在 QEMU 里验证 mesa-loong：先打包一次（4 核约 7 分钟），再在 mkimage 前加 MESA_FLAVOR=loong
+#    （QEMU 里它用 softpipe 软件渲染，比 llvmpipe 慢 5–8 倍：解锁约 50 秒，设置约 6 分钟才显示）
+#    sudo JOBS=2 tools/build-pkg.sh mesa-loong
 sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build --release -p loong-shell -p loong-sysd -p loong-update && \
   system/mkimage/mkimage.sh qemu-x86_64 && \
   python3 tools/qemu.py start build/image/qemu-x86_64/loong-qemu-x86_64.img && \

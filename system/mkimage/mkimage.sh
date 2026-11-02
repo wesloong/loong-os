@@ -186,6 +186,13 @@ if [ -d "$LOCAL_REPO/packages/$ARCH" ]; then
 	# shared-mime-info：WebKit 靠 GIO 按扩展名判断 file:// 的类型；缺了它 .html 会被当成纯文本显示源码
 	# （wpewebkit 包没有声明这个依赖，开发 chroot 里碰巧有，所以无屏幕测试发现不了）
 	[ -n "${WITH_WPE:-}" ] && PACKAGES="$PACKAGES wpewebkit shared-mime-info"
+	# 音视频：WebKit 的 <video>/<audio> 要 autoaudiosink 等 -good 插件（缺了网页进程崩溃）。最小插件集
+	# gst-plugins-loong（tools/build-pkg.sh gst-plugins-loong），不用 Alpine 的 gst-plugins-good 全家桶
+	if [ -n "${WITH_WPE:-}" ]; then
+		ls "$LOCAL_REPO/packages/$ARCH"/gst-plugins-loong-*.apk >/dev/null 2>&1 ||
+			die "缺少 $ARCH 的 gst-plugins-loong 包：先运行 tools/build-pkg.sh gst-plugins-loong"
+		PACKAGES="$PACKAGES gst-plugins-loong"
+	fi
 	[ -n "${WITH_WPE:-}" ] && [ "${WITH_DEVTOOLS:-0}" = 1 ] && PACKAGES="$PACKAGES wpewebkit-minibrowser"
 	# 中英文 ICU 数据（7 MiB；ICU 只有 WebKit 用）：tools/build-pkg.sh icu-data-loong。没有它时 icu-libs
 	# 带上 Alpine 的 icu-data-en（只有英文：Intl 的中文日期格式、拼音排序、中文分词都不可用）

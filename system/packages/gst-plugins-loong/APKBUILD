@@ -1,0 +1,127 @@
+# Loong OS: WebKit 播放音视频所需的最小 GStreamer 插件集
+# 构建: tools/build-pkg.sh gst-plugins-loong（aarch64：ARCH=aarch64 JOBS=2 tools/build-pkg.sh gst-plugins-loong）
+#
+# 背景：WebKit 只依赖 gst-plugins-base 的库，镜像里因此只有 -base 的插件；而 WebKit 建音频输出时要
+# autoaudiosink（-good 的 autodetect），拿不到就 RELEASE_ASSERT，任何 <video>/<audio> 都让网页进程崩溃。
+# Alpine 的 gst-plugins-good 是全家桶（连带 X11、PulseAudio、libraw1394、cairo、gdk-pixbuf、lame、shout、
+# wavpack……），所以从源码编一个子集：--auto-features=disabled（abuild-meson 已带 --auto-features=auto，
+# 后面的覆盖前面的），只打开下面这些。检查页与 QEMU 验证见 webrt/tests/media/。
+#
+# gst-plugins-good（与 Alpine 的 gstreamer 同版本）：
+#   autodetect    autoaudiosink：WebKit 的音频输出（媒体元素、Web Audio 都经它）。依次试 -base 的 alsasink，
+#                 都打不开（例如 QEMU 没有声卡）时退回 fakesink，照常按时钟播放
+#   interleave    deinterleave：Web Audio 的 decodeAudioData 与 createMediaElementSource 必需（缺了同样崩溃）
+#   audiofx       scaletempo：WebKit 默认把它设为 playbin 的音频滤镜，倍速播放时保持音调（1.0 倍时直通）
+#   isomp4        qtdemux：MP4/MOV/M4A，MSE 的 MP4
+#   matroska      matroskademux：WebM/MKV，MSE 的 WebM
+#   audioparsers  aacparse、mpegaudioparse、flacparse 等：MP3 文件、MSE 的 AAC/MP3 分帧
+#   wavparse      WAV（网页提示音常用）
+#   id3demux、apetag  MP3 的 ID3v2/APE 标签（带标签的 MP3 先被识别成 application/x-id3，没有它放不了）
+#   icydemux      网络电台：WebKit 请求媒体时总带 Icy-MetaData: 1，Shoutcast/Icecast 服务器会插入元数据
+#   vpx           vp8dec/vp9dec（libvpx）：VP8/VP9 软解（QEMU 与没有硬解时）
+#   mpg123        MP3 软解（libmpg123，362 KiB；MP3 专利已过期）
+#   v4l2          V4L2 有状态（stateful）编解码器：nabu 的 Venus 硬解 H.264/HEVC/VP9（v4l2h264dec 等，
+#                 加载插件时探测 /dev/video*，有哪些解码器就注册哪些）。不用 libv4l2 与 libgudev
+# gst-plugins-bad（只编下面两个插件及它们用到的 libgstcodecparsers，其余库不编译）：
+#   videoparsers  h264parse、h265parse、vp9parse 等：v4l2h264dec/v4l2h265dec 只收 byte-stream，MP4 里是 avc，
+#                 要 h264parse 转换（没有它 WebKit 也不报告 H.264 可播放）；MSE 用 vp9parse 补全编码参数
+#   opus          opusparse：MSE 播放 Opus 必需（WebKit 在 MSE 下要求 Opus 有解析器，否则不报告支持）
+# 不需要：deinterlace（playbin 默认不去隔行）、ximagesink/autovideosink 的视频输出（WebKit 用自己的视频 sink）。
+# Opus、Vorbis、Theora、Ogg、音频转换/重采样、alsasink 在 gst-plugins-base 里。支持的格式见 docs/媒体格式.md。
+#
+# 与 Alpine 的 gst-plugins-good、gst-plugins-bad 互斥：插件文件同名、同路径（/usr/lib/gstreamer-1.0），
+# 同时装两份注册表里会有重名的插件。开发 chroot 里装的是完整的发行版插件（构建 wpewebkit 要 -bad 的头文件），
+# 不装这个包。互斥写在 package() 里：abuild 把 APKBUILD 顶层的 depends 也当作构建依赖，写在那里
+# abuild -r 会去卸载 chroot 里的 gst-plugins-good/bad（同 mesa-loong 的说明）。
+#
+# 版本：pkgver 跟 Alpine 的 gstreamer（apk info gstreamer）。GStreamer 1.x 的插件在更新的核心上也能加载，
+# Alpine 升级 gstreamer 后仍可用，但应同步重编。
+pkgname=gst-plugins-loong
+pkgver=1.28.3
+pkgrel=0
+pkgdesc="Minimal GStreamer plugin set for Loong OS media playback (autodetect, demuxers, parsers, VP8/VP9, MP3, V4L2 decoders)"
+url="https://gstreamer.freedesktop.org"
+arch="aarch64 x86_64"
+license="LGPL-2.1-or-later"
+depends=""
+makedepends="
+	chrpath
+	gst-plugins-base-dev
+	gstreamer-dev
+	libvpx-dev
+	linux-headers
+	meson
+	mpg123-dev
+	opus-dev
+	zlib-dev
+	"
+source="https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-$pkgver.tar.xz
+	https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-$pkgver.tar.xz
+	"
+builddir="$srcdir"
+# 上游测试要整套插件（-Dtests），打包时不运行。
+options="!check"
+
+_good="$srcdir/gst-plugins-good-$pkgver"
+_bad="$srcdir/gst-plugins-bad-$pkgver"
+
+build() {
+	# --auto-features=disabled：没写出来的插件、orc、nls、文档、测试、示例一律不编
+	cd "$_good"
+	abuild-meson \
+		--auto-features=disabled \
+		-Dpackage-origin="Loong OS" \
+		-Dautodetect=enabled \
+		-Dinterleave=enabled \
+		-Daudiofx=enabled \
+		-Disomp4=enabled \
+		-Dmatroska=enabled \
+		-Daudioparsers=enabled \
+		-Dwavparse=enabled \
+		-Did3demux=enabled \
+		-Dapetag=enabled \
+		-Dicydemux=enabled \
+		-Dvpx=enabled \
+		-Dmpg123=enabled \
+		-Dv4l2=enabled \
+		-Dv4l2-probe=true \
+		-Dv4l2-libv4l2=disabled \
+		-Dv4l2-gudev=disabled \
+		. output
+	meson compile -C output -j "${JOBS:-2}"
+
+	# -bad：只编译两个插件目标（连带 libgstcodecparsers），不编 -bad 里其余十几个库
+	cd "$_bad"
+	abuild-meson \
+		--auto-features=disabled \
+		-Dpackage-origin="Loong OS" \
+		-Dvideoparsers=enabled \
+		-Dopus=enabled \
+		. output
+	meson compile -C output -j "${JOBS:-2}" gstvideoparsersbad gstopusparse
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C "$_good"/output
+	# qtmux、vp8enc 的预设：只有编码/封装用得到，WebKit 只解码
+	rm -rf "$pkgdir"/usr/share
+
+	# -bad 的三个文件手工安装；构建目录里的 RUNPATH（$ORIGIN/../../gst-libs/...）要去掉
+	local d="$_bad"/output/gst-libs/gst/codecparsers lib
+	lib=$(readlink "$d"/libgstcodecparsers-1.0.so.0)
+	install -Dm755 "$d"/$lib "$pkgdir"/usr/lib/$lib
+	ln -s $lib "$pkgdir"/usr/lib/libgstcodecparsers-1.0.so.0
+	install -Dm755 -t "$pkgdir"/usr/lib/gstreamer-1.0 \
+		"$_bad"/output/gst/videoparsers/libgstvideoparsersbad.so \
+		"$_bad"/output/ext/opus/libgstopusparse.so
+	chrpath -d "$pkgdir"/usr/lib/$lib "$pkgdir"/usr/lib/gstreamer-1.0/libgstvideoparsersbad.so \
+		"$pkgdir"/usr/lib/gstreamer-1.0/libgstopusparse.so
+
+	# 与发行版插件互斥（原因见文件开头；这里赋值只影响打包，不影响构建依赖）
+	depends="!gst-plugins-good !gst-plugins-bad"
+}
+
+sha512sums="
+dafa5f402e5b9f590800036fb7c33192135563e39665cf161e44e781a9f82ff5dec5db6e37e6ca4ca2190f32a6ceb796a31246a08854f9c9fa3f7ae2a0281b01  gst-plugins-good-1.28.3.tar.xz
+34a66ad2e8186cc9b609495520951c7ca748be450d3b012e67e1af12d7fb915ba3eb75c131e4179829f462bb3554e62e19c01cab75b573e6a17116b3c238847b  gst-plugins-bad-1.28.3.tar.xz
+"

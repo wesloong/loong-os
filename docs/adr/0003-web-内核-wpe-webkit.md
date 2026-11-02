@@ -204,5 +204,5 @@ v1 的要求：PWA、系统浏览器、GStreamer 音视频、WebGL 与 GPU 合�
 
 ### 发现的问题（不在本包范围）
 
-- **镜像里播放任何 `<video>`/`<audio>` 都会让 Web 进程崩溃（r0 同样）**：WebKit 的 `createAutoAudioSink()` 直接用 gst-plugins-good 里的 `autoaudiosink`，找不到就对空指针连信号、随后崩溃；镜像只有 gst-plugins-base（随 wpewebkit 的依赖装进来）。镜像需要装 gst-plugins-good（至少 autodetect 插件；WebKit 调播放速率用的 `scaletempo` 也在里面）以及实际的音频输出（PipeWire 的 GStreamer 插件或 ALSA）。H.264/VP9/AV1 等解码器同样不在镜像里（`canPlayType` 只认 Ogg Theora/Vorbis/Opus），nabu 上要配 V4L2 硬解插件。在 chroot 里只让 GStreamer 看到镜像里的那 35 个插件即可复现；用 QEMU 验证时是把 autodetect 插件放在测试盘上、用 `GST_PLUGIN_PATH` 指过去（沙箱会绑定这个目录）。
+- **镜像里播放任何 `<video>`/`<audio>` 都会让 Web 进程崩溃（r0 同样）**：WebKit 的 `createAutoAudioSink()` 直接用 gst-plugins-good 里的 `autoaudiosink`，找不到就对空指针连信号、随后崩溃；镜像只有 gst-plugins-base（随 wpewebkit 的依赖装进来）。镜像需要装 gst-plugins-good（至少 autodetect 插件；WebKit 调播放速率用的 `scaletempo` 也在里面）以及实际的音频输出（PipeWire 的 GStreamer 插件或 ALSA）。H.264/VP9/AV1 等解码器同样不在镜像里（`canPlayType` 只认 Ogg Theora/Vorbis/Opus），nabu 上要配 V4L2 硬解插件。在 chroot 里只让 GStreamer 看到镜像里的那 35 个插件即可复现；用 QEMU 验证时是把 autodetect 插件放在测试盘上、用 `GST_PLUGIN_PATH` 指过去（沙箱会绑定这个目录）。**已解决**：镜像装上自编的最小插件集 `gst-plugins-loong`（autodetect、解封装、VP8/VP9、MP3、V4L2 硬解等），QEMU 中 WebM、Ogg、MSE、`<audio>`、Web Audio 都能播放，见[媒体格式](../媒体格式.md)。
 - bubblewrap 在开发 chroot 里起不来（`bwrap: Failed to make / slave`），沙箱只能在 QEMU 或真机上验证。

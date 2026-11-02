@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>媒体检查</title>
+<!-- Loong OS 的音视频检查页（WebKit + gst-plugins-loong）。片段由同目录的 mkclips.sh 生成。
+     地址参数 ?only=webm,ogg,mse,vp8,mp3,opus,webaudio 只运行其中几项（默认除 vp8 外全部）。
+     每 2 秒在控制台输出一行 MEDIA {...}（loong-webapp 设 LOONG_WEBAPP_CONSOLE=1 时写到标准输出）。
+     要经 HTTP 打开：file:// 时 GStreamer 在 Web 进程里直接读文件，bubblewrap 沙箱里看不到 /home 下的片段，
+     MSE 的 blob: 地址在 file://（null 源）下也会被拒绝。 -->
+<style>
+  :root { color-scheme: light; --ink: #1d1b16; --paper: #f3eee2; --line: #c9bfa8; --ok: #2f6b3a; --bad: #a3281e; }
+  body { margin: 0; padding: 12px 16px; background: var(--paper); color: var(--ink);
+         font: 15px/1.4 "Inter", "Noto Sans CJK SC", sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
+  figure { margin: 0; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: #fffaf0; }
+  figcaption { font-weight: 600; margin-bottom: 4px; }
+  video { display: block; width: 320px; height: 240px; background: #000; }
+  audio { display: block; width: 300px; }
+  .st { font: 600 15px/1.35 ui-monospace, "DejaVu Sans Mono", monospace; margin: 4px 0 0; white-space: pre; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  table { border-collapse: collapse; font-size: 13px; }
+  td, th { border: 1px solid var(--line); padding: 2px 6px; text-align: left; }
+  #summary { font: 600 16px ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<h1>媒体检查 · <span id="summary">启动中…</span></h1>
+<div class="row">
+  <figure data-case="webm"><figcaption>WebM · VP9 + Opus</figcaption>
+    <video id="webm" src="vp9-opus.webm" preload="auto"></video><pre class="st" id="st-webm"></pre></figure>
+  <figure data-case="ogg"><figcaption>Ogg · Theora + Vorbis</figcaption>
+    <video id="ogg" src="theora-vorbis.ogv" preload="auto"></video><pre class="st" id="st-ogg"></pre></figure>
+  <figure data-case="mse"><figcaption>MSE · WebM VP9 + Opus</figcaption>
+    <video id="mse"></video><pre class="st" id="st-mse"></pre></figure>
+  <figure data-case="vp8"><figcaption>WebM · VP8 + Vorbis</figcaption>
+    <video id="vp8" src="vp8-vorbis.webm" preload="auto"></video><pre class="st" id="st-vp8"></pre></figure>
+</div>
+<div class="row">
+  <figure data-case="mp3"><figcaption>&lt;audio&gt; · MP3（ID3v2）</figcaption>
+    <audio id="mp3" src="tone.mp3" controls preload="auto"></audio><pre class="st" id="st-mp3"></pre></figure>
+  <figure data-case="opus"><figcaption>&lt;audio&gt; · Ogg Opus</figcaption>
+    <audio id="opus" src="tone.opus" controls preload="auto"></audio><pre class="st" id="st-opus"></pre></figure>
+  <figure data-case="webaudio"><figcaption>Web Audio</figcaption>
+    <pre class="st" id="st-webaudio">等待…</pre></figure>
+</div>
+<table id="types"><tr><th>类型</th><th>canPlayType</th><th>MSE</th></tr></table>
+<script src="media-data.js"></script>
+<script>
+"use strict";
+const params = new URLSearchParams(location.search);
+const only = params.get("only") ? params.get("only").split(",") : ["webm", "ogg", "mse", "mp3", "opus", "webaudio"];
+const enabled = (c) => only.includes(c);
+document.querySelectorAll("figure[data-case]").forEach((f) => {
+  if (enabled(f.dataset.case)) return;
+  // 不运行的项：先停掉已经开始的预加载（移出文档不会立即停）
+  f.querySelectorAll("video, audio").forEach((m) => { m.removeAttribute("src"); m.load(); });
+  f.remove();
+});
+
+const notes = {};          // 每项的事件/错误
+const webaudio = { state: "未开始" };
+const note = (id, s) => { notes[id] = s; };
+const fmt = (x) => (typeof x === "number" ? x.toFixed(2) : String(x));
+const mediaIds = ["webm", "ogg", "mse", "vp8", "mp3", "opus"].filter(enabled);
+
+function state(id) {
+  const el = document.getElementById(id);
+  const s = { ct: +el.currentTime.toFixed(2), rs: el.readyState, paused: el.paused,
+              err: el.error ? `${el.error.code} ${el.error.message || ""}`.trim() : null };
+  if (el.getVideoPlaybackQuality) {
+    const q = el.getVideoPlaybackQuality();
+    s.frames = q.totalVideoFrames; s.dropped = q.droppedVideoFrames;
+    s.size = `${el.videoWidth}x${el.videoHeight}`;
+  }
+  if (notes[id]) s.note = notes[id];
+  return s;
+}
+
+function show() {
+  const out = { t: +(performance.now() / 1000).toFixed(1) };
+  let playing = 0;
+  for (const id of mediaIds) {
+    const s = state(id);
+    out[id] = s;
+    if (!s.err && s.ct > 0) playing++;
+    const lines = [`currentTime ${fmt(s.ct)} s  readyState ${s.rs}`];
+    if ("frames" in s) lines.push(`帧 ${s.frames}（丢 ${s.dropped}） ${s.size}`);
+    lines.push(s.err ? `错误 ${s.err}` : (s.paused ? "暂停" : "播放中") + (s.note ? ` · ${s.note}` : ""));
+    const pre = document.getElementById("st-" + id);
+    pre.textContent = lines.join("\n");
+    pre.className = "st " + (s.err ? "bad" : s.ct > 0 ? "ok" : "");
+  }
+  if (enabled("webaudio")) out.webaudio = webaudio;
+  document.getElementById("summary").textContent =
+    `${playing}/${mediaIds.length} 在播放 · 页面 ${out.t} s`;
+  return out;
+}
+setInterval(show, 250);
+setInterval(() => console.log("MEDIA " + JSON.stringify(show())), 2000);
+
+for (const id of mediaIds) {
+  const el = document.getElementById(id);
+  for (const ev of ["error", "stalled", "ended", "waiting", "playing"])
+    el.addEventListener(ev, () => { note(id, ev); console.log(`EVENT ${id} ${ev}`); });
+}
+function start(id) {
+  document.getElementById(id).play().then(() => note(id, "play() ok"), (e) => note(id, "play() 失败：" + e.name));
+}
+for (const id of mediaIds) if (id !== "mse") start(id);
+
+// 有声音的媒体与 AudioContext 要有用户手势才能开始：WPE 默认的自动播放策略是 ALLOW_WITHOUT_SOUND
+// （静音的可以自动播放）。点按页面（触摸屏上 pointerdown 不算手势，click 算）时把还没开始的都开始。
+document.addEventListener("click", () => {
+  console.log("EVENT gesture");
+  if (window.audioCtx) window.audioCtx.resume();
+  for (const id of mediaIds) {
+    const el = document.getElementById(id);
+    if (el.paused && !el.ended && (id !== "mse" || el.src)) start(id);
+  }
+});
+
+// MSE：整个 WebM 一次 append，再 endOfStream
+function b64(s) { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; }
+if (enabled("mse")) {
+  const v = document.getElementById("mse");
+  const type = 'video/webm; codecs="vp9,opus"';
+  if (!window.MediaSource || !MediaSource.isTypeSupported(type)) {
+    note("mse", "isTypeSupported = false");
+  } else {
+    const ms = new MediaSource();
+    v.src = URL.createObjectURL(ms);
+    ms.addEventListener("sourceopen", () => {
+      const sb = ms.addSourceBuffer(type);
+      sb.addEventListener("updateend", () => { ms.endOfStream(); note("mse", "appended"); start("mse"); }, { once: true });
+      sb.addEventListener("error", () => note("mse", "SourceBuffer error"));
+      sb.appendBuffer(b64(window.MEDIA_DATA.mseWebm));
+    }, { once: true });
+  }
+}
+
+// Web Audio：decodeAudioData（经 GStreamer 解码与 deinterleave）+ 振荡器（输出经 autoaudiosink）
+if (enabled("webaudio")) {
+  const ctx = new AudioContext();
+  ctx.decodeAudioData(b64(window.MEDIA_DATA.beepWav).buffer).then((buf) => {
+    webaudio.decoded = { duration: +buf.duration.toFixed(3), channels: buf.numberOfChannels, rate: buf.sampleRate };
+  }, (e) => { webaudio.decoded = "失败：" + e; });
+  const osc = new OscillatorNode(ctx, { frequency: 220 });
+  const gain = new GainNode(ctx, { gain: 0.05 });
+  osc.connect(gain).connect(ctx.destination);
+  osc.start();
+  ctx.resume();
+  window.audioCtx = ctx;
+  setInterval(() => {
+    webaudio.state = ctx.state; webaudio.ct = +ctx.currentTime.toFixed(2);
+    const d = webaudio.decoded;
+    document.getElementById("st-webaudio").textContent =
+      `AudioContext ${ctx.state}  currentTime ${fmt(ctx.currentTime)} s\n` +
+      `decodeAudioData(WAV): ${d ? (typeof d === "string" ? d : `${d.duration} s, ${d.channels} 声道, ${d.rate} Hz`) : "…"}`;
+  }, 250);
+}
+
+// 格式支持表
+const types = [
+  'video/webm; codecs="vp9, opus"', 'video/webm; codecs="vp8, vorbis"', 'video/ogg; codecs="theora, vorbis"',
+  'audio/ogg; codecs="opus"', 'audio/ogg; codecs="vorbis"', 'audio/webm; codecs="opus"', "audio/mpeg", "audio/wav",
+  'audio/flac', 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"', 'video/mp4; codecs="hvc1.1.6.L93.B0"',
+  'video/mp4; codecs="vp09.00.10.08"', 'audio/mp4; codecs="mp4a.40.2"', 'video/mp4; codecs="av01.0.05M.08"',
+];
+const table = document.getElementById("types");
+const probe = document.createElement("video");
+for (const t of types) {
+  const tr = table.insertRow();
+  tr.insertCell().textContent = t;
+  tr.insertCell().textContent = probe.canPlayType(t) || "（空）";
+  tr.insertCell().textContent = window.MediaSource ? String(MediaSource.isTypeSupported(t)) : "-";
+}
+console.log("TYPES " + JSON.stringify(types.map((t) => [t, probe.canPlayType(t), window.MediaSource ? MediaSource.isTypeSupported(t) : null])));
+</script>
+</body>
+</html>

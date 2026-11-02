@@ -2,6 +2,7 @@
   "fps": 30,
   "duration_ms": 25000,
   "clock": "9:41",
+  "status": { "battery": 100, "wifi": 80, "ssid": "Loong" },
   "events": [
     { "at": 300, "launch": "browser" },
     { "at": 9000, "tap": [275, 213] },

@@ -60,6 +60,13 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
         state.shell.date_text = date.clone();
     }
     state.shell.set_locked(opts.script.locked);
+    // 外观文件：脚本要求时才跟随（默认不读，截图可复现）；脚本的 theme 决定初始外观。
+    if opts.script.follow_appearance
+        && let Some(theme) =
+            crate::appearance::follow(&event_loop.handle(), |s| s, device.theme.clone())
+    {
+        state.shell.set_theme(theme);
+    }
     if let Some(name) = &opts.script.theme {
         let theme = loong_ui::theme::Theme::from_name(name)
             .with_context(|| format!("未知外观 {name}（应为 light 或 dark）"))?;
@@ -67,6 +74,11 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
     }
     // 已安装的 Web 应用（PWA 注册表），并监视新的安装。
     crate::registry::service::init(&mut state, &event_loop.handle(), |s: &mut LoongState| s);
+    // 系统状态：脚本给出的演示数据，或者（设置了 LOONG_SYSD_BUS 时）真正的 loong-sysd。
+    if let Some(status) = &opts.script.status {
+        state.shell.set_system_status(status.to_status());
+    }
+    state.start_sysd(&event_loop.handle(), |s| s, None);
 
     // SAFETY: EGLSurfacelessDisplay 不持有任何原生资源。
     let egl = unsafe { EGLDisplay::new(EGLSurfacelessDisplay) }

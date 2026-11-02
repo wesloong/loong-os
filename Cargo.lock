@@ -997,6 +997,9 @@ name = "loong-shell"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
+ "async-io",
+ "futures-lite",
  "libc",
  "loong-ime",
  "loong-motion",
@@ -1012,6 +1015,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-scanner",
+ "zbus",
 ]
 
 [[package]]

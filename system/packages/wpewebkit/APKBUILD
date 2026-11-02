@@ -1,8 +1,11 @@
 # Loong OS: WPE WebKit（使用 2.54 起默认的 WPEPlatform API，不再依赖 libwpe/Cog）
-# 构建: tools/dev-chroot.sh run sh -c 'cd /src/system/packages/wpewebkit && abuild -F -r'
+# 构建: tools/build-pkg.sh wpewebkit（中断后用 tools/resume-wpewebkit.sh 继续）
+#
+# 体积（M6 瘦身，取舍见 ADR 0003）：全局 -Os，JavaScriptCore / WTF / bmalloc / Skia 用 -O2；
+# 不生成 .eh_frame；lld --icf=safe。
 pkgname=wpewebkit
 pkgver=2.54.2
-pkgrel=0
+pkgrel=1
 pkgdesc="WPE WebKit web engine for embedded devices (WPEPlatform API)"
 url="https://wpewebkit.org/"
 arch="aarch64 x86_64"
@@ -56,20 +59,40 @@ makedepends="
 	zlib-dev
 	"
 subpackages="$pkgname-dev $pkgname-minibrowser"
-source="https://wpewebkit.org/releases/wpewebkit-$pkgver.tar.xz"
+source="https://wpewebkit.org/releases/wpewebkit-$pkgver.tar.xz
+	loong-opt-targets.cmake
+	"
 # 上游测试需要完整的测试基础设施（WebKitTestRunner 等），打包时不运行。
 options="!check"
+
+# 热点目标：用 -O2 而不是全局的 -Os（见 loong-opt-targets.cmake）。
+# JavaScriptCore：JS 引擎的 C++ 部分（解析、字节码生成、GC、运行时慢路径、正则、各级 JIT 编译器本身）；
+# WTF、bmalloc（含 libpas 分配器）：几乎所有代码都在调用；Skia：CPU 光栅化与 GPU 绘制的热循环。
+# 其余（WebCore、WebKit、ANGLE、PAL 等）用 -Os。
+_o2_targets="bmalloc;WTF;JavaScriptCore;Skia"
 
 build() {
 	export CC=clang
 	export CXX=clang++
-	# 平板上 JSC 性能更重要，用 -O2 而不是 Alpine 默认的 -Os。
+	# 优化级别：CFLAGS 里保留 Alpine 默认的 -Os。注意 CMAKE_BUILD_TYPE=Release 会在 CFLAGS 之后追加 CMake 的
+	# 默认 "-O3 -DNDEBUG"（r0 名义上是 -O2，实际是 -O3），所以把 CMAKE_*_FLAGS_RELEASE 改成只有 -DNDEBUG。
+	# 热点目标的 -O2 由 loong-opt-targets.cmake 加在目标上。
+	# -fno-asynchronous-unwind-tables / -fno-unwind-tables：不生成 .eh_frame（r0 中 .eh_frame + .eh_frame_hdr 约 13MB）。
+	# WebKit 全部用 -fno-exceptions 编译，库里没有 _Unwind_* 调用（不做 DWARF 栈回溯，USE_LIBBACKTRACE 也关了），
+	# 没有任何 C++ 异常需要穿过 WebKit 的栈帧；代价只是 gdb / perf 在 WebKit 帧里回溯不如以前可靠。
+	# WebKit 自己会把 -fasynchronous-unwind-tables 前置到 CMAKE_CXX_FLAGS，我们的标志排在后面，以我们的为准。
 	# fortify 与 WebKit 的部分代码不兼容（Alpine webkit2gtk 也关闭了它）。
-	export CFLAGS="${CFLAGS/-Os/-O2} -U_FORTIFY_SOURCE"
-	export CXXFLAGS="${CXXFLAGS/-Os/-O2} -U_FORTIFY_SOURCE"
+	local _flags="-U_FORTIFY_SOURCE -fno-asynchronous-unwind-tables -fno-unwind-tables"
+	export CFLAGS="$CFLAGS $_flags"
+	export CXXFLAGS="$CXXFLAGS $_flags"
 	# glib-dev 依赖 gettext-dev，它的 libintl.h 会把 bindtextdomain 等重定向到 GNU libintl，
 	# 必须显式链接 libintl（否则最后链接 libWPEWebKit 时报 libintl_bindtextdomain 未定义）。
-	export LDFLAGS="$LDFLAGS -fuse-ld=lld -lintl"
+	# WebKit 已经自带 -ffunction-sections -fdata-sections 与 --gc-sections（链接器支持时自动加）。
+	# --icf=safe：合并内容相同、且地址没有被拿去比较的函数（依据 clang 默认生成的 .llvm_addrsig）。
+	#   不用 --icf=all：JSC 会拿函数指针当身份标识选快路径（方法表里的函数与 JSObject 默认实现比较、
+	#   宿主函数与 callHostFunctionAsConstructor 比较等），不同函数被合并成同一地址后可能走错路径。
+	# -O2（lld）：可合并字符串常量再做尾部合并，.rodata 更小。
+	export LDFLAGS="$LDFLAGS -fuse-ld=lld -lintl -Wl,--icf=safe -Wl,-O2"
 
 	local launcher=""
 	command -v ccache >/dev/null && launcher="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
@@ -78,6 +101,10 @@ build() {
 	cmake -B build -G Ninja $launcher \
 		-DPORT=WPE \
 		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_C_FLAGS_RELEASE=-DNDEBUG \
+		-DCMAKE_CXX_FLAGS_RELEASE=-DNDEBUG \
+		-DCMAKE_PROJECT_INCLUDE="$srcdir/loong-opt-targets.cmake" \
+		-DLOONG_O2_TARGETS="$_o2_targets" \
 		-DCMAKE_INSTALL_PREFIX=/usr \
 		-DCMAKE_INSTALL_LIBDIR=lib \
 		-DCMAKE_INSTALL_LIBEXECDIR=lib \
@@ -124,4 +151,5 @@ minibrowser() {
 
 sha512sums="
 9af0718a7306c8051a9751802c434c8d66441abc515d839b53b736752f7a9e711f24188f61933ec90bbb486c5fad0f73a35f8c67669c626c4cff6d7f87165cd1  wpewebkit-2.54.2.tar.xz
+e0a7774a74d60526d55499a664422aaf05b93aeefd222715fc5aa45ae061793dfa5aa599276038498f6f7e30875cbca5c34fad20f9dce8d512a707df4b79fcbb  loong-opt-targets.cmake
 "

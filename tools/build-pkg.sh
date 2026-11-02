@@ -2,7 +2,7 @@
 # 在开发 chroot 中构建 system/packages/<包名> 下的 APK 包。
 #
 # 用法: tools/build-pkg.sh <包名> [abuild 参数...]
-# 产物: build/packages/packages/<arch>/*.apk（已签名，可作为本地 apk 仓库；
+# 产物: build/packages/packages/<arch>/*.apk（已签名，可作为本地 apk 仓库；不分架构的包同时放进 x86_64 与 aarch64；
 #       abuild 用 APKBUILD 的上级目录名 packages 作为仓库名）
 # 中间文件: build/abuild/<包名>/（不会弄脏源码目录）
 #
@@ -36,4 +36,17 @@ export pkgbasedir=$SRC/build/abuild/$pkg/pkg
 mkdir -p "$srcdir" "$pkgbasedir" "$SRCDEST" "$REPODEST"
 cd $SRC/system/packages/$pkg
 abuild -F -r "$@"
+# 不分架构的包（字体、数据）：abuild 只放进本机架构的仓库目录。复制一份到另一个架构的目录并重建索引，
+# 跨架构构建的镜像（aarch64 的 qemu-aarch64、xiaomi-nabu）才装得上。
+if [ $# -eq 0 ] && grep -q "^arch=\"noarch\"" APKBUILD; then
+	host=$(apk --print-arch)
+	repo=$REPODEST/$(basename "$(dirname "$PWD")")
+	for a in x86_64 aarch64; do
+		[ "$a" != "$host" ] || continue
+		mkdir -p "$repo/$a"
+		for f in $(abuild -F listpkg); do cp "$repo/$host/$f" "$repo/$a/"; done
+		(cd "$repo/$a" && rm -f APKINDEX.tar.gz && apk index -q --rewrite-arch "$a" -o APKINDEX.tar.gz *.apk && abuild-sign -q APKINDEX.tar.gz)
+		echo ">>> 已复制到 $repo/$a"
+	done
+fi
 ' build-pkg "$pkg" "$@"

@@ -1,6 +1,9 @@
-//! 应用列表。v1 先内置一组演示应用；M2 起由 PWA 注册表（`~/.local/share/loong/webapps/`）提供。
+//! 应用列表：内置的系统应用与演示应用，加上 PWA 注册表（`~/.local/share/loong/webapps/`，
+//! 见 [`crate::registry`]）中已安装的 Web 应用（[`web_app`]）。
 
-use loong_ui::ink::suggested_pigment;
+use loong_ui::ink::{fallback_pigment, pigment_for_color, suggested_pigment};
+
+use crate::registry::WebApp;
 
 /// 一个应用。
 #[derive(Debug, Clone)]
@@ -19,6 +22,10 @@ pub struct AppEntry {
     pub command: Option<String>,
     /// 是否放在 Dock。
     pub in_dock: bool,
+    /// 已安装的 Web 应用（来自注册表）的 manifest；内置应用为 `None`。只有它们可以从主屏移除。
+    pub web: Option<WebApp>,
+    /// 已从主屏移除（下标在合成器运行期间保持不变，见 [`super::webapps`]）。
+    pub removed: bool,
 }
 
 fn app(id: &str, name: &str, symbol: &str, in_dock: bool) -> AppEntry {
@@ -29,7 +36,39 @@ fn app(id: &str, name: &str, symbol: &str, in_dock: bool) -> AppEntry {
         pigment: suggested_pigment(symbol),
         command: None,
         in_dock,
+        web: None,
+        removed: false,
     }
+}
+
+/// 已安装的 Web 应用：主屏标签用 `short_name`；颜料按 `theme_color`（没有或太灰时按
+/// `background_color`，再没有就按 id）选一种传统颜料；`command` 为 loong-webapp 启动命令。
+pub fn web_app(app: &WebApp, command: String) -> AppEntry {
+    AppEntry {
+        id: app.id.clone(),
+        name: app.short_name.clone(),
+        symbol: String::new(),
+        pigment: web_pigment(app),
+        command: Some(command),
+        in_dock: false,
+        web: Some(app.clone()),
+        removed: false,
+    }
+}
+
+/// Web 应用的颜料（见 [`web_app`]）。
+pub fn web_pigment(app: &WebApp) -> u32 {
+    app.theme_color
+        .and_then(pigment_for_color)
+        .or_else(|| app.background_color.and_then(pigment_for_color))
+        .unwrap_or_else(|| fallback_pigment(id_seed(&app.id)))
+}
+
+/// 由应用 id 得到的稳定种子（FNV-1a）：图标纸纹、颜料轮换，与应用在列表中的位置无关。
+pub fn id_seed(id: &str) -> u32 {
+    id.bytes().fold(0x811c_9dc5u32, |h, b| {
+        (h ^ b as u32).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// 内置演示应用。
@@ -74,17 +113,29 @@ pub fn builtin_apps() -> Vec<AppEntry> {
     ]
 }
 
+/// loong-webapp 运行应用 `id` 时窗口的 app_id：`loong.webapp.<id>`，id 中的 `-` 写作 `_`，
+/// 以数字开头的 id 前面再加 `_`（GApplication id 的每一节不能以数字开头，WebKit 用它作 Wayland
+/// app_id）。规则与 loong-webapp 相同；应用 id 不以 `-` 开头，所以没有歧义。
+pub fn webapp_app_id(id: &str) -> String {
+    let escape = if id.starts_with(|c: char| c.is_ascii_digit()) {
+        "_"
+    } else {
+        ""
+    };
+    format!("loong.webapp.{escape}{}", id.replace('-', "_"))
+}
+
 /// 窗口的 Wayland app_id 对应哪个应用：
-/// - `loong.webapp.<id>`：loong-webapp 运行的 Web 应用（id 中的 `-` 在 app_id 里写作 `_`）；
+/// - `loong.webapp.<id>`：loong-webapp 运行的 Web 应用（见 [`webapp_app_id`]）；
 /// - `loong.<id>`：系统组件，例如系统浏览器 `loong.browser`；
 /// - 其余按应用 id 原样匹配。
 pub fn app_for_app_id(apps: &[AppEntry], app_id: &str) -> Option<usize> {
     let id = app_id
         .strip_prefix("loong.webapp.")
-        .map(|id| id.replace('_', "-"))
+        .map(|id| id.strip_prefix('_').unwrap_or(id).replace('_', "-"))
         .or_else(|| app_id.strip_prefix("loong.").map(str::to_string))
         .unwrap_or_else(|| app_id.to_string());
-    apps.iter().position(|a| a.id == id)
+    apps.iter().position(|a| a.id == id && !a.removed)
 }
 
 #[cfg(test)]
@@ -104,6 +155,23 @@ mod tests {
         assert!(index("settings") != index("browser"));
         assert_eq!(app_for_app_id(&apps, "loong.webapp.unknown_app"), None);
         assert_eq!(app_for_app_id(&apps, "foot"), None);
+        // 已安装的 Web 应用：以数字开头的 id 在 app_id 里前面多一个 '_'；已移除的不再匹配。
+        let mut apps = apps;
+        for id in ["127-0-0-1-8765-pwa", "example-com"] {
+            let manifest = format!(r#"{{"name": "x", "start_url": "https://{id}.example/"}}"#);
+            let app = crate::registry::parse_manifest(id, &manifest).unwrap();
+            apps.push(web_app(&app, String::new()));
+            let i = apps.len() - 1;
+            assert_eq!(app_for_app_id(&apps, &webapp_app_id(id)), Some(i), "{id}");
+        }
+        assert_eq!(
+            webapp_app_id("127-0-0-1-8765-pwa"),
+            "loong.webapp._127_0_0_1_8765_pwa"
+        );
+        assert_eq!(webapp_app_id("example-com"), "loong.webapp.example_com");
+        let last = apps.len() - 1;
+        apps[last].removed = true;
+        assert_eq!(app_for_app_id(&apps, "loong.webapp.example_com"), None);
     }
 
     #[test]

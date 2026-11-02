@@ -16,6 +16,7 @@ mod ime;
 mod input;
 mod lunar;
 mod protocols;
+mod registry;
 mod render;
 mod script;
 mod shell;

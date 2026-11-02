@@ -16,6 +16,7 @@ pub mod layout;
 pub mod lock;
 pub mod status;
 pub mod switcher;
+pub mod webapps;
 
 use loong_motion::{Animatable, Decay, Spring, SpringAnimation, VelocityTracker, snap};
 use loong_ui::theme::Theme;
@@ -35,6 +36,7 @@ use self::{
     lock::LockScreen,
     status::{Basis, StatusBar, StatusInk},
     switcher::{PauseDetector, SwitcherLayout},
+    webapps::HomeState,
 };
 
 /// 应用打开时主屏放大的倍数（营造“进入”的纵深感）。
@@ -106,6 +108,8 @@ pub enum TexKey {
     CandidateCell(usize),
     /// 高亮候选下方的一笔浓墨（拉伸绘制）。
     CandidateMark,
+    /// 长按已安装应用弹出的菜单面板（含四周墨影 [`webapps::MENU_SHADOW`]，见 [`webapps`]）。
+    HomeMenu,
 }
 
 /// 画面中的一个元素。
@@ -386,17 +390,19 @@ pub struct Shell {
     pub keyboard: ScreenKeyboard,
     /// 状态栏的墨（浓墨 / 月白）与交叉淡化。
     status: StatusBar,
+    /// 主屏排列、已安装的 Web 应用（落印、收墨、长按菜单），见 [`webapps`]。
+    home_state: HomeState,
 }
 
 impl Shell {
     pub fn new(w: f64, h: f64, screen_radius: f64) -> Self {
         let apps = apps::builtin_apps();
-        let in_dock: Vec<bool> = apps.iter().map(|a| a.in_dock).collect();
+        let home_state = HomeState::new(&apps);
         Shell {
             w,
             h,
             screen_radius,
-            layout: Layout::compute(w, h, &in_dock),
+            layout: home_state.layout(&apps, w, h),
             switcher: SwitcherLayout::new(w, h),
             apps,
             home: SpringAnimation::at_rest(Spring::SMOOTH, [1.0, 0.0], 0.0),
@@ -421,6 +427,7 @@ impl Shell {
             mist: SpringAnimation::at_rest(MIST_SPRING, 0.0, 0.0).with_rest_thresholds(0.2, 2.0),
             keyboard: ScreenKeyboard::new(w, h, 0.0),
             status: StatusBar::default(),
+            home_state,
         }
     }
 
@@ -539,6 +546,7 @@ impl Shell {
             && self.mist.is_done(now)
             && self.keyboard.is_idle(now)
             && self.status.is_idle(now)
+            && self.home_is_idle(now)
     }
 
     /// 前台应用的窗口（键盘焦点与输入框都跟随它）。主屏、多任务中为 `None`。
@@ -572,7 +580,7 @@ impl Shell {
 
     /// 打开应用：卡片从图标位置弹出到全屏。在多任务中则从该应用的卡片放大。
     pub fn launch(&mut self, app: usize, now: f64) {
-        if app >= self.apps.len() {
+        if app >= self.apps.len() || self.apps[app].removed {
             return;
         }
         match self.mode {
@@ -789,6 +797,8 @@ impl Shell {
             }
         }
         self.ink.update(now);
+        // 长按菜单、落印、收墨、落位（见 webapps）。
+        self.update_home(now);
         // 展卷：烟云层随翻页速度多飘一点，速度归零后由弹簧带回原位（速度连续）。
         let drift = if self.reduced_motion {
             0.0
@@ -1137,12 +1147,19 @@ impl Shell {
                 TouchRoute::Shell
             }
             Mode::Home => {
+                // 长按菜单打开时，触摸只给菜单。
+                if self.menu_touch_down(slot, x, y, now) {
+                    return TouchRoute::Shell;
+                }
                 self.begin_tracking(now, x, y);
                 // 手指按下即“接住”正在翻页的主屏。
                 let scroll = self.home_scroll.value(now);
                 pin(&mut self.home_scroll, scroll, now);
                 let page = (scroll / self.layout.page_width).round();
-                let icon = self.layout.hit(x, y, scroll);
+                let icon = self
+                    .layout
+                    .hit(x, y, scroll)
+                    .filter(|&i| self.icon_tappable(i));
                 self.press_home_ink(slot, x, y, icon, scroll, now);
                 self.gesture = Gesture::Home {
                     slot,
@@ -1221,6 +1238,9 @@ impl Shell {
             if self.keyboard.touch_motion(slot, x, y, now) {
                 self.ink.release(slot, now);
             }
+            return TouchRoute::Shell;
+        }
+        if self.menu_touch_motion(slot, x, y, now) {
             return TouchRoute::Shell;
         }
         match self.gesture {
@@ -1437,6 +1457,9 @@ impl Shell {
         if self.keyboard.owns(slot) {
             self.keyboard.touch_up(slot, now);
             self.ink.release(slot, now);
+            return TouchRoute::Shell;
+        }
+        if self.menu_touch_up(slot, now) {
             return TouchRoute::Shell;
         }
         // 手指离开纸面：墨滴淡入纸中，笔画结束（已画的笔迹继续淡去）。
@@ -1837,15 +1860,21 @@ impl Shell {
             .filter(|t| self.mode == Mode::App || t.homing)
             .map(|t| t.app);
         for i in 0..self.layout.icons.len() {
+            // 不在主屏上的（已移除的）、正在落印 / 收墨的（画在 push_home_extras 里）跳过。
+            if !self.layout.shown[i] || self.icon_in_overlay(i) {
+                continue;
+            }
+            let (ox, oy) = self.icon_offset(i, now);
             let rect = self.layout.icon_at(i, scroll);
+            let rect = RectF::new(rect.x + ox, rect.y + oy, rect.w, rect.h);
             // 其他页上的图标不画（名称比图标宽，留一些余量）。
             let margin = self.layout.icon;
             if Some(i) == hidden_app || rect.x + rect.w < -margin || rect.x > self.w + margin {
                 continue;
             }
             let r = rect.scaled_about(cx, cy, zoom);
-            // 宣纸小笺落在纸上的墨影（停在某页时，网格图标的墨影已画在整页山水里）。
-            if page.is_none() || self.layout.page_of[i].is_none() {
+            // 宣纸小笺落在纸上的墨影（停在某页时，内置应用网格图标的墨影已画在整页山水里）。
+            if page.is_none() || self.layout.page_of[i].is_none() || !self.shadow_baked(i) {
                 let s = r.w * ICON_SHADOW_SPREAD;
                 scene.push(DrawItem::Texture {
                     key: TexKey::IconShadow,
@@ -1914,6 +1943,8 @@ impl Shell {
                 ));
             }
         }
+        // 落印、收墨中的图标，长按菜单。
+        self.push_home_extras(scene, zoom, scroll, now);
         if dim > 0.001 {
             // 主屏退到后方：罩一层墨（亮色）/ 夜色（暗色）。
             let shade = match self.theme {
@@ -1985,7 +2016,8 @@ impl Shell {
             }
             _ => (ready * smoothstep(0.02, 0.4, q), None),
         };
-        let paper = rgba(self.theme.palette().paper_raised, alpha);
+        // 纸色底即启动闪屏：已安装的应用用 manifest 的 background_color（见 webapps）。
+        let paper = rgba(self.card_paper(task.app), alpha);
         scene.push(DrawItem::Solid {
             rect,
             color: paper,

@@ -40,6 +40,12 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 |---|---|---|
 | ![屏幕键盘 · 组字中](docs/images/keyboard-light.png) | ![屏幕键盘 · 夜墨](docs/images/keyboard-committed-dark.png) | ![浏览器地址栏](docs/images/keyboard-browser-url.png) |
 
+控制中心（M4）：从右上角下拉出一张「绢」面板（背后是模糊的当前画面），状态栏的电量与 Wi‑Fi、控制中心的亮度和电池都来自 loong-sysd。下图是假 sysfs + 私有总线上的 loong-sysd（`crates/loong-shell/tests/control-center-headless.sh`）：电量从 57% 放电变成 80% 充电，拖动亮度滑块时假 sysfs 的 `brightness` 从 300 降到 21，点「夜墨」后整个系统界面换成夜墨（见[设计规范 §8.7](docs/design/设计规范.md#控制中心m4)，下拉手势见 [APNG](docs/images/control-center-gesture.png)）：
+
+| 状态栏：57% 放电 → 插上充电器 80% | 拖动亮度滑块（写入背光） | 点「夜墨」：系统界面随之切换 |
+|---|---|---|
+| ![状态栏电量](docs/images/control-center-statusbar.png) | ![控制中心](docs/images/control-center-brightness.png) | ![控制中心 · 夜墨](docs/images/control-center-dark.png) |
+
 完整系统在 QEMU 中启动后的画面（UEFI → systemd-boot → UKI → initramfs → 只读 erofs → OpenRC → `loong-shell` 走 DRM/KMS；镜像带 WPE WebKit、霞鹜文楷与拼音词库）：
 
 | 主屏 | 设置（经 JS bridge 读 loong-sysd） | 在设置里切到「夜墨」，系统界面随之切换 |
@@ -81,6 +87,7 @@ M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏�
 | `crates/loong-update` + `org.loong.Update1`：签名 OTA 更新包、写入非活动 slot、启动确认与自动回滚，见 [loong-update](docs/api/loong-update.md) | ✅ 在 QEMU 中验证（0.1.0 → 0.1.1 升级；系统界面起不来的更新 3 次后自动回滚；坏签名/坏哈希在写入前被拒绝）；`android-abl` 只有单元测试，未上真机；dm-verity 待做 |
 | `crates/loong-ime`：librime 拼音引擎（简体，词库 8MB）、iPad 式屏幕键盘模型（布局、命中测试、触摸状态机） | ✅ 已完成（含真实 librime 测试） |
 | 屏幕键盘（M4）：loong-shell 内的输入法、「墨韵」键盘与候选栏、`zwp_text_input_v3`、窗口避让、镜像中的预编译 Rime 数据（`loong-rime-data`） | ✅ 在无屏幕 loong-shell + WPE WebKit（loong-webapp、loong-browser）中端到端验证；还没上真机 |
+| 控制中心与状态栏数据（M4）：loong-shell 的 loong-sysd 客户端（后台线程订阅电量、Wi‑Fi、亮度，服务重启后自动恢复）、状态栏的真实电量与 Wi‑Fi、控制中心（右上角下拉、「绢」面板、无线局域网与夜墨开关、亮度笔触滑块、电池），见[设计规范 §8.7](docs/design/设计规范.md#控制中心m4) | ✅ 在无屏幕 loong-shell + 私有总线上的 loong-sysd（假 sysfs）中端到端验证（电量变化、拖动滑块写入背光、外部改亮度、切换夜墨）；还没上真机 |
 | `webrt/`：`loong-webapp`（每个应用一个进程、跟随系统外观）、系统应用的受限 JS bridge（`window.loong` → loong-sysd，见[说明](docs/api/loong-js-bridge.md)）、**设置**（无线局域网、显示与亮度、电池、关于本机） | ✅ 在无屏幕 loong-shell + WPE WebKit 中端到端验证（亮度滑块写入背光、电池读自 sysfs）；Wi‑Fi 用假 iwd 验证（还没有在真实网卡上试过） |
 | `webrt/platform`、`webrt/browser`：自写 `loong` WPEPlatform 后端（每个 view 一个 `wl_subsurface`）与系统浏览器 `loong-browser`（界面 + 网页同屏、标签页、「墨韵」界面、添加到主屏幕），见[下文](#浏览器) | ✅ 在 sway 与 loong-shell（无屏幕）中验证（M2） |
 
@@ -164,6 +171,8 @@ sudo tools/dev-chroot.sh run sh -c 'meson setup build/webrt webrt && ninja -C bu
 #    设置的端到端检查：假 sysfs + 私有总线上的 loong-sysd + 无屏幕 loong-shell + WPE WebKit（脚本开头有构建说明）
 sudo tools/dev-chroot.sh run webrt/tests/settings-headless.sh out/settings              # 亮度、外观、电池、关于本机
 sudo tools/dev-chroot.sh run env FAKE_IWD=1 webrt/tests/settings-headless.sh out/wifi  # Wi‑Fi（假 iwd）
+#    状态栏电量与控制中心的端到端检查（只要 loong-shell 与 loong-sysd 的 release 构建）
+sudo tools/dev-chroot.sh run crates/loong-shell/tests/control-center-headless.sh out/control-center
 #    在桌面浏览器里改设置的界面（演示数据）：打开 webrt/apps/settings/index.html，或 node tools/web-shot.mjs --only settings
 #    浏览器：在无屏幕 sway 里回放场景
 sudo tools/dev-chroot.sh run sh webrt/browser/tests/sway-run.sh 场景.txt out/browser http://127.0.0.1:8765/index.html

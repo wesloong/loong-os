@@ -1,0 +1,41 @@
+#!/bin/sh
+# 为声卡启用 ALSA UCM 的放音用例：nabu 是 HiFi 用例 + Speaker 设备（MultiMedia1 → QUAT_TDM_RX_0 → 四个 CS35L41
+# 功放，见 /usr/share/alsa/ucm2/Xiaomi/nabu/HiFi.conf）。没有这一步，声卡能打开、播放也不报错，但扬声器没有声音。
+#
+# 用法: loong-audio-setup [声卡号...]      不给声卡号时处理 /proc/asound/cards 里的所有声卡
+#
+# 由两处调用：
+#   - udev（/usr/lib/udev/rules.d/90-loong-audio.rules）：声卡出现时。nabu 的声卡要等 ADSP 启动、音频服务经 QRTR
+#     注册之后才出现（开机后若干秒）；ADSP 崩溃重启（SSR）后声卡会重新注册、混音器回到默认值，也靠这条规则重设。
+#   - OpenRC 服务 loong-audio：开机时对已经存在的声卡做一次；手动重做用 rc-service loong-audio restart。
+#
+# 用例设置写进内核的混音器控件，alsaucm 退出后仍然有效（不运行 DisableSequence）。没有 UCM 配置或没有这个用例的
+# 声卡（USB 声卡等）跳过。日志写到内核日志（dmesg | grep loong-audio）：镜像里没有 syslog。
+# 以后改由 loong-sysd 经 alsa-lib 的 snd_use_case_set() 完成，就不需要 alsa-utils 了（见 docs/devices/xiaomi-nabu.md）。
+
+VERB=${LOONG_AUDIO_VERB:-HiFi}
+DEVICE=${LOONG_AUDIO_DEVICE:-Speaker}
+
+log() {
+	echo "loong-audio: $*" >&2
+	echo "loong-audio: $*" > /dev/kmsg 2>/dev/null || true
+}
+
+cards=$*
+[ -n "$cards" ] || cards=$(sed -n 's/^ *\([0-9][0-9]*\) \[.*/\1/p' /proc/asound/cards 2>/dev/null)
+rc=0
+for n in $cards; do
+	id=$(cat /proc/asound/card"$n"/id 2>/dev/null)
+	# 输出形如 "  0: HiFi"，下一行是说明
+	if ! alsaucm -c hw:"$n" list _verbs 2>/dev/null | grep -q "^ *[0-9]*: $VERB\$"; then
+		log "声卡 $n（$id）没有 UCM 用例 $VERB，跳过"
+		continue
+	fi
+	if alsaucm -c hw:"$n" set _verb "$VERB" set _enadev "$DEVICE"; then
+		log "声卡 $n（$id）：已启用 $VERB / $DEVICE"
+	else
+		log "声卡 $n（$id）：启用 $VERB / $DEVICE 失败"
+		rc=1
+	fi
+done
+exit $rc

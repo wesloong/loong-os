@@ -76,12 +76,18 @@ pmOS 的 sm8150 内核配置（pmaports `config-postmarketos-qcom-sm8150.aarch64
 
 ```sh
 sudo tools/setup-binfmt.sh                                    # 注册 qemu-aarch64 binfmt（每次开机一次）
-sudo tools/dev-chroot.sh run tools/build-aarch64.sh            # 交叉编译 aarch64 的 loong-shell
+sudo tools/dev-chroot.sh run tools/build-aarch64.sh            # 交叉编译 aarch64 的 loong-shell、loong-sysd、loong-update
 sudo ARCH=aarch64 JOBS=2 tools/build-pkg.sh mesa-loong         # aarch64 的 mesa-loong（约 1 小时，见下文；只需一次）
 sudo ARCH=aarch64 JOBS=2 tools/build-pkg.sh gst-plugins-loong  # 带 WebKit（WITH_WPE=1）时要：音视频插件
 sudo ARCH=aarch64 JOBS=2 tools/build-pkg.sh ffmpeg-loong       # 同上：H.264/AAC 软解（经 qemu-user 约 13 分钟）
 sudo tools/dev-chroot.sh run system/mkimage/mkimage.sh xiaomi-nabu
+# 带 WebKit 与 Web 运行时（设置、浏览器）的完整镜像：先交叉编译 aarch64 的 wpewebkit 与 webrt（见下文）
+sudo JOBS=2 tools/cross-build-pkg.sh wpewebkit                 # 只需一次
+sudo tools/cross-build-webrt.sh
+sudo tools/dev-chroot.sh run env WITH_WPE=1 system/mkimage/mkimage.sh xiaomi-nabu
 ```
+
+字体、ICU 数据、拼音词库、`gst-plugins-loong` 等本地包也要有 aarch64 版本（`build/packages/packages/aarch64/`，见 README）。git worktree 的 `build/` 是独立的，mkimage 只看本 worktree 的 `build/packages/`：可以把主仓库里已经打好的 aarch64 包复制过来，再重建索引（`apk index --rewrite-arch aarch64 -o APKINDEX.tar.gz *.apk && abuild-sign APKINDEX.tar.gz`，在开发 chroot 里运行）。
 
 ### 构建 mesa-loong（aarch64）
 
@@ -103,6 +109,43 @@ ls build/packages/packages/aarch64/                            # mesa-loong、-e
 - 还没有在真机上运行：freedreno 在 Adreno 640 上的渲染、`loong-shell` 的 GBM/KMS 路径以及 WebKit 走 GPU（dmabuf）都待 M3 上机验证。
 
 也可以用 meson 交叉编译（clang `--target=aarch64-alpine-linux-musl` + `apk --root --arch aarch64` 准备的 sysroot，同 `tools/build-aarch64.sh` 的做法），编译器原生运行会快得多（未实测），但还要自己处理 APK 的打包与签名；只在需要频繁修改 Mesa 时才值得。
+
+### 交叉编译 WPE WebKit（aarch64）
+
+WebKit 不能像 mesa-loong 那样在 aarch64 构建 chroot 里经 qemu-user 编译：x86_64 本机编译 4 核要 3–6 小时，模拟运行编译器还要再慢一个数量级（要好几天）。`tools/cross-build-pkg.sh` 在 x86_64 开发 chroot 里交叉编译：clang、lld 原生运行，只是目标是 aarch64，产物和 `tools/build-pkg.sh` 一样进本地仓库、用同一把密钥签名：
+
+```sh
+sudo JOBS=2 tools/cross-build-pkg.sh wpewebkit                     # 从头构建：fetch verify unpack prepare build rootpkg index
+sudo JOBS=2 tools/cross-build-pkg.sh wpewebkit build rootpkg index  # 中断后继续：不重新解包，ninja 接着编译
+sudo tools/cross-build-pkg.sh wpewebkit clean                       # 打包后删除中间文件与 sysroot（APK 保留）
+sudo tools/cross-build-webrt.sh test                                # loong-webapp、loong-browser → build/webrt-aarch64/，经 qemu-user 跑单元测试
+```
+
+| 部分 | 做法 |
+|---|---|
+| sysroot（`build/cross/wpewebkit-aarch64/sysroot/`，约 1 GB） | `tools/cross/mksysroot.sh`：`apk --root <sysroot> --arch aarch64 add --scripts=no`，装 musl-dev、gcc（`crt*.o`、libgcc）、libstdc++-dev 和 APKBUILD 的 `makedepends_host`（Alpine aarch64 仓库，签名用 `/usr/share/apk/keys/aarch64/` 校验）。不运行安装脚本，不需要模拟运行任何程序。指向绝对路径的符号链接改成相对的。mesa-dev 用 Alpine 的（与 x86_64 包的构建环境相同；WebKit 只链接 `libgbm.so.1`，EGL/GLES 由 libepoxy 运行时加载，都由 mesa-loong 提供） |
+| 编译器与工具（`tools/cross/aarch64-alpine.cmake`） | `clang`/`clang++ --target=aarch64-alpine-linux-musl`、`CMAKE_SYSROOT`、`-fuse-ld=lld`；ar/ranlib/strip/objcopy 用 Alpine 的 `binutils-aarch64`。头文件、库、CMake 包只在 sysroot 里找，程序只在宿主机上找；pkg-config 用 `PKG_CONFIG_LIBDIR` + `PKG_CONFIG_SYSROOT_DIR` 只看 sysroot |
+| 构建时运行的程序 | 全部用开发 chroot 里的：Perl、Python、Ruby（JavaScriptCore 的 offlineasm；LLInt 的偏移量与设置是 Ruby 从交叉编译出的 `LLIntOffsetsExtractor`、`LLIntSettingsExtractor` 二进制文件里读出来的，不运行它们）、gperf、unifdef、`glib-compile-resources`、`glib-mkenums`、`wayland-scanner`。WebKit 没有要先编出来再在构建机上运行的工具 |
+| abuild | 以 `CHOST=aarch64 CBUILDROOT=<sysroot>` 运行（`-d`：依赖已由上面装好），即 Alpine 引导新架构时用的交叉模式：`CARCH=aarch64`、CFLAGS 加 `--sysroot`、用 `aarch64-alpine-linux-musl-strip` 去符号、按 sysroot 里装的包推算 `so:`/`pc:` 依赖。默认编译参数取自 aarch64 的 abuild（`ABUILD_DEFCONF`：与 x86_64 相同，只是没有 x86 才用的 `-fno-plt`） |
+| APKBUILD | `makedepends` 分成 `makedepends_build`（构建机上的工具）与 `makedepends_host`（链接的库），即 Alpine aports 的写法；`CBUILD` ≠ `CHOST` 时补上 CMake 在交叉编译时探测不到的 `BWRAP_EXECUTABLE`、`DBUS_PROXY_EXECUTABLE`（目标系统上的路径）。体积参数和功能开关与 x86_64 的 r1 完全相同 |
+| Web 运行时（`tools/cross-build-webrt.sh`） | meson 交叉编译（`tools/cross/aarch64-alpine.meson`），sysroot 另装本地仓库里的 aarch64 `wpewebkit-dev`；mkimage 构建 aarch64 镜像时从 `build/webrt-aarch64/` 取 `loong-webapp` 与 `loong-browser` |
+
+实测（4 核的开发沙箱，`JOBS=2`、`nice 10`，同时有其他代理在编译，负载 6–8）：
+
+- 从解包到打包完 **3 小时 28 分**（解包与 cmake 配置共约 1 分钟，8876 个编译步骤，打包与建索引不到 1 分钟），与本机编译 x86_64 版本（4 核 3–6 小时，见 ADR 0003）是同一量级；sysroot 第一次准备约 25 秒（324 个 aarch64 包，装好后约 1 GB）。`build/cross/wpewebkit-aarch64/` 最后共 5.4 GB（源码与目标文件约 4.3 GB，不开 ccache；sysroot 约 1 GB），打包后用 `clean` 删掉；webrt 的 sysroot 另有约 0.7 GB。
+- 配置与 x86_64 的 r1 相同：7 个 `-O2` 目标、全局 `-Os`、`-fno-asynchronous-unwind-tables`、lld `--icf=safe`；aarch64 上默认开启 JIT、DFG、FTL、WebAssembly。编译参数里只少了 x86 才用的 `-fno-plt`。
+- 产物（`build/packages/packages/aarch64/`）：
+
+| | aarch64 | x86_64（同为 r1） |
+|---|---|---|
+| `wpewebkit-2.54.2-r1.apk` | 30.4 MB（30 388 003 字节） | 31.0 MB |
+| 安装大小 | 79.8 MiB | 81.2 MiB |
+| `libWPEWebKit-2.0.so.1.11.5`（去符号） | 83.6 MB：`.text` 71.5 MB、`.rodata` 7.7 MB、`.data.rel.ro` 3.1 MB，`.eh_frame` 只剩 1 KB | 85.2 MB |
+| `wpewebkit-dev` / `-minibrowser` | 108 KB / 11 KB | 108 KB / 10 KB |
+
+- 检查：库与 `WPEWebProcess`、`WPENetworkProcess`、注入包、MiniBrowser 都是 `ELF 64-bit LSB … ARM aarch64`；44 个 `so:` 依赖（即各文件 `NEEDED` 的外部库）与 x86_64 包相同，只少了 x86_64 上的 `libatomic.so.1`，abuild 按 sysroot 推算出的 `so:` 依赖全部能在 Alpine aarch64 仓库里找到——在一个空的 aarch64 根里 `apk add --simulate wpewebkit mesa-loong-egl mesa-loong-gles mesa-loong-gbm mesa-loong-glx-stub` 解析出 105 个包，没有缺的。
+- `tools/cross-build-webrt.sh test`：`loong-webapp`、`loong-browser` 交叉编译约 20 秒，`bridge-core` 单元测试经 qemu-user 通过。
+- 整机：带 WebKit 的 `qemu-aarch64` 镜像在 QEMU virt（TCG）里打开设置与浏览器，见下文“已验证的内容”；nabu 镜像的体积见[体积预算](../体积预算.md#nabu)。
 
 产物在 `build/image/xiaomi-nabu/`：
 
@@ -224,12 +267,14 @@ echo stop > /sys/class/remoteproc/remoteprocX/state; echo start > /sys/class/rem
 ## 已验证的内容（离线，在 x86_64 沙箱中）
 
 - 镜像构建：`mkimage.sh xiaomi-nabu` 完整跑通（rootfs 经 qemu-user 在 aarch64 chroot 中安装，Alpine 与 pmOS 软件源的签名均校验通过）。
+- 带 WebKit 的完整镜像：`WITH_WPE=1 mkimage.sh xiaomi-nabu` 跑通（交叉编译的 wpewebkit、loong-webapp、loong-browser，音视频插件与 MP4 软解），只读根 141.4 MiB（squashfs lz4hc），每个 slot 228 MiB，见[体积预算](../体积预算.md#nabu)。
 - boot.img：`mkbootimg` 生成后用 `unpack_bootimg` 解包，逐字节核对内核（含附加的 dtb）、initramfs 与 cmdline（构建时自动执行）；header v0，pagesize 与各偏移和 deviceinfo 一致。
 - super.img：`simg2img` 还原后用 `lpdump` 检查元数据（`system_a`、`system_b` 各一个 linear extent），并核对 extent 中的数据就是 erofs 根文件系统。
 - `loong-dynpart`：用同一个 super 镜像运行，输出的 dm 表与 `lpdump` 一致。
 - initramfs 需要的驱动：对照内核包的 `modules.builtin` 与 pmaports 的内核配置，UFS（`ufs-qcom`、`ufshcd-core`、`phy-qcom-qmp-ufs`）、`dm-mod`、`ext4`、`squashfs` 都是内建的，initramfs 里不需要内核模块。
 - 根文件系统镜像：在 x86_64 上用 `unsquashfs` 读回检查。
 - 同一套 initramfs 脚本和 OpenRC 配置在 QEMU aarch64（`qemu-aarch64` 机型，UEFI 后端，erofs 根）中能启动到锁屏并上滑解锁。
+- 交叉编译的 aarch64 WebKit 在 QEMU aarch64 中运行（`WITH_WPE=1` 的 `qemu-aarch64` 镜像，Cortex-A72 TCG，图形栈为 Alpine mesa 的 llvmpipe）：开机到锁屏 47 秒，点 Dock 打开设置 52 秒（经 JS bridge 显示 loong-sysd 给的机型名与 Wi‑Fi 状态），打开浏览器 14 秒（起始页）；`WPEWebProcess` 都在 bubblewrap 沙箱里。截图见 README。WebKit 在 Adreno 640（freedreno）上的 GPU 渲染要等上真机。
 
 ## 尚未验证（需要真机）
 

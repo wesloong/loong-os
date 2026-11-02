@@ -20,8 +20,14 @@
 #   UPDATE_BUNDLE=1      同时生成签名的 OTA 更新包 update-<版本>-<机型>.loongup（tools/mkupdate.sh）
 #   LOONG_UPDATE_PUBKEY  镜像信任的 OTA 公钥（正式发布用；私钥不必在构建机上）
 #   LOONG_UPDATE_KEY     开发用的签名私钥（默认 build/keys/loong-dev.pem，不存在时自动生成，不进 git）
+#   WITH_WPE=1           安装 WPE WebKit 与 Web 运行时（loong-webapp、loong-browser、系统 Web 应用）
+#   WITH_DEVTOOLS=1      再装开发工具：foot 终端、WebKit 的 MiniBrowser 与 Web Inspector 资源
 #
-# 产物：$SRC/build/image/<机型>/
+# 本地软件包（tools/build-pkg.sh 构建，在 build/packages/ 里）有就装：霞鹜文楷、拼音词库、
+# 思源黑体子集（font-noto-sans-sc-loong，没有时用 Alpine 的 font-noto-cjk）、中英文 ICU 数据
+# （icu-data-loong，没有时是 Alpine 的 icu-data-en，没有中文）。
+#
+# 产物：$SRC/build/image/<机型>/；体积报告：tools/image-size.sh <机型>（预算见 docs/体积预算.md）
 
 set -eu
 
@@ -33,6 +39,8 @@ PROFILE_CONF="$SRC/system/profiles/$PROFILE.conf"
 # 机型配置的默认值（各项含义见 system/profiles/*.conf）
 BOOT_BACKEND=uefi-sdboot
 ROOT_FS=erofs
+ROOT_FS_OPTS=${ROOT_FS_OPTS:-}  # 也可以在环境变量里指定（例如比较压缩参数时）
+KERNEL_MODULES=""
 SERIAL_TTY=ttyS0
 EXTRA_REPOS=""
 EXTRA_KEYS=""
@@ -62,8 +70,12 @@ case "$BOOT_BACKEND" in
 	uefi-sdboot|android-abl) ;;
 	*) die "未知的启动后端: $BOOT_BACKEND" ;;
 esac
+# 只读根的压缩参数（机型可用 ROOT_FS_OPTS 覆盖；各种参数的大小与速度见 docs/体积预算.md）
 case "$ROOT_FS" in
-	erofs|squashfs) ;;
+	# lz4hc + 64 KiB 物理簇：比默认的 4 KiB 簇小约 15%，解压仍是 lz4 的速度。
+	# ztailpacking/fragments/dedupe：文件尾部内联、小文件与尾部合并压缩、相同数据去重（内核 ≥ 5.16）
+	erofs) ROOT_FS_OPTS=${ROOT_FS_OPTS:-"-zlz4hc,12 -C65536 -Eztailpacking,fragments,dedupe"} ;;
+	squashfs) ROOT_FS_OPTS=${ROOT_FS_OPTS:-"-comp lz4 -Xhc"} ;;
 	*) die "不支持的根文件系统: $ROOT_FS" ;;
 esac
 
@@ -104,12 +116,18 @@ PACKAGES="
 	seatd seatd-openrc dbus dbus-openrc
 	kmod e2fsprogs e2fsprogs-extra dosfstools
 	mesa-egl mesa-gles mesa-gbm libinput-libs libxkbcommon xkeyboard-config libseat
-	fontconfig font-inter font-noto-cjk
-	foot
+	fontconfig
 	librime
 	$KERNEL_PKG
 	$DEVICE_PKGS
 "
+# 开发工具：终端（例如 loong-shell --app browser=foot）。MiniBrowser 见下面的 WITH_WPE。
+[ "${WITH_DEVTOOLS:-0}" = 1 ] && PACKAGES="$PACKAGES foot"
+# 字体：本地构建的包优先（见下面的本地仓库），否则用 Alpine 的。Alpine 的完整 Noto CJK 有 88 MB
+# （裁剪时删掉宋体后 38 MB）；Alpine 的 font-inter 裁剪后只剩可变字体，它的族名是 “Inter Variable”，
+# 界面请求的 “Inter” 匹配不到。
+CJK_FONT=font-noto-cjk
+LATIN_FONT=font-inter
 
 log "安装 rootfs（$PROFILE_NAME，$ARCH）"
 rm -rf "$OUT"
@@ -151,7 +169,18 @@ if [ -d "$LOCAL_REPO/packages/$ARCH" ]; then
 	extra_repo="--repository /mnt/loong-packages/packages"
 	# shared-mime-info：WebKit 靠 GIO 按扩展名判断 file:// 的类型；缺了它 .html 会被当成纯文本显示源码
 	# （wpewebkit 包没有声明这个依赖，开发 chroot 里碰巧有，所以无屏幕测试发现不了）
-	[ -n "${WITH_WPE:-}" ] && PACKAGES="$PACKAGES wpewebkit wpewebkit-minibrowser shared-mime-info"
+	[ -n "${WITH_WPE:-}" ] && PACKAGES="$PACKAGES wpewebkit shared-mime-info"
+	[ -n "${WITH_WPE:-}" ] && [ "${WITH_DEVTOOLS:-0}" = 1 ] && PACKAGES="$PACKAGES wpewebkit-minibrowser"
+	# 思源黑体子集（GB2312 + 通用规范汉字表，可变字重 400–700）：tools/build-pkg.sh font-noto-sans-sc-loong
+	ls "$LOCAL_REPO/packages/$ARCH"/font-noto-sans-sc-loong-*.apk >/dev/null 2>&1 && \
+		CJK_FONT=font-noto-sans-sc-loong
+	# Inter 可变字体，族名改回 “Inter”（620 KB）：tools/build-pkg.sh font-inter-loong
+	ls "$LOCAL_REPO/packages/$ARCH"/font-inter-loong-*.apk >/dev/null 2>&1 && \
+		LATIN_FONT=font-inter-loong
+	# 中英文 ICU 数据（7 MiB）：tools/build-pkg.sh icu-data-loong。没有它时 icu-libs 带上 Alpine 的
+	# icu-data-en（只有英文：WebKit 里 Intl 的中文日期格式、拼音排序、中文分词都不可用）
+	ls "$LOCAL_REPO/packages/$ARCH"/icu-data-loong-*.apk >/dev/null 2>&1 && \
+		PACKAGES="$PACKAGES icu-data-loong"
 	# 「墨韵」展示字体（霞鹜文楷屏幕版）：tools/build-pkg.sh font-lxgw-wenkai-screen
 	ls "$LOCAL_REPO/packages/$ARCH"/font-lxgw-wenkai-screen-*.apk >/dev/null 2>&1 && \
 		PACKAGES="$PACKAGES font-lxgw-wenkai-screen"
@@ -163,7 +192,7 @@ fi
 # 重新安装引导包以运行它们的脚本，再安装其余软件包。
 chroot "$ROOT" /sbin/apk fix --no-cache --no-progress -q --reinstall alpine-baselayout busybox
 # shellcheck disable=SC2086
-chroot "$ROOT" /sbin/apk add --no-cache --no-progress -q $extra_repo $PACKAGES
+chroot "$ROOT" /sbin/apk add --no-cache --no-progress -q $extra_repo $PACKAGES $CJK_FONT $LATIN_FONT
 cleanup_mounts
 trap - EXIT
 rm -f "$ROOT/etc/resolv.conf"
@@ -278,10 +307,76 @@ if [ -n "$DTB" ]; then
 	[ -n "$dtb_path" ] || die "内核包里找不到 $DTB.dtb"
 	cp "$dtb_path" "$WORK/dtb"
 fi
-rm -rf "$ROOT/boot"/* "$ROOT/usr/share/man" "$ROOT/usr/share/doc" "$ROOT/usr/share/info" \
-	"$ROOT/usr/share/fonts/noto/NotoSerifCJK-"* "$ROOT/var/cache/apk"/*
-# Inter 只保留可变字体
-find "$ROOT/usr/share/fonts/inter" -type f ! -name 'Inter*Variable*' -delete 2>/dev/null || true
+rm -rf "$ROOT/boot"/* "$ROOT/var/cache/apk"/*
+# 运行时用不到的文件：文档、头文件、静态库、pkg-config、shell 补全、GObject 内省数据（没有 gjs/PyGObject）、
+# PCI 设备名称库（只有 lspci 一类工具查名字用）。这些文件仍记在 apk 数据库里：只读根上本来就不装包，
+# OTA 是整个根分区替换，不影响。
+(
+	cd "$ROOT"
+	rm -rf usr/share/man usr/share/doc usr/share/info usr/share/gtk-doc usr/include usr/share/aclocal \
+		usr/lib/pkgconfig usr/share/pkgconfig usr/share/bash-completion usr/share/zsh usr/share/fish \
+		usr/share/gir-1.0 usr/lib/girepository-1.0 usr/share/hwdata/pci.ids
+	find usr/lib lib \( -name '*.a' -o -name '*.la' \) -type f -delete
+	# 界面只有中文和英文：其他语言的翻译不要
+	if [ -d usr/share/locale ]; then
+		find usr/share/locale -mindepth 1 -maxdepth 1 -type d ! -name 'zh_CN' ! -name 'zh' ! -name 'en*' \
+			-exec rm -rf {} +
+	fi
+	# MIME 数据库：GIO 只读编译好的 mime.cache、globs、magic 等；源 XML（packages/）和
+	# 每种类型的说明文件（text/html.xml 之类，只用于类型的显示名称）不需要
+	if [ -d usr/share/mime ]; then
+		find usr/share/mime -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+	fi
+	# Web Inspector 的界面资源只在调试时用
+	[ "${WITH_DEVTOOLS:-0}" = 1 ] || rm -f usr/share/wpe-webkit-2.0/inspector.gresource
+	# 字体：Noto CJK 的宋体（没有子集包时才有）；Inter 只留正体可变字体，斜体由 FreeType 倾斜合成
+	rm -f usr/share/fonts/noto/NotoSerifCJK-*
+	find usr/share/fonts/inter -type f ! -name 'InterVariable.ttf' -delete 2>/dev/null || true
+)
+
+# 内核模块白名单（机型的 KERNEL_MODULES，空 = 全部保留）：相对 lib/modules/<版本>/kernel/ 的路径模式，
+# “!模式”表示排除，后面的模式覆盖前面的（例如 "* !drivers/media/rc/*"）。保留匹配的模块、它们的依赖
+# 和 initramfs 要用的模块，其余删掉，再用 depmod 重新生成索引。
+prune_modules() {
+	moddir="$ROOT/lib/modules/$KVER"
+	keep="$WORK/modules.keep"
+	all="$WORK/modules.all"
+	(cd "$moddir" && find kernel -name '*.ko*' | sort) > "$all"
+	set -f
+	while read -r m; do
+		want=0
+		for pat in $KERNEL_MODULES; do
+			case "$pat" in
+				!*) case "${m#kernel/}" in ${pat#!}) want=0 ;; esac ;;
+				*) case "${m#kernel/}" in $pat) want=1 ;; esac ;;
+			esac
+		done
+		if [ "$want" = 1 ]; then echo "$m"; fi
+	done < "$all" > "$keep"
+	set +f
+	for m in $INITRAMFS_MODULES; do
+		path=$(modinfo -b "$ROOT" -k "$KVER" -F filename "$m" 2>/dev/null | head -1) || true
+		case "$path" in "$moddir"/*) echo "${path#"$moddir"/}" >> "$keep" ;; esac
+	done
+	[ -s "$keep" ] || die "KERNEL_MODULES 没有匹配任何模块（$KVER）"
+	# 依赖：modules.dep 每行是“模块: 依赖 依赖 …”；重复到不再增加为止
+	n=0
+	while [ "$n" != "$(wc -l < "$keep")" ]; do
+		n=$(wc -l < "$keep")
+		awk -F': *' 'NR == FNR { want[$1] = 1; print; next }
+			($1 in want) && $2 != "" { c = split($2, d, " "); for (i = 1; i <= c; i++) print d[i] }' \
+			"$keep" "$moddir/modules.dep" | sort -u > "$keep.new"
+		mv "$keep.new" "$keep"
+	done
+	before=$(du -sk "$moddir" | cut -f1)
+	grep -vxF -f "$keep" "$all" | (cd "$moddir" && xargs -r rm -f)
+	find "$moddir/kernel" -type d -empty -delete
+	# 内核包在模块目录里放了指向 /boot/vmlinuz-* 的链接，/boot 已清空，删掉免得 depmod 报错
+	[ -e "$moddir/vmlinuz" ] || rm -f "$moddir/vmlinuz"
+	depmod -b "$ROOT" "$KVER"
+	log "内核模块：保留 $(wc -l < "$keep")/$(wc -l < "$all") 个，$before KiB → $(du -sk "$moddir" | cut -f1) KiB"
+}
+[ -z "$KERNEL_MODULES" ] || prune_modules
 
 # /var 的初始内容：首次启动时由 initramfs 复制到 data 分区
 mkdir -p "$ROOT/usr/share/loong"
@@ -289,12 +384,15 @@ mv "$ROOT/var" "$ROOT/usr/share/loong/var-skel"
 mkdir -p "$ROOT/var" "$ROOT/data" "$ROOT/home" "$ROOT/root" "$ROOT/tmp"
 
 # ───────────────────────── 4. 只读根 ─────────────────────────
-log "生成 $ROOT_FS 根文件系统"
+log "生成 $ROOT_FS 根文件系统（$ROOT_FS_OPTS）"
 ROOTIMG="$WORK/root.$ROOT_FS"
+# 压缩参数留给 tools/image-size.sh（按包估算压缩后大小时用同样的参数）
+printf 'ROOT_FS=%s\nROOT_FS_OPTS="%s"\n' "$ROOT_FS" "$ROOT_FS_OPTS" > "$WORK/rootfs.env"
+# shellcheck disable=SC2086
 case "$ROOT_FS" in
-	erofs) mkfs.erofs -zlz4hc,12 -T0 "$ROOTIMG" "$ROOT" >/dev/null ;;
-	# 内核没有 erofs 时的替代（例如 pmOS 的 sm8150 内核）：同样只读、lz4hc 压缩，时间戳固定以便复现
-	squashfs) mksquashfs "$ROOT" "$ROOTIMG" -noappend -quiet -no-progress -comp lz4 -Xhc \
+	erofs) mkfs.erofs $ROOT_FS_OPTS -T0 "$ROOTIMG" "$ROOT" >/dev/null ;;
+	# 内核没有 erofs 时的替代（例如 pmOS 的 sm8150 内核）：同样只读、压缩，时间戳固定以便复现
+	squashfs) mksquashfs "$ROOT" "$ROOTIMG" -noappend -quiet -no-progress $ROOT_FS_OPTS \
 		-mkfs-time 0 -all-time 0 >/dev/null ;;
 esac
 root_bytes=$(stat -c %s "$ROOTIMG")

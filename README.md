@@ -83,6 +83,7 @@ M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏�
 | 屏幕键盘（M4）：loong-shell 内的输入法、「墨韵」键盘与候选栏、`zwp_text_input_v3`、窗口避让、镜像中的预编译 Rime 数据（`loong-rime-data`） | ✅ 在无屏幕 loong-shell + WPE WebKit（loong-webapp、loong-browser）中端到端验证；还没上真机 |
 | `webrt/`：`loong-webapp`（每个应用一个进程、跟随系统外观）、系统应用的受限 JS bridge（`window.loong` → loong-sysd，见[说明](docs/api/loong-js-bridge.md)）、**设置**（无线局域网、显示与亮度、电池、关于本机） | ✅ 在无屏幕 loong-shell + WPE WebKit 中端到端验证（亮度滑块写入背光、电池读自 sysfs）；Wi‑Fi 用假 iwd 验证（还没有在真实网卡上试过） |
 | `webrt/platform`、`webrt/browser`：自写 `loong` WPEPlatform 后端（每个 view 一个 `wl_subsurface`）与系统浏览器 `loong-browser`（界面 + 网页同屏、标签页、「墨韵」界面、添加到主屏幕），见[下文](#浏览器) | ✅ 在 sway 与 loong-shell（无屏幕）中验证（M2） |
+| PWA 注册表 → 主屏（M2）：浏览器“添加到主屏幕”写 `~/.local/share/loong/webapps/<id>/`（manifest + 下载的图标），loong-shell 用 inotify 发现新应用、在主屏上落印入场；「墨韵」小笺（maskable 铺满、any 放在纸上、没有图标写首字）；点按以 loong-webapp 运行（作用域、主题色、背景色闪屏）；长按“移除应用”删除注册表与数据；`home.toml` 记主屏顺序，页数随应用增减，见 [PWA 注册表](docs/api/loong-webapps.md) | ✅ 在无屏幕 loong-shell + 真实的 loong-browser 与 loong-webapp 中端到端验证（`webrt/tests/pwa-headless.sh`）；还没在 QEMU 镜像里试过 |
 
 完整路线图（M0–M7）见[技术规划](docs/技术规划.md#五路线图)。
 
@@ -169,6 +170,7 @@ sudo tools/dev-chroot.sh run env FAKE_IWD=1 webrt/tests/settings-headless.sh out
 sudo tools/dev-chroot.sh run sh webrt/browser/tests/sway-run.sh 场景.txt out/browser http://127.0.0.1:8765/index.html
 #    场景文件每行一条命令（click / type / key / wheel / shot …，见脚本开头）；同时提供 webrt/browser/tests/pages/
 #    在 loong-shell 里点 Dock 图标启动、回放触摸：webrt/browser/tests/shell-run.sh 脚本.json out/shell [网址]
+#    PWA 安装 → 主屏落印 → 以 loong-webapp 运行 → 长按移除，端到端检查：sh webrt/tests/pwa-headless.sh（截图在 out/pwa）
 #    镜像：WITH_WPE=1 system/mkimage/mkimage.sh qemu-x86_64（安装 loong-webapp、loong-browser 与界面）
 #    瘦身用的本地包（字体子集、中英文 ICU 数据，几分钟）：构建后 mkimage 自动使用；WITH_DEVTOOLS=1 再装 foot 等开发工具
 sudo sh -c 'for p in font-noto-sans-sc-loong font-inter-loong icu-data-loong; do tools/build-pkg.sh $p; done'
@@ -195,7 +197,7 @@ loong-browser [--theme light|dark] [--search-url 'https://www.bing.com/search?q=
 
 - 主屏的“浏览器”图标启动它（`system/profiles/qemu-x86_64.apps.toml`）；再次启动时网址交给已运行的浏览器，开新标签页。
 - 数据目录 `~/.local/share/loong/browser/`，缓存 `~/.cache/loong/browser/`；搜索网址也可写在 `~/.config/loong/browser.ini` 的 `[browser] search-url=`。
-- “添加到主屏幕”把网页的 manifest 规范化后写入 `~/.local/share/loong/webapps/<id>/manifest.json`。
+- “添加到主屏幕”把网页的 manifest 规范化后写入 `~/.local/share/loong/webapps/<id>/manifest.json`，并下载一个图标；主屏随即出现新应用（见下文 [PWA 注册表](#pwa-注册表)）。
 - 调试：`LOONG_BROWSER_DEBUG=1` 打印网页控制台消息；`G_MESSAGES_DEBUG=loong-webrt` 打印后端的输入与能力日志。
 
 **loong-shell 为浏览器提供的能力**：
@@ -208,6 +210,16 @@ loong-browser [--theme light|dark] [--search-url 'https://www.bing.com/search?q=
 6. app_id `loong.browser`（以及 `loong.webapp.<id>`）在窗口第一次提交时对应到主屏的应用。
 7. 还缺：GPU 上的 DMA-BUF 路径要在真机（nabu）上实测（开发环境没有 GPU）。
 
+## PWA 注册表
+
+在浏览器里“添加到主屏幕”的网页就是已安装的应用：回到主屏时主屏展卷到它所在的页，图标“落印”入场；点按以 `loong-webapp` 独立运行（各自的数据目录，没有浏览器界面）；长按“移除应用”，确认后连同数据一起删除。格式、路径与动效见 [PWA 注册表](docs/api/loong-webapps.md)，端到端检查：`sudo tools/dev-chroot.sh run sh webrt/tests/pwa-headless.sh`。
+
+| 浏览器：添加到主屏幕 | 落印入场（盖下时纸上晕开一滴墨） | 以 loong-webapp 运行 |
+|---|---|---|
+| ![添加到主屏幕](docs/images/pwa-install.png) | ![落印](docs/images/pwa-entrance.png) | ![已安装的应用](docs/images/pwa-app.png) |
+| **长按：移除应用** | **确认** | **三种小笺：maskable、any、首字** |
+| ![长按菜单](docs/images/pwa-menu.png) | ![确认移除](docs/images/pwa-confirm.png) | ![三种小笺](docs/images/pwa-icons.png) |
+
 ## 文档
 
 - [技术规划](docs/技术规划.md)：技术选型、系统架构、多机型与手机形态、路线图、资源目标、风险
@@ -217,6 +229,7 @@ loong-browser [--theme light|dark] [--search-url 'https://www.bing.com/search?q=
 - [loong-sysd](docs/api/loong-sysd.md)：系统服务的 D-Bus 接口；[JS bridge](docs/api/loong-js-bridge.md)：系统 Web 应用如何调用它、安全模型、系统外观文件的约定
 - [loong-update](docs/api/loong-update.md)：OTA 更新包格式、A/B 写入与回滚、`org.loong.Update1`
 - [loong_app_v1](docs/api/loong-app-protocol.md)：应用与系统界面的私有 Wayland 协议；自适应状态栏（样式 > 主题色 > 取样 > 系统外观）
+- [PWA 注册表](docs/api/loong-webapps.md)：已安装 Web 应用的目录与 manifest 格式、图标、启动命令、主屏排列（home.toml）、落印与收墨
 
 ## 许可证
 

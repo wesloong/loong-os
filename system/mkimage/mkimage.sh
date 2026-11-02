@@ -83,13 +83,23 @@ case "$ROOT_FS" in
 	*) die "不支持的根文件系统: $ROOT_FS" ;;
 esac
 
-# loong-shell：与开发 chroot 同架构时是普通的 cargo 构建，否则是 tools/build-aarch64.sh 的交叉编译产物
+# loong-shell：与开发 chroot 同架构时是普通的 cargo 构建，否则是 tools/build-aarch64.sh 的交叉编译产物。
+# Web 运行时（WITH_WPE=1）同理：本机是 meson 的 build/webrt，跨架构是 tools/cross-build-webrt.sh 的 build/webrt-<架构>
 if [ "$ARCH" = "$HOST_ARCH" ]; then
 	SHELL_BIN=${SHELL_BIN:-$SRC/build/target-alpine/release/loong-shell}
 	SHELL_HINT="cargo build --release -p loong-shell -p loong-sysd -p loong-update"
+	WEBRT_DIR=${WEBRT_DIR:-$SRC/build/webrt}
+	WEBRT_HINT="meson setup build/webrt webrt && ninja -C build/webrt（见 README）"
 else
 	SHELL_BIN=${SHELL_BIN:-$SRC/build/target-alpine/$ARCH-alpine-linux-musl/release/loong-shell}
 	SHELL_HINT="tools/build-$ARCH.sh"
+	WEBRT_DIR=${WEBRT_DIR:-$SRC/build/webrt-$ARCH}
+	WEBRT_HINT="tools/cross-build-webrt.sh（先要有 $ARCH 的 wpewebkit：tools/cross-build-pkg.sh wpewebkit）"
+fi
+if [ -n "${WITH_WPE:-}" ]; then
+	for b in loong-webapp browser/loong-browser; do
+		[ -x "$WEBRT_DIR/$b" ] || die "缺少 $WEBRT_DIR/$b，请先运行 $WEBRT_HINT"
+	done
 fi
 [ -x "$SHELL_BIN" ] || die "缺少 $SHELL_BIN，请先运行 $SHELL_HINT"
 # loong-sysd、loong-update 与 loong-shell 由同一次（交叉）构建产出，放在同一目录
@@ -233,17 +243,13 @@ install -Dm644 "$UPDATE_PUBKEY" "$ROOT/usr/share/loong/update-keys/$(basename "$
 install -Dm644 "$SRC/system/profiles/$PROFILE.device.toml" "$ROOT/usr/share/loong/device.toml"
 # Web 运行时（WPE WebKit 构建完成后可用：WITH_WPE=1）
 if [ -n "${WITH_WPE:-}" ]; then
-	WEBAPP_BIN="$SRC/build/webrt/loong-webapp"
-	[ -x "$WEBAPP_BIN" ] || { echo "缺少 $WEBAPP_BIN，请先构建 webrt（见 README）" >&2; exit 1; }
-	install -Dm755 "$WEBAPP_BIN" "$ROOT/usr/bin/loong-webapp"
+	install -Dm755 "$WEBRT_DIR/loong-webapp" "$ROOT/usr/bin/loong-webapp"
 	# /usr/share/loong/web 是 JS bridge 的受信任目录（只读根分区）：系统 Web 应用（apps/，例如设置）
 	# 以 --bridge=system 启动时，起始页必须在这里面。见 docs/api/loong-js-bridge.md。
 	mkdir -p "$ROOT/usr/share/loong/web"
 	cp -a "$SRC/webrt/loongkit" "$SRC/webrt/demo" "$SRC/webrt/apps" "$ROOT/usr/share/loong/web/"
 	# 系统浏览器：程序 + 界面（界面与 LoongKit 的相对位置同源码树：web/browser/ui ↔ web/loongkit）
-	BROWSER_BIN="$SRC/build/webrt/browser/loong-browser"
-	[ -x "$BROWSER_BIN" ] || { echo "缺少 $BROWSER_BIN，请先构建 webrt（见 README）" >&2; exit 1; }
-	install -Dm755 "$BROWSER_BIN" "$ROOT/usr/bin/loong-browser"
+	install -Dm755 "$WEBRT_DIR/browser/loong-browser" "$ROOT/usr/bin/loong-browser"
 	mkdir -p "$ROOT/usr/share/loong/web/browser"
 	cp -a "$SRC/webrt/browser/ui" "$ROOT/usr/share/loong/web/browser/"
 	[ -f "$SRC/system/profiles/$PROFILE.apps.toml" ] && \

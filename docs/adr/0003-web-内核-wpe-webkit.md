@@ -53,7 +53,7 @@ Loong OS 不建设原生应用生态，所有应用都是 PWA，浏览器要基�
 
 **负面与风险**
 
-- **编译成本高**：4 核约需 3–6 小时。GitHub 托管 runner 单个任务最长 6 小时（`wpewebkit.yml` 超时设为 355 分钟）；ARM runner 只对公开仓库免费，私有仓库的 runner 只有 2 核。应对办法：使用 ccache；必要时在开发机或自托管 runner 上构建，再把 APK 发布到 Release。
+- **编译成本高**：4 核约需 3–6 小时。GitHub 托管 runner 单个任务最长 6 小时（`wpewebkit.yml` 超时设为 355 分钟）；ARM runner 只对公开仓库免费，私有仓库的 runner 只有 2 核。应对办法：使用 ccache；必要时在开发机或自托管 runner 上构建，再把 APK 发布到 Release。aarch64 不必有 ARM 机器：在 x86_64 上交叉编译（`tools/cross-build-pkg.sh`，4 核 `-j2` 约 3.5 小时），见文末“[aarch64：交叉编译](#aarch64交叉编译)”。
 - **打包与升级由我们维护**：每次升级 WPE 都要重新验证 musl 兼容性和编译选项。
 - **自写 WPEPlatform 后端是 M2 的关键风险**：如果首选方案受阻，就退回到由 shell 绘制浏览器工具栏。
 - **体积与内存**：WebKit 是系统中最大的组件。M6 已按体积重新编译并关掉 v1 用不到的功能（见文末“M6 瘦身记录”）；ICU 数据（`icu-data-loong`，中英文 7 MiB）与字体子集也已完成，见[体积预算](../体积预算.md)；还计划设置 WebKit 内存上限。
@@ -206,3 +206,9 @@ v1 的要求：PWA、系统浏览器、GStreamer 音视频、WebGL 与 GPU 合�
 
 - **镜像里播放任何 `<video>`/`<audio>` 都会让 Web 进程崩溃（r0 同样）**：WebKit 的 `createAutoAudioSink()` 直接用 gst-plugins-good 里的 `autoaudiosink`，找不到就对空指针连信号、随后崩溃；镜像只有 gst-plugins-base（随 wpewebkit 的依赖装进来）。镜像需要装 gst-plugins-good（至少 autodetect 插件；WebKit 调播放速率用的 `scaletempo` 也在里面）以及实际的音频输出（PipeWire 的 GStreamer 插件或 ALSA）。H.264/VP9/AV1 等解码器同样不在镜像里（`canPlayType` 只认 Ogg Theora/Vorbis/Opus），nabu 上要配 V4L2 硬解插件。在 chroot 里只让 GStreamer 看到镜像里的那 35 个插件即可复现；用 QEMU 验证时是把 autodetect 插件放在测试盘上、用 `GST_PLUGIN_PATH` 指过去（沙箱会绑定这个目录）。**已解决**：镜像装上自编的最小插件集 `gst-plugins-loong`（autodetect、解封装、VP8/VP9、MP3、V4L2 硬解等），QEMU 中 WebM、Ogg、MSE、`<audio>`、Web Audio 都能播放，见[媒体格式](../媒体格式.md)。
 - bubblewrap 在开发 chroot 里起不来（`bwrap: Failed to make / slave`），沙箱只能在 QEMU 或真机上验证。
+
+## aarch64：交叉编译
+
+开发机是 x86_64，nabu 是 aarch64。WebKit 在 aarch64 的 Alpine 构建 chroot 里经 qemu-user 编译（mesa-loong 就是这样打包的）要好几天，所以改为在 x86_64 开发 chroot 里交叉编译：`tools/cross-build-pkg.sh wpewebkit` 用 abuild 自带的交叉模式（`CHOST=aarch64`、`CBUILDROOT=<sysroot>`），clang/lld 原生运行，sysroot 由 `apk --root --arch aarch64` 安装（不运行任何 aarch64 程序），CMake 工具链文件是 `tools/cross/aarch64-alpine.cmake`。WebKit 本身支持交叉编译：构建时运行的都是 Perl/Python/Ruby 脚本和宿主机工具，LLInt 的偏移量由 offlineasm 从交叉编译出的 `LLIntOffsetsExtractor` 二进制里读出，不需要运行它。APKBUILD 只做了两处改动：`makedepends` 分成 `makedepends_build` / `makedepends_host`，交叉编译时显式给出 `bwrap`、`xdg-dbus-proxy` 的路径；体积参数与功能开关不变。
+
+结果（2026-11，4 核开发沙箱，`-j2`，与其他构建共用 CPU）：3 小时 28 分；`wpewebkit-2.54.2-r1` aarch64 APK 30.4 MB，安装后 79.8 MiB（x86_64 31.0 MB / 81.2 MiB），`libWPEWebKit` 83.6 MB（`.text` 71.5 MB）；JIT、DFG、FTL、WebAssembly 都开启（aarch64 的默认）。nabu 带 WebKit 的完整镜像只读根 141.4 MiB（squashfs lz4hc），QEMU aarch64 中设置与浏览器正常。步骤与验证见 [nabu 适配说明 · 交叉编译 WPE WebKit](../devices/xiaomi-nabu.md#交叉编译-wpe-webkitaarch64)。

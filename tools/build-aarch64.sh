@@ -33,9 +33,10 @@ SYSROOT=${SYSROOT:-$SRC/build/sysroot-$TARGET_ARCH}
 RUST_SYSROOT=${RUST_SYSROOT:-$SRC/build/rust-sysroot-$TARGET_ARCH}
 JOBS=${JOBS:-2}
 
-# loong-shell 链接的库（readelf -d 可查）：libseat、libudev、libinput、libxkbcommon、libgbm、libgcc_s、musl。
+# loong-shell 链接的库（readelf -d 可查）：libseat、libudev、libinput、libxkbcommon、libgbm、librime（loong-ime，
+# 屏幕键盘的拼音引擎）、libgcc_s、musl。
 # 不装 mesa-dev：它会拖入 rusticl/LLVM（数百 MB），而我们只需要 libgbm.so。
-SYSROOT_PKGS="musl-dev gcc libseat-dev eudev-dev libinput-dev libxkbcommon-dev mesa-gbm"
+SYSROOT_PKGS="musl-dev gcc libseat-dev eudev-dev libinput-dev libxkbcommon-dev mesa-gbm librime-dev"
 
 die() { echo "build-aarch64: $*" >&2; exit 1; }
 

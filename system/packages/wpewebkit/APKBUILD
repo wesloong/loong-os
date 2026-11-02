@@ -1,5 +1,7 @@
 # Loong OS: WPE WebKit（使用 2.54 起默认的 WPEPlatform API，不再依赖 libwpe/Cog）
 # 构建: tools/build-pkg.sh wpewebkit（中断后用 tools/resume-wpewebkit.sh 继续）
+# aarch64: 在 x86_64 开发 chroot 里交叉编译 tools/cross-build-pkg.sh wpewebkit（中断后加上 build rootpkg index 继续），
+#          见 docs/devices/xiaomi-nabu.md「交叉编译 WPE WebKit」
 #
 # 体积（M6 瘦身，取舍见 ADR 0003）：全局 -Os，JS 引擎、WebCore 的 DOM/样式/布局、Skia 等热点用 -O2；
 # 不生成 .eh_frame；关掉 v1 用不到的功能（摄像头/麦克风、WebRTC、WebCodecs、PDF.js、XSLT、AVIF/JPEG XL、
@@ -15,11 +17,16 @@ depends="bubblewrap xdg-dbus-proxy"
 # libavif-dev、libjxl-dev、libxslt-dev 不再需要（USE_AVIF、USE_JPEGXL、ENABLE_XSLT 已关闭）。
 # gst-plugins-bad-dev 仍然需要：开启视频时 FindGStreamer 必须找到 gstreamer-mpegts 的头文件
 # （运行时并不链接 libgstmpegts）。
-makedepends="
+# 分成两组（Alpine aports 的写法），交叉编译（tools/cross-build-pkg.sh）时分别装：
+#   makedepends_build  构建机上运行的工具（编译器、代码生成脚本的解释器等），装在开发 chroot 里；
+#                      glib-dev、wayland-dev 是为了构建时运行的 glib-compile-resources、glib-mkenums、wayland-scanner
+#   makedepends_host   要链接的目标架构的库，装进目标架构的 sysroot
+makedepends_build="
 	bison
 	clang
 	cmake
 	flex
+	glib-dev
 	gperf
 	lld
 	perl
@@ -28,7 +35,9 @@ makedepends="
 	ruby-getoptlong
 	samurai
 	unifdef
-
+	wayland-dev
+	"
+makedepends_host="
 	brotli-dev
 	expat-dev
 	fontconfig-dev
@@ -59,6 +68,7 @@ makedepends="
 	woff2-dev
 	zlib-dev
 	"
+makedepends="$makedepends_build $makedepends_host"
 subpackages="$pkgname-dev $pkgname-minibrowser"
 source="https://wpewebkit.org/releases/wpewebkit-$pkgver.tar.xz
 	loong-opt-targets.cmake
@@ -108,6 +118,15 @@ build() {
 	local launcher=""
 	command -v ccache >/dev/null && launcher="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
 
+	# 交叉编译（CHOST 与 CBUILD 不同，由 tools/cross-build-pkg.sh 设置）：编译器、sysroot、pkg-config 等
+	# 都在环境变量 CMAKE_TOOLCHAIN_FILE 指向的工具链文件里（tools/cross/<架构>-alpine.cmake），CMake 直接读这个变量。
+	# 交叉编译时 CMake 不能在构建机上探测 bwrap、xdg-dbus-proxy，直接给出目标系统上的路径（见 depends）。
+	local crossopts=""
+	if [ "$CBUILD" != "$CHOST" ]; then
+		[ -n "${CMAKE_TOOLCHAIN_FILE:-}" ] || die "交叉编译需要 CMAKE_TOOLCHAIN_FILE：用 tools/cross-build-pkg.sh 构建"
+		crossopts="-DBWRAP_EXECUTABLE=/usr/bin/bwrap -DDBUS_PROXY_EXECUTABLE=/usr/bin/xdg-dbus-proxy"
+	fi
+
 	# 功能开关（v1 需要：PWA、系统浏览器、GStreamer 音视频、WebGL 与 GPU 合成、JS bridge（脚本消息处理器）、
 	# text-input-v3 输入法、暗色模式）。被关掉的：
 	#   MEDIA_STREAM / MEDIA_RECORDER / WEB_RTC：摄像头不纳入 v1（技术规划），浏览器也一律拒绝权限请求
@@ -127,7 +146,7 @@ build() {
 	#   （以后做广告拦截）、USE_LCMS（带 ICC 配置的照片颜色正确）、WOFF2（Alpine 的 FreeType 自带解码）、
 	#   DARK_MODE_CSS、TOUCH_EVENTS、BUBBLEWRAP_SANDBOX。
 	# shellcheck disable=SC2086
-	cmake -B build -G Ninja $launcher \
+	cmake -B build -G Ninja $launcher $crossopts \
 		-DPORT=WPE \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DCMAKE_C_FLAGS_RELEASE=-DNDEBUG \

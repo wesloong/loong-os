@@ -187,11 +187,15 @@ if [ -d "$LOCAL_REPO/packages/$ARCH" ]; then
 	# （wpewebkit 包没有声明这个依赖，开发 chroot 里碰巧有，所以无屏幕测试发现不了）
 	[ -n "${WITH_WPE:-}" ] && PACKAGES="$PACKAGES wpewebkit shared-mime-info"
 	# 音视频：WebKit 的 <video>/<audio> 要 autoaudiosink 等 -good 插件（缺了网页进程崩溃）。最小插件集
-	# gst-plugins-loong（tools/build-pkg.sh gst-plugins-loong），不用 Alpine 的 gst-plugins-good 全家桶
+	# gst-plugins-loong（tools/build-pkg.sh gst-plugins-loong），不用 Alpine 的 gst-plugins-good 全家桶。
+	# MP4 的 H.264、AAC 软解：gst-libav-loong（avdec_h264、avdec_aac）连带只有这两个解码器的 ffmpeg-loong，
+	# 两个包都由 tools/build-pkg.sh ffmpeg-loong 构建（见 docs/媒体格式.md）
 	if [ -n "${WITH_WPE:-}" ]; then
 		ls "$LOCAL_REPO/packages/$ARCH"/gst-plugins-loong-*.apk >/dev/null 2>&1 ||
 			die "缺少 $ARCH 的 gst-plugins-loong 包：先运行 tools/build-pkg.sh gst-plugins-loong"
-		PACKAGES="$PACKAGES gst-plugins-loong"
+		ls "$LOCAL_REPO/packages/$ARCH"/gst-libav-loong-*.apk >/dev/null 2>&1 ||
+			die "缺少 $ARCH 的 gst-libav-loong 包：先运行 tools/build-pkg.sh ffmpeg-loong"
+		PACKAGES="$PACKAGES gst-plugins-loong gst-libav-loong"
 	fi
 	[ -n "${WITH_WPE:-}" ] && [ "${WITH_DEVTOOLS:-0}" = 1 ] && PACKAGES="$PACKAGES wpewebkit-minibrowser"
 	# 中英文 ICU 数据（7 MiB；ICU 只有 WebKit 用）：tools/build-pkg.sh icu-data-loong。没有它时 icu-libs

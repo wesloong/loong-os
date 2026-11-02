@@ -1,8 +1,7 @@
 # loong WPEPlatform 后端（静态库）：浏览器在进程内使用，之后 loong-webapp 也会用它。
 
-wayland_client = dependency('wayland-client', version: '>= 1.22')
+# wayland_client、wayland_scanner、loong_app_protocol 在上一级 meson.build 中定义。
 wayland_protocols = dependency('wayland-protocols', version: '>= 1.32')
-wayland_scanner = find_program(dependency('wayland-scanner', native: true).get_variable('wayland_scanner'))
 xkbcommon = dependency('xkbcommon')
 libdrm = dependency('libdrm', required: false)
 
@@ -44,6 +43,7 @@ loong_platform = static_library('loong-platform',
   'loong-view.c',
   protocol_sources,
   protocol_headers,
+  loong_app_protocol,
   c_args: loong_platform_args,
   dependencies: [wpe_platform, wayland_client, xkbcommon, libdrm],
 )

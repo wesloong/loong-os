@@ -64,6 +64,7 @@ M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏�
 | `tools/dev-chroot.sh`、`tools/build-pkg.sh`：Alpine 3.24 构建 chroot 与 APK 打包 | ✅ 已完成 |
 | `crates/loong-motion`：弹簧、惯性衰减、橡皮筋、速度跟踪、吸附/分页、CSS `linear()` 缓动 | ✅ 已完成（含单元测试） |
 | `system/packages/wpewebkit`：WPE WebKit 2.54.2 APKBUILD 与 CI 工作流 | ✅ 已在 chroot 中编译出 APK（约 47MB，安装后 119MB） |
+| `system/packages/mesa-loong`（M6）：自编 Mesa 26.1——freedreno（nabu）、virgl、softpipe，只有 EGL + GLES，不依赖 LLVM、X11、Vulkan；机型配置用 `MESA_FLAVOR` 选图形栈 | ✅ 图形栈安装后 241 MB → 14 MB，QEMU 根镜像（erofs）327 → 217 MiB；QEMU 中锁屏、主屏、手势动画、设置、浏览器显示正常（softpipe，比 llvmpipe 慢数倍）；aarch64 包可构建，freedreno 未上真机 |
 | `crates/loong-ui`：「墨韵」设计令牌（宣纸/夜墨）、连续圆角、文字（中文，霞鹜文楷）、水墨绘画工具（宣纸、毛笔笔触、山水长卷、宣纸小笺图标、印章） | ✅ 已完成 |
 | `crates/loong-shell`：headless 后端、主屏（分页）、打开应用 / 回主屏手势动画、多任务（上滑停顿进入、横向滚动吸附、点按打开、上滑关闭）、真实 Wayland 客户端（xdg-shell、子表面、linux-dmabuf v4、viewporter、分数缩放）、「墨韵」水墨动效（点墨、晕染、笔迹、展卷、墨散）、跟随系统外观、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证）；WebKit 走 GPU（dmabuf）要在有 GPU 的真机上验证 |
 | QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
@@ -91,13 +92,14 @@ M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏�
 | `protocols/` | Loong 私有 Wayland 协议：`loong-app-v1.xml`（状态栏样式、主题色），见 [docs/api/loong-app-protocol.md](docs/api/loong-app-protocol.md) | 已有 |
 | `webrt/` | C/meson：`webapp/`（loong-webapp 与 JS bridge）、`apps/`（系统 Web 应用：设置）、`platform/`（`loong` WPEPlatform 后端）、`browser/`（loong-browser 与测试工具）、`loongkit/`、`demo/` | 已有（M2 进行中） |
 | `system/packages/wpewebkit/` | WPE WebKit 的 APKBUILD | 已有 |
+| `system/packages/mesa-loong/` | 精简的 Mesa（无 LLVM/X11/Vulkan）与 `libGL.so.1` 桩，镜像默认的图形栈 | 已有（M6） |
 | `system/packages/loong-rime-data/` | 拼音输入法的 Rime 数据（构建时预编译词典，约 8 MiB） | 已有 |
 | `system/packages/loong-*/` | `loong-shell`、`loong-webrt`、`loong-base`、`loong-initramfs`、`loong-device-*` | 计划 |
 | `system/rootfs/` | OpenRC 服务：`loong-session`（系统界面）、`loong-boot-ok`（A/B 启动确认） | 已有 |
 | `system/profiles/` | 机型配置与设备描述：`qemu-x86_64`、`qemu-aarch64`、`xiaomi-nabu` | 已有（nabu 未上机） |
 | `system/devices/<机型>/`、`system/keys/` | 机型专属文件（如 nabu 的音频 UCM）；第三方软件源公钥（postmarketOS/Nura） | 已有 |
 | `system/initramfs/`、`system/mkimage/` | busybox initramfs（含动态分区映射 `loong-dynpart`）；镜像构建：apk → rootfs → erofs → initramfs → UKI + GPT 磁盘，或 boot.img + super.img | 已有 |
-| `tools/dev-chroot.sh`、`tools/build-pkg.sh` | 开发 chroot、APK 构建 | 已有 |
+| `tools/dev-chroot.sh`、`tools/build-pkg.sh` | 开发 chroot、APK 构建（`ARCH=aarch64` 时在 aarch64 构建 chroot 里经 qemu-user 编译） | 已有 |
 | `tools/setup-binfmt.sh`、`tools/build-aarch64.sh` | 宿主机注册 qemu-user binfmt；交叉编译 aarch64 的 Rust 组件 | 已有 |
 | `tools/qemu.py` | QEMU 启动、QMP 截图、模拟点按/滑动 | 已有 |
 | `.github/workflows/` | `rust.yml`、`wpewebkit.yml` 已有；`image.yml` 计划中 | 部分已有 |
@@ -129,6 +131,10 @@ sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build -p loong-shell && \
 #    keyboard.json（屏幕键盘；用真实 WebKit 客户端打字见 docs/api/loong-ime.md 第 8.1 节）
 
 # 5. 构建 QEMU 系统镜像并启动（在 chroot 内运行 QEMU，TCG 软件模拟，较慢）
+#    镜像默认用自编的 mesa-loong（不依赖 LLVM），先打包一次（4 核约 7 分钟）。QEMU 里它用 softpipe 软件渲染，
+#    比 llvmpipe 慢数倍（解锁约 50 秒，设置约 6 分钟才显示）；交互调试时可在 mkimage 前加 MESA_FLAVOR=distro
+#    换回 Alpine 的 mesa（llvmpipe；根镜像会大约 110 MiB）
+sudo JOBS=2 tools/build-pkg.sh mesa-loong
 sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build --release -p loong-shell -p loong-sysd -p loong-update && \
   system/mkimage/mkimage.sh qemu-x86_64 && \
   python3 tools/qemu.py start build/image/qemu-x86_64/loong-qemu-x86_64.img && \
@@ -138,6 +144,7 @@ sudo tools/dev-chroot.sh run sh -c 'cd /src && cargo build --release -p loong-sh
 # 6. aarch64：先在宿主机注册 qemu-user binfmt（每次开机一次），再交叉编译 loong-shell、构建并启动镜像
 #    （aarch64 在 TCG 下比 x86_64 慢得多，启动到锁屏要几分钟）
 sudo tools/setup-binfmt.sh
+sudo ARCH=aarch64 JOBS=2 tools/build-pkg.sh mesa-loong   # 在 aarch64 构建 chroot 里经 qemu-user 编译，约 1 小时（只需一次）
 sudo tools/dev-chroot.sh run sh -c 'tools/build-aarch64.sh && system/mkimage/mkimage.sh qemu-aarch64 && \
   python3 tools/qemu.py start build/image/qemu-aarch64/loong-qemu-aarch64.img --arch aarch64'
 #    小米平板 5：system/mkimage/mkimage.sh xiaomi-nabu，刷机见 docs/devices/xiaomi-nabu.md

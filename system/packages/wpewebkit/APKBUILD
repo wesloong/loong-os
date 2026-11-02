@@ -2,7 +2,8 @@
 # 构建: tools/build-pkg.sh wpewebkit（中断后用 tools/resume-wpewebkit.sh 继续）
 #
 # 体积（M6 瘦身，取舍见 ADR 0003）：全局 -Os，JavaScriptCore / WTF / bmalloc / Skia 用 -O2；
-# 不生成 .eh_frame；lld --icf=safe。
+# 不生成 .eh_frame；关掉 v1 用不到的功能（摄像头/麦克风、WebRTC、WebCodecs、PDF.js、XSLT、AVIF/JPEG XL、
+# GPU 进程、远程 Web Inspector 等），去掉 libavif（连带 aom、dav1d、libyuv）、libjxl、libxslt 依赖。
 pkgname=wpewebkit
 pkgver=2.54.2
 pkgrel=1
@@ -11,6 +12,9 @@ url="https://wpewebkit.org/"
 arch="aarch64 x86_64"
 license="LGPL-2.0-or-later AND BSD-2-Clause"
 depends="bubblewrap xdg-dbus-proxy"
+# libavif-dev、libjxl-dev、libxslt-dev 不再需要（USE_AVIF、USE_JPEGXL、ENABLE_XSLT 已关闭）。
+# gst-plugins-bad-dev 仍然需要：开启视频时 FindGStreamer 必须找到 gstreamer-mpegts 的头文件
+# （运行时并不链接 libgstmpegts）。
 makedepends="
 	bison
 	clang
@@ -37,12 +41,10 @@ makedepends="
 	harfbuzz-dev
 	icu-dev
 	lcms2-dev
-	libavif-dev
 	libdrm-dev
 	libepoxy-dev
 	libgcrypt-dev
 	libjpeg-turbo-dev
-	libjxl-dev
 	libpng-dev
 	libseccomp-dev
 	libsoup3-dev
@@ -50,7 +52,6 @@ makedepends="
 	libwebp-dev
 	libxkbcommon-dev
 	libxml2-dev
-	libxslt-dev
 	mesa-dev
 	sqlite-dev
 	wayland-dev
@@ -64,6 +65,12 @@ source="https://wpewebkit.org/releases/wpewebkit-$pkgver.tar.xz
 	"
 # 上游测试需要完整的测试基础设施（WebKitTestRunner 等），打包时不运行。
 options="!check"
+
+# 开发构建把它改成 ON（tools/build-pkg.sh 会清空环境变量，所以直接改这里）：
+# 打开远程 Web Inspector（运行时用 WEBKIT_INSPECTOR_HTTP_SERVER=127.0.0.1:9222 等启用）、
+# Inspector 的 JS 采样分析器与 CPU/内存时间线（SAMPLING_PROFILER、RESOURCE_USAGE），并安装 inspector.gresource（约 1.4MB）。
+# 发布构建保持 OFF：这些只服务于调试，还会给 GC 带来额外的内存统计开销。
+_devtools=OFF
 
 # 热点目标：用 -O2 而不是全局的 -Os（见 loong-opt-targets.cmake）。
 # JavaScriptCore：JS 引擎的 C++ 部分（解析、字节码生成、GC、运行时慢路径、正则、各级 JIT 编译器本身）；
@@ -97,6 +104,24 @@ build() {
 	local launcher=""
 	command -v ccache >/dev/null && launcher="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
 
+	# 功能开关（v1 需要：PWA、系统浏览器、GStreamer 音视频、WebGL 与 GPU 合成、JS bridge（脚本消息处理器）、
+	# text-input-v3 输入法、暗色模式）。被关掉的：
+	#   MEDIA_STREAM / MEDIA_RECORDER / WEB_RTC：摄像头不纳入 v1（技术规划），浏览器也一律拒绝权限请求
+	#   WEB_CODECS：底层编解码 API，<video>/<audio>/MSE 播放不依赖它
+	#   PDFJS：内置 PDF 阅读器（约 3.7MB 的 JS 资源）；PDF 现在按“不能显示的内容”处理（浏览器提示暂不支持下载）
+	#   XSLT：网页几乎不用，主流浏览器也在移除；去掉 libxslt 依赖
+	#   USE_AVIF / USE_JPEGXL：网站会用 <picture>/Accept 回退到 WebP/JPEG；去掉 libavif（连带 aom、dav1d、libyuv）
+	#     与 libjxl（连带 libhwy）
+	#   GPU_PROCESS：WPE 上 WebGL、媒体、DOM 绘制默认都不走 GPU 进程（运行时开关默认关闭），WebGL 在 Web 进程里
+	#     经 ANGLE 渲染；关掉后不再编译 GPU 进程及其 IPC 代码，也少一个 WPEGPUProcess
+	#   MHTML、MEMORY_SAMPLER：保存网页为 MHTML、按环境变量周期性记录内存，都用不到
+	#   WEBXR、ENCRYPTED_MEDIA：默认就是关的（实验功能 / 需要 Thunder），这里写明
+	#   JAVASCRIPT_SHELL：jsc 命令行本来就不安装，不编译以节省时间
+	#   REMOTE_INSPECTOR、SAMPLING_PROFILER、RESOURCE_USAGE：跟随 _devtools
+	# 保留：VIDEO、MEDIA_SOURCE（流媒体网站）、WEB_AUDIO（游戏与音频类应用）、USE_GSTREAMER_GL、WEBGL、
+	#   WEBASSEMBLY 与 FTL JIT（性能）、NOTIFICATIONS、MEDIA_SESSION（以后做系统媒体控制）、CONTENT_EXTENSIONS
+	#   （以后做广告拦截）、USE_LCMS（带 ICC 配置的照片颜色正确）、WOFF2（Alpine 的 FreeType 自带解码）、
+	#   DARK_MODE_CSS、TOUCH_EVENTS、BUBBLEWRAP_SANDBOX。
 	# shellcheck disable=SC2086
 	cmake -B build -G Ninja $launcher \
 		-DPORT=WPE \
@@ -121,11 +146,27 @@ build() {
 		-DENABLE_SPELLCHECK=OFF \
 		-DENABLE_GAMEPAD=OFF \
 		-DENABLE_SPEECH_SYNTHESIS=OFF \
-		-DENABLE_SAMPLING_PROFILER=OFF \
+		-DENABLE_MEDIA_STREAM=OFF \
+		-DENABLE_MEDIA_RECORDER=OFF \
+		-DENABLE_WEB_RTC=OFF \
+		-DENABLE_WEB_CODECS=OFF \
+		-DENABLE_PDFJS=OFF \
+		-DENABLE_XSLT=OFF \
+		-DENABLE_GPU_PROCESS=OFF \
+		-DENABLE_MHTML=OFF \
+		-DENABLE_MEMORY_SAMPLER=OFF \
+		-DENABLE_WEBXR=OFF \
+		-DENABLE_ENCRYPTED_MEDIA=OFF \
+		-DENABLE_JAVASCRIPT_SHELL=OFF \
+		-DENABLE_REMOTE_INSPECTOR=$_devtools \
+		-DENABLE_SAMPLING_PROFILER=$_devtools \
+		-DENABLE_RESOURCE_USAGE=$_devtools \
 		-DENABLE_BUBBLEWRAP_SANDBOX=ON \
 		-DENABLE_MINIBROWSER=ON \
 		-DENABLE_API_TESTS=OFF \
 		-DENABLE_LAYOUT_TESTS=OFF \
+		-DUSE_AVIF=OFF \
+		-DUSE_JPEGXL=OFF \
 		-DUSE_ATK=OFF \
 		-DUSE_FLITE=OFF \
 		-DUSE_LIBBACKTRACE=OFF \
@@ -138,6 +179,9 @@ build() {
 
 package() {
 	DESTDIR="$pkgdir" cmake --install build
+	# inspector.gresource 是 Web Inspector 前端，只有远程 Inspector 用得到（WPE 没有本地 Inspector 窗口）。
+	[ "$_devtools" = ON ] || rm -f "$pkgdir"/usr/share/wpe-webkit-2.0/inspector.gresource
+	rmdir "$pkgdir"/usr/share/wpe-webkit-2.0 2>/dev/null || true
 }
 
 minibrowser() {

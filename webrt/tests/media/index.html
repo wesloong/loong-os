@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>媒体检查</title>
 <!-- Loong OS 的音视频检查页（WebKit + gst-plugins-loong + gst-libav-loong）。片段由同目录的 mkclips.sh 生成。
-     地址参数 ?only=webm,ogg,mse,vp8,mp4,msemp4,mp3,opus,m4a,webaudio 只运行其中几项（默认除 vp8 外全部）。
+     地址参数 ?only=webm,ogg,mse,vp8,mp4,msemp4,mp3,opus,m4a,webaudio 只运行其中几项（默认除 vp8 外全部），
+     加上 &loop 时循环播放。
      每 2 秒在控制台输出一行 MEDIA {...}（loong-webapp 设 LOONG_WEBAPP_CONSOLE=1 时写到标准输出）。
      要经 HTTP 打开：file:// 时 GStreamer 在 Web 进程里直接读文件，bubblewrap 沙箱里看不到 /home 下的片段，
      MSE 的 blob: 地址在 file://（null 源）下也会被拒绝。 -->
@@ -66,6 +67,9 @@ document.querySelectorAll("figure[data-case]").forEach((f) => {
   f.querySelectorAll("video, audio").forEach((m) => { m.removeAttribute("src"); m.load(); });
   f.remove();
 });
+
+// ?loop：循环播放（例如检查两个网页同时出声时，让先开始的一路不会先放完）
+if (params.has("loop")) document.querySelectorAll("video, audio").forEach((m) => { m.loop = true; });
 
 const notes = {};          // 每项的事件/错误
 const webaudio = { state: "未开始" };

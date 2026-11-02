@@ -58,7 +58,7 @@ ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-she
 
 M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏览器）、M4（键盘、设置）、M5（OTA）的主体都已完成，并在 QEMU 或无屏幕模式下验证；M3（小米平板 5 适配）的镜像可以构建，还没有上真机。下一步主要是真机验证（触摸、GPU、Wi‑Fi、电池、120Hz、休眠）和继续瘦身（M6）。
 
-**体积**（M6，见[体积预算](docs/体积预算.md)）：按真机的配置（自编的 `mesa-loong`，不依赖 LLVM），带 WebKit 的完整镜像只读根从 327.7 MiB 降到 124.8 MiB，再换上按体积重编的 WebKit（r1）后为 **101.0 MiB**，已低于 150 MiB 的目标。其中 rootfs 瘦身这一轮：思源黑体子集（88 MB → 4 MiB，可变字重）、内核模块与固件白名单、开发工具改为可选、清理文档等，以及 erofs 改用 64 KiB 物理簇；同时补上了中文 ICU 数据（`Intl` 中文格式、拼音排序、中文分词）。QEMU 机型默认用带 llvmpipe 的 Alpine mesa（TCG 下快得多），只读根 217.0 MiB。nabu 镜像（mesa-loong，暂不含 WebKit）68 MiB。WebKit 及其依赖压缩后从约 85 MiB 降到 61 MiB（库 123 → 85 MB：全局 `-Os`、热点 `-O2`、不生成 `.eh_frame`、关掉 v1 用不到的功能，见 [ADR 0003](docs/adr/0003-web-内核-wpe-webkit.md#m6-瘦身记录webkit-体积)），仍是最大的一块。
+**体积**（M6，见[体积预算](docs/体积预算.md)）：按真机的配置（自编的 `mesa-loong`，不依赖 LLVM），带 WebKit 的完整镜像只读根从 327.7 MiB 降到 124.8 MiB，再换上按体积重编的 WebKit（r1）后为 **101.0 MiB**，已低于 150 MiB 的目标；补上音视频插件（`gst-plugins-loong` 与 libvpx、libmpg123，+3.0 MiB）后为 104.0 MiB。其中 rootfs 瘦身这一轮：思源黑体子集（88 MB → 4 MiB，可变字重）、内核模块与固件白名单、开发工具改为可选、清理文档等，以及 erofs 改用 64 KiB 物理簇；同时补上了中文 ICU 数据（`Intl` 中文格式、拼音排序、中文分词）。QEMU 机型默认用带 llvmpipe 的 Alpine mesa（TCG 下快得多），只读根 217.0 MiB。nabu 镜像（mesa-loong，暂不含 WebKit）68 MiB。WebKit 及其依赖压缩后从约 85 MiB 降到 61 MiB（库 123 → 85 MB：全局 `-Os`、热点 `-O2`、不生成 `.eh_frame`、关掉 v1 用不到的功能，见 [ADR 0003](docs/adr/0003-web-内核-wpe-webkit.md#m6-瘦身记录webkit-体积)），仍是最大的一块。
 
 | 模块 | 状态 |
 |---|---|
@@ -67,6 +67,7 @@ M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏�
 | `crates/loong-motion`：弹簧、惯性衰减、橡皮筋、速度跟踪、吸附/分页、CSS `linear()` 缓动 | ✅ 已完成（含单元测试） |
 | `system/packages/wpewebkit`：WPE WebKit 2.54.2 APKBUILD 与 CI 工作流 | ✅ 已在 chroot 中编译出 APK（r1：31MB，安装后 81MiB；M6 按体积编译、关掉 v1 用不到的功能，r0 是 47MB / 119MiB，取舍与实测见 [ADR 0003](docs/adr/0003-web-内核-wpe-webkit.md#m6-瘦身记录webkit-体积)） |
 | `system/packages/mesa-loong`（M6）：自编 Mesa 26.1——freedreno（nabu）、virgl、softpipe，只有 EGL + GLES，不依赖 LLVM、X11、Vulkan；机型配置用 `MESA_FLAVOR` 选图形栈 | ✅ 图形栈安装后 241 MB → 14 MB，QEMU 根镜像（erofs）327 → 217 MiB；QEMU 中锁屏、主屏、手势动画、设置、浏览器显示正常（softpipe，比 llvmpipe 慢数倍）；aarch64 包可构建，freedreno 未上真机 |
+| `system/packages/gst-plugins-loong`：音视频的最小 GStreamer 插件集（autodetect、WebM/MP4/Ogg/MP3/WAV 解封装、VP8/VP9 与 MP3 软解、V4L2 硬解与 h264parse、MSE 用的 opusparse；不装 Alpine 的 gst-plugins-good 全家桶），见[媒体格式](docs/媒体格式.md) | ✅ 修好“任何 `<video>`/`<audio>` 都让网页进程崩溃”；QEMU 中 WebM（VP9+Opus）、Ogg（Theora+Vorbis）、MSE、`<audio>`（MP3、Opus）、Web Audio 同时播放正常，只读根 +3.0 MiB；没有 AAC 与 H.264 软解，nabu 的 Venus 硬解与扬声器路由未上真机 |
 | `crates/loong-ui`：「墨韵」设计令牌（宣纸/夜墨）、连续圆角、文字（中文，霞鹜文楷）、水墨绘画工具（宣纸、毛笔笔触、山水长卷、宣纸小笺图标、印章） | ✅ 已完成 |
 | `crates/loong-shell`：headless 后端、主屏（分页）、打开应用 / 回主屏手势动画、多任务（上滑停顿进入、横向滚动吸附、点按打开、上滑关闭）、真实 Wayland 客户端（xdg-shell、子表面、linux-dmabuf v4、viewporter、分数缩放）、「墨韵」水墨动效（点墨、晕染、笔迹、展卷、墨散）、跟随系统外观、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证）；WebKit 走 GPU（dmabuf）要在有 GPU 的真机上验证 |
 | QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
@@ -96,6 +97,7 @@ M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏�
 | `webrt/` | C/meson：`webapp/`（loong-webapp 与 JS bridge）、`apps/`（系统 Web 应用：设置）、`platform/`（`loong` WPEPlatform 后端）、`browser/`（loong-browser 与测试工具）、`loongkit/`、`demo/` | 已有（M2 进行中） |
 | `system/packages/wpewebkit/` | WPE WebKit 的 APKBUILD | 已有 |
 | `system/packages/mesa-loong/` | 精简的 Mesa（无 LLVM/X11/Vulkan）与 `libGL.so.1` 桩，镜像默认的图形栈 | 已有（M6） |
+| `system/packages/gst-plugins-loong/` | WebKit 播放音视频的最小 GStreamer 插件集（gst-plugins-good/bad 的子集），见[媒体格式](docs/媒体格式.md) | 已有 |
 | `system/packages/loong-rime-data/` | 拼音输入法的 Rime 数据（构建时预编译词典，约 8 MiB） | 已有 |
 | `system/packages/loong-*/` | `loong-shell`、`loong-webrt`、`loong-base`、`loong-initramfs`、`loong-device-*` | 计划 |
 | `system/rootfs/` | OpenRC 服务：`loong-session`（系统界面）、`loong-boot-ok`（A/B 启动确认） | 已有 |

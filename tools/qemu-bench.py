@@ -126,6 +126,8 @@ def run_once(args, idx):
             if time.time() > t0 + 30:
                 raise
             time.sleep(0.1)
+    # 虚拟机偶尔卡死在固件里，QMP 的截图命令就不再返回：给连接设上超时，免得一直等下去
+    q.s.settimeout(120)
     result = {}
     # 锁屏是浅色宣纸（夜墨主题时请改阈值）；UEFI 与内核控制台阶段是黑屏
     result["boot_to_lock_s"], _ = wait_ready(q, tmp, t0, 600, 4.0, bright=100)

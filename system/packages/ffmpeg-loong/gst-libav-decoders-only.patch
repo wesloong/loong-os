@@ -1,0 +1,168 @@
+gst-libav：只编解码器（avdec_*），不要 libavformat 与 libavfilter（Loong OS）
+
+ffmpeg-loong 只编 h264、aac 两个解码器，FFmpeg 的封装/解封装与滤镜都不编（解封装由 GStreamer 的
+qtdemux/matroskademux 做）。gst-libav 里的 avdemux_*、avmux_*、avenc_*、avdeinterlace、avvidcmp 在这样的
+FFmpeg 上要么什么也不注册、要么用不上，却要链接 libavformat、libavfilter。这里把它们从构建里去掉：
+
+- meson.build：只依赖 libavcodec、libavutil
+- ext/libav/meson.build：只编 gstav、gstavcodecmap、gstavutils、gstavauddec、gstavviddec、gstavcfg
+- gstav.c/.h：去掉 avformat_find_stream_info 的封装与上述元素的注册
+- gstavcodecmap.c/.h：去掉只给 avmux 用的 gst_ffmpeg_formatid_get_codecids（参数是 AVOutputFormat）
+- gstavauddec.c、gstavviddec.c：FFmpeg 以 --enable-small 编译时 AVCodec.long_name 为 NULL，
+  元素的长名改用短名（否则是 "libav (null) decoder"）
+
+--- a/ext/libav/gstav.c
++++ b/ext/libav/gstav.c
+@@ -72,18 +72,6 @@
+   return ret;
+ }
+
+-int
+-gst_ffmpeg_av_find_stream_info (AVFormatContext * ic)
+-{
+-  int ret;
+-
+-  g_mutex_lock (&gst_avcodec_mutex);
+-  ret = avformat_find_stream_info (ic, NULL);
+-  g_mutex_unlock (&gst_avcodec_mutex);
+-
+-  return ret;
+-}
+-
+ #ifndef GST_DISABLE_GST_DEBUG
+ static void
+ gst_ffmpeg_log_callback (void *ptr, int level, const char *fmt, va_list vl)
+@@ -148,14 +136,8 @@
+   /* build global ffmpeg param/property info */
+   gst_ffmpeg_cfg_init ();
+
+-  gst_ffmpegaudenc_register (plugin);
+-  gst_ffmpegvidenc_register (plugin);
+   gst_ffmpegauddec_register (plugin);
+   gst_ffmpegviddec_register (plugin);
+-  gst_ffmpegdemux_register (plugin);
+-  gst_ffmpegmux_register (plugin);
+-  gst_ffmpegdeinterlace_register (plugin);
+-  gst_ffmpegvidcmp_register (plugin);
+
+   /* Now we can return the pointer to the newly created Plugin object. */
+   return TRUE;
+--- a/ext/libav/gstav.h
++++ b/ext/libav/gstav.h
+@@ -25,7 +25,6 @@
+ #define __GST_FFMPEG_H__
+
+ #include <libavcodec/avcodec.h>
+-#include <libavformat/avformat.h>
+
+ #include <gst/gst.h>
+ #include <gst/audio/audio.h>
+@@ -46,7 +45,6 @@
+ extern gboolean gst_ffmpegvidcmp_register (GstPlugin * plugin);
+
+ int gst_ffmpeg_avcodec_open (AVCodecContext *avctx, const AVCodec *codec);
+-int gst_ffmpeg_av_find_stream_info(AVFormatContext *ic);
+
+ G_END_DECLS
+
+--- a/ext/libav/gstavauddec.c
++++ b/ext/libav/gstavauddec.c
+@@ -80,7 +80,9 @@
+   g_assert (in_plugin != NULL);
+
+   /* construct the element details struct */
+-  longname = g_strdup_printf ("libav %s decoder", in_plugin->long_name);
++  /* FFmpeg 以 --enable-small 编译时 long_name 为 NULL */
++  longname = g_strdup_printf ("libav %s decoder",
++      in_plugin->long_name ? in_plugin->long_name : in_plugin->name);
+   description = g_strdup_printf ("libav %s decoder", in_plugin->name);
+   gst_element_class_set_metadata (element_class, longname,
+       "Codec/Decoder/Audio", description,
+--- a/ext/libav/gstavcodecmap.c
++++ b/ext/libav/gstavcodecmap.c
+@@ -4304,6 +4304,7 @@
+   return caps;
+ }
+
++#if 0                           /* Loong OS：只要解码器，不链接 libavformat */
+ gboolean
+ gst_ffmpeg_formatid_get_codecids (const gchar * format_name,
+     enum AVCodecID **video_codec_list, enum AVCodecID **audio_codec_list,
+@@ -4514,6 +4515,7 @@
+
+   return TRUE;
+ }
++#endif
+
+ /* Convert a GstCaps to a FFMPEG codec ID. Size et all
+  * are omitted, that can be queried by the user itself,
+--- a/ext/libav/gstavcodecmap.h
++++ b/ext/libav/gstavcodecmap.h
+@@ -21,7 +21,6 @@
+ #define __GST_FFMPEG_CODECMAP_H__
+
+ #include <libavcodec/avcodec.h>
+-#include <libavformat/avformat.h>
+ #include <gst/gst.h>
+ #include <gst/audio/audio.h>
+ #include <gst/video/video.h>
+@@ -124,11 +123,6 @@
+  * output format.
+  */
+
+-gboolean
+-gst_ffmpeg_formatid_get_codecids (const gchar *format_name,
+-                                  enum AVCodecID ** video_codec_list,
+-                                  enum AVCodecID ** audio_codec_list,
+-                                  const AVOutputFormat * plugin);
+
+ #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(57, 28, 100)
+ gboolean
+--- a/ext/libav/gstavviddec.c
++++ b/ext/libav/gstavviddec.c
+@@ -279,7 +279,9 @@
+   g_assert (in_plugin != NULL);
+
+   /* construct the element details struct */
+-  longname = g_strdup_printf ("libav %s decoder", in_plugin->long_name);
++  /* FFmpeg 以 --enable-small 编译时 long_name 为 NULL */
++  longname = g_strdup_printf ("libav %s decoder",
++      in_plugin->long_name ? in_plugin->long_name : in_plugin->name);
+   description = g_strdup_printf ("libav %s decoder", in_plugin->name);
+   gst_element_class_set_metadata (element_class, longname,
+       "Codec/Decoder/Video", description,
+--- a/ext/libav/meson.build
++++ b/ext/libav/meson.build
+@@ -1,17 +1,10 @@
+ libav_sources = [
+     'gstav.c',
+-    'gstavprotocol.c',
+     'gstavcodecmap.c',
+     'gstavutils.c',
+-    'gstavaudenc.c',
+-    'gstavvidenc.c',
+     'gstavauddec.c',
+     'gstavviddec.c',
+     'gstavcfg.c',
+-    'gstavdemux.c',
+-    'gstavmux.c',
+-    'gstavdeinterlace.c',
+-    'gstavvidcmp.c',
+ ]
+
+ libav_headers = [
+--- a/meson.build
++++ b/meson.build
+@@ -21,11 +21,9 @@
+ api_version = '1.0'
+ libavcodec_dep = dependency('libavcodec', version: '>= 58.18.100', allow_fallback: true,
+     default_options: ['suppress_warnings=true'])
+-libavfilter_dep = dependency('libavfilter', version: '>= 7.16.100')
+-libavformat_dep = dependency('libavformat', version: '>= 58.12.100')
+ libavutil_dep = dependency('libavutil', version: '>= 56.14.100')
+
+-libav_deps = [libavcodec_dep, libavfilter_dep, libavformat_dep, libavutil_dep]
++libav_deps = [libavcodec_dep, libavutil_dep]
+
+ cc = meson.get_compiler('c')
+ static_build = get_option('default_library') == 'static'

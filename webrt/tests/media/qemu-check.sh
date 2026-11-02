@@ -31,7 +31,8 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE"
 cp -a "$CLIPS"/. "$STAGE"/
 cp /bin/busybox-extras "$STAGE"/
-printf '%s\n' .webm:video/webm .ogv:video/ogg .opus:audio/ogg .mp3:audio/mpeg .js:text/javascript \
+printf '%s\n' .webm:video/webm .ogv:video/ogg .opus:audio/ogg .mp3:audio/mpeg .mp4:video/mp4 .m4a:audio/mp4 \
+	.js:text/javascript \
 	.html:"text/html; charset=utf-8" > "$STAGE"/httpd.conf
 tar -C "$STAGE" -cf "$OUT/media.tar" .
 rm -rf "$STAGE"

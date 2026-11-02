@@ -1,7 +1,7 @@
 # Loong OS: WPE WebKit（使用 2.54 起默认的 WPEPlatform API，不再依赖 libwpe/Cog）
 # 构建: tools/build-pkg.sh wpewebkit（中断后用 tools/resume-wpewebkit.sh 继续）
 #
-# 体积（M6 瘦身，取舍见 ADR 0003）：全局 -Os，JavaScriptCore / WTF / bmalloc / Skia 用 -O2；
+# 体积（M6 瘦身，取舍见 ADR 0003）：全局 -Os，JS 引擎、WebCore 的 DOM/样式/布局、Skia 等热点用 -O2；
 # 不生成 .eh_frame；关掉 v1 用不到的功能（摄像头/麦克风、WebRTC、WebCodecs、PDF.js、XSLT、AVIF/JPEG XL、
 # GPU 进程、远程 Web Inspector 等），去掉 libavif（连带 aom、dav1d、libyuv）、libjxl、libxslt 依赖。
 pkgname=wpewebkit
@@ -72,11 +72,15 @@ options="!check"
 # 发布构建保持 OFF：这些只服务于调试，还会给 GC 带来额外的内存统计开销。
 _devtools=OFF
 
-# 热点目标：用 -O2 而不是全局的 -Os（见 loong-opt-targets.cmake）。
-# JavaScriptCore：JS 引擎的 C++ 部分（解析、字节码生成、GC、运行时慢路径、正则、各级 JIT 编译器本身）；
-# WTF、bmalloc（含 libpas 分配器）：几乎所有代码都在调用；Skia：CPU 光栅化与 GPU 绘制的热循环。
-# 其余（WebCore、WebKit、ANGLE、PAL 等）用 -Os。
-_o2_targets="bmalloc;WTF;JavaScriptCore;Skia"
+# 热点目标：用 -O2 而不是全局的 -Os（见 loong-opt-targets.cmake；子目标继承父目标的选项）。
+# JavaScriptCore（含子目标 JavaScriptCoreJIT）：JS 引擎的 C++ 部分（解析、字节码生成、GC、运行时慢路径、
+#   正则、JIT 调用的 operations、各级 JIT 编译器本身）；WTF、bmalloc（含 libpas 分配器）：几乎所有代码都在调用；
+# Skia：CPU 光栅化与 GPU 绘制的热循环；
+# WebCoreStyle（css、style、layout、rendering）、WebCoreDOMAndRendering（dom、html 解析、editing、page…）、
+#   WebCoreJSBindings（JS ↔ DOM 绑定）：系统界面和所有应用都是网页，样式计算与布局直接影响动画与滚动。
+#   只给 JSC 等 -O2 时，DOM/innerHTML+布局类测试比 r0 慢 16–18%；加上这三个后只慢 3–7%，库大 6.6MB（实测见 ADR 0003）。
+# 其余（WebCore 的 platform/Modules/loader 等、WebKit 的 IPC 与 UI 进程、ANGLE、PAL）用 -Os。
+_o2_targets="bmalloc;WTF;JavaScriptCore;Skia;WebCoreStyle;WebCoreDOMAndRendering;WebCoreJSBindings"
 
 build() {
 	export CC=clang
@@ -195,5 +199,5 @@ minibrowser() {
 
 sha512sums="
 9af0718a7306c8051a9751802c434c8d66441abc515d839b53b736752f7a9e711f24188f61933ec90bbb486c5fad0f73a35f8c67669c626c4cff6d7f87165cd1  wpewebkit-2.54.2.tar.xz
-e0a7774a74d60526d55499a664422aaf05b93aeefd222715fc5aa45ae061793dfa5aa599276038498f6f7e30875cbca5c34fad20f9dce8d512a707df4b79fcbb  loong-opt-targets.cmake
+597a60c628456111fee16300a7988dd3178099b87d67f36696f465ba24d453282991ddb6657f9d95c7edabd20d3cb29eb204500fa753802ae5aa5a4887683e9f  loong-opt-targets.cmake
 "

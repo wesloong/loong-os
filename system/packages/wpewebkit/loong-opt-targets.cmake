@@ -1,7 +1,8 @@
 # Loong OS：按目标调整优化级别（由 APKBUILD 通过 -DCMAKE_PROJECT_INCLUDE=… 加载）。
 #
-# 整体用 -Os 编译（体积优先），但 LOONG_O2_TARGETS 里列出的目标（JavaScriptCore、WTF、bmalloc、Skia
-# 这类热点）改用 -O2。目标级 COMPILE_OPTIONS 在命令行上排在 CMAKE_<LANG>_FLAGS 之后，所以 -O2 生效。
+# 整体用 -Os 编译（体积优先），但 LOONG_O2_TARGETS 里列出的目标（JavaScriptCore、WebCoreStyle 等热点，
+# 可以是 WebKit 的子目标）改用 -O2。目标级 COMPILE_OPTIONS 在命令行上排在 CMAKE_<LANG>_FLAGS 之后，所以 -O2 生效；
+# 子目标（如 JavaScriptCoreJIT）继承父目标的选项。
 #
 # CMAKE_PROJECT_INCLUDE 在每次 project() 之后加载，此时目标还没有定义；因此只在顶层目录登记一个延迟调用，
 # 等顶层 CMakeLists.txt 处理完（所有子目录、所有目标都已定义）再设置。不改 WebKit 源码，升级时无需维护补丁。

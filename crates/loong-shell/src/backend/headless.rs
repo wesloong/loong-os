@@ -136,15 +136,15 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
     let mut recorder = match &opts.script.record {
         Some(r) => {
             let every = r.every.max(1) as u64;
-            let frames = (0..=total_frames).filter(|f| f % every == 0).count() as u32;
+            let frames = (0..=total_frames).filter(|&f| r.wants(f, fps)).count() as u32;
             let factor = (1.0 / r.scale.clamp(0.05, 1.0)).round().max(1.0) as u32;
             let path = opts.out_dir.join("anim.png");
             Some((
-                every,
+                r,
                 Recorder::new(
                     &path,
                     pw as u32,
-                    ph as u32,
+                    r.crop_px(pw as u32, ph as u32, scale),
                     factor,
                     frames,
                     (fps as u64 / every) as u16,
@@ -227,9 +227,7 @@ pub fn run(device: &DeviceConfig, opts: HeadlessOptions) -> anyhow::Result<()> {
         );
 
         let want_shot = shots.contains(&frame);
-        let want_record = recorder
-            .as_ref()
-            .is_some_and(|(every, _)| frame % every == 0);
+        let want_record = recorder.as_ref().is_some_and(|(r, _)| r.wants(frame, fps));
         if want_shot || want_record {
             let region = Rectangle::from_size((pw, ph).into());
             let mapping = renderer.copy_framebuffer(&fb, region, Fourcc::Abgr8888)?;
@@ -333,24 +331,27 @@ fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// APNG 录制器（可整数倍缩小，控制文件大小）。
+/// APNG 录制器（可只录屏幕的一块、整数倍缩小，控制文件大小）。
 struct Recorder {
     writer: png::Writer<BufWriter<File>>,
-    w: u32,
-    h: u32,
+    /// 整屏宽度（像素）。
+    screen_w: u32,
+    /// 录制区域（物理像素 x, y, 宽, 高）。
+    crop: (u32, u32, u32, u32),
     factor: u32,
 }
 
 impl Recorder {
     fn new(
         path: &Path,
-        w: u32,
-        h: u32,
+        screen_w: u32,
+        crop: (u32, u32, u32, u32),
         factor: u32,
         frames: u32,
         fps: u16,
     ) -> anyhow::Result<Self> {
-        let (ow, oh) = (w / factor, h / factor);
+        let factor = factor.min(crop.2).min(crop.3).max(1);
+        let (ow, oh) = (crop.2 / factor, crop.3 / factor);
         let mut enc = png::Encoder::new(BufWriter::new(File::create(path)?), ow, oh);
         enc.set_color(png::ColorType::Rgb);
         enc.set_depth(png::BitDepth::Eight);
@@ -358,23 +359,24 @@ impl Recorder {
         enc.set_frame_delay(1, fps.max(1))?;
         Ok(Recorder {
             writer: enc.write_header()?,
-            w,
-            h,
+            screen_w,
+            crop,
             factor,
         })
     }
 
     fn push(&mut self, rgba: &[u8]) -> anyhow::Result<()> {
         let f = self.factor as usize;
-        let (w, h) = (self.w as usize, self.h as usize);
-        let (ow, oh) = (w / f, h / f);
+        let w = self.screen_w as usize;
+        let (cx, cy) = (self.crop.0 as usize, self.crop.1 as usize);
+        let (ow, oh) = (self.crop.2 as usize / f, self.crop.3 as usize / f);
         let mut out = Vec::with_capacity(ow * oh * 3);
         for y in 0..oh {
             for x in 0..ow {
                 let mut acc = [0u32; 3];
                 for dy in 0..f {
                     for dx in 0..f {
-                        let i = ((y * f + dy) * w + (x * f + dx)) * 4;
+                        let i = ((cy + y * f + dy) * w + (cx + x * f + dx)) * 4;
                         for c in 0..3 {
                             acc[c] += rgba[i + c] as u32;
                         }

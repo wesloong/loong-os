@@ -12,6 +12,7 @@ wpe_platform = dependency('wpe-platform-2.0', version: '>= 2.54')
 # WPE 自带 Wayland 平台的公开接口（wl_display、窗口的 wl_surface），loong-webapp 用它接上私有协议。
 wpe_platform_wayland = dependency('wpe-platform-wayland-2.0', version: '>= 2.54')
 gio = dependency('gio-2.0', version: '>= 2.74')
+libm = meson.get_compiler('c').find_library('m', required: false)
 wayland_client = dependency('wayland-client', version: '>= 1.22')
 wayland_scanner = find_program(dependency('wayland-scanner', native: true).get_variable('wayland_scanner'))
 
@@ -59,7 +60,7 @@ executable('loong-webapp',
   resources,
   c_args: ['-DLOONG_WEB_ROOT="@0@"'.format(web_root)],
   link_with: bridge_core,
-  dependencies: [wpe_webkit, wpe_platform, wpe_platform_wayland, wayland_client, gio],
+  dependencies: [wpe_webkit, wpe_platform, wpe_platform_wayland, wayland_client, gio, libm],
   install: true,
 )
 

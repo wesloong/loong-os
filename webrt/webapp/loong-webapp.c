@@ -1,7 +1,8 @@
 /*
  * loong-webapp：Loong OS 的 PWA 运行时（每个 Web 应用一个进程）。
  *
- *   loong-webapp --id <应用id> [--name <名称>] [--scope <URL 前缀>] [--bridge=system] <起始 URL>
+ *   loong-webapp --id <应用id> [--name <名称>] [--scope <URL 前缀>] [--theme-color #rrggbb]
+ *                [--background-color #rrggbb] [--bridge=system] <起始 URL>
  *
  * - 基于 WPE WebKit 2.54 的 WPEPlatform API（Wayland），无需 libwpe/Cog。
  * - 每个应用独立的数据与缓存目录（Cookie、localStorage、IndexedDB、Service Worker 互不相通）：
@@ -14,6 +15,9 @@
  *   loong_app_v1 告诉 loong-shell，状态栏据此选浓墨或月白（loong-app-surface.c，
  *   docs/api/loong-app-protocol.md）。页面没有主题色时不发颜色：loong-shell 先读窗口顶部的
  *   像素（共享内存缓冲），读不到再按系统外观——也就是退回纸色。
+ * - 已安装的 PWA 由 loong-shell 按注册表里的 manifest 启动（docs/api/loong-webapps.md）：
+ *   --theme-color 是页面报告主题色之前状态栏用的颜色；--background-color 是页面绘制前的底色，
+ *   与 loong-shell 画的启动闪屏同色（暗色外观下只用深色的背景色，与 loong-shell 的规则相同）。
  * - --bridge=system：给系统应用（设置等）提供 window.loong（loong-bridge.c）。只有起始页位于
  *   受信任目录（LOONG_WEB_ROOT，默认 /usr/share/loong/web）下时才允许，否则拒绝启动；
  *   此时作用域收紧到受信任目录，任何框架都不能跳转到目录以外。见 docs/api/loong-js-bridge.md。
@@ -21,6 +25,7 @@
  * SPDX-License-Identifier: MIT OR Apache-2.0
  */
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <locale.h>
@@ -45,6 +50,9 @@ typedef struct {
     char *scope;
     char *start_url;
     char *bridge_root; /* 非 NULL：启用了 bridge，值为受信任目录的真实路径 */
+    gboolean has_theme_color, has_background;
+    WebKitColor theme_color; /* manifest 的 theme_color（--theme-color） */
+    WebKitColor background;  /* manifest 的 background_color（--background-color） */
     GApplication *app;
     WebKitWebView *view;
     LoongAppearance *appearance;
@@ -52,11 +60,11 @@ typedef struct {
     LoongAppSurface *app_surface; /* loong_app_v1（合成器不是 loong-shell 时为 NULL） */
 } LoongWebApp;
 
-/* 应用 id 只允许 [a-z0-9-]，用于目录名和 Wayland app_id。 */
+/* 应用 id 只允许 [a-z0-9-]、不以 '-' 开头，用于目录名和 Wayland app_id。 */
 static gboolean
 valid_app_id(const char *id)
 {
-    if (!id || !*id || strlen(id) > 64)
+    if (!id || !*id || *id == '-' || strlen(id) > 64)
         return FALSE;
     for (const char *p = id; *p; p++) {
         if (!g_ascii_islower(*p) && !g_ascii_isdigit(*p) && *p != '-')
@@ -167,6 +175,16 @@ on_close(WebKitWebView *view, LoongWebApp *wa)
     g_application_release(wa->app);
 }
 
+/* WCAG 相对亮度（0..1）。 */
+static double
+relative_luminance(const WebKitColor *c)
+{
+    double ch[3] = { c->red, c->green, c->blue };
+    for (int i = 0; i < 3; i++)
+        ch[i] = ch[i] <= 0.04045 ? ch[i] / 12.92 : pow((ch[i] + 0.055) / 1.055, 2.4);
+    return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+}
+
 /* 系统外观 → WPE 的 dark-mode 设置（页面的 prefers-color-scheme）与加载前的底色。 */
 static void
 apply_appearance(LoongWebApp *wa)
@@ -178,9 +196,13 @@ apply_appearance(LoongWebApp *wa)
     if (settings &&
         !wpe_settings_set_boolean(settings, WPE_SETTING_DARK_MODE, dark, WPE_SETTINGS_SOURCE_APPLICATION, &error))
         g_warning("无法设置深色模式：%s", error->message);
-    /* 宣纸 / 夜墨（与 LoongKit 的 --loong-color-paper 一致），避免页面绘制前闪白。 */
+    /* 宣纸 / 夜墨（与 LoongKit 的 --loong-color-paper 一致），避免页面绘制前闪白。
+     * 已安装的 PWA 用 manifest 的背景色（与启动闪屏一致）；暗色外观下浅色的背景色会在夜里闪一下白，
+     * 仍用夜墨。 */
     WebKitColor paper = dark ? (WebKitColor){ 0x15 / 255.0, 0x14 / 255.0, 0x0f / 255.0, 1 }
                              : (WebKitColor){ 0xf3 / 255.0, 0xee / 255.0, 0xe2 / 255.0, 1 };
+    if (wa->has_background && (!dark || relative_luminance(&wa->background) < 0.2))
+        paper = wa->background;
     webkit_web_view_set_background_color(wa->view, &paper);
 }
 
@@ -190,14 +212,20 @@ on_theme_changed(LoongAppearance *appearance, GParamSpec *pspec, LoongWebApp *wa
     apply_appearance(wa);
 }
 
-/* 页面主题色 → loong-shell（状态栏的墨）。没有主题色时发 0（未设置）：loong-shell 读得到窗口
- * 顶部的像素就按像素，读不到（GPU 缓冲）就按系统外观，与页面加载前的纸色底一致。 */
+/* 页面主题色 → loong-shell（状态栏的墨）。页面没有主题色时用 manifest 的 theme_color；都没有时发 0
+ * （未设置）：loong-shell 读得到窗口顶部的像素就按像素，读不到（GPU 缓冲）就按系统外观，与页面加载前的
+ * 纸色底一致。 */
 static void
 update_theme_color(LoongWebApp *wa)
 {
     WebKitColor color;
     guint32 argb = 0;
-    if (webkit_web_view_get_theme_color(wa->view, &color) && color.alpha > 0) {
+    gboolean page = webkit_web_view_get_theme_color(wa->view, &color) && color.alpha > 0;
+    if (!page && wa->has_theme_color) {
+        color = wa->theme_color;
+        page = TRUE;
+    }
+    if (page) {
         guint32 a = (guint32)(CLAMP(color.alpha, 0, 1) * 255 + 0.5);
         guint32 r = (guint32)(CLAMP(color.red, 0, 1) * 255 + 0.5);
         guint32 g = (guint32)(CLAMP(color.green, 0, 1) * 255 + 0.5);
@@ -292,11 +320,15 @@ main(G_GNUC_UNUSED int argc, char **argv)
     LoongWebApp wa = { 0 };
     g_autofree char *scope = NULL;
     g_autofree char *bridge = NULL;
+    g_autofree char *theme_color = NULL;
+    g_autofree char *background = NULL;
     g_auto(GStrv) rest = NULL;
     GOptionEntry entries[] = {
         { "id", 0, 0, G_OPTION_ARG_STRING, &wa.id, "应用 id（[a-z0-9-]）", "ID" },
         { "name", 0, 0, G_OPTION_ARG_STRING, &wa.name, "应用名称", "NAME" },
         { "scope", 0, 0, G_OPTION_ARG_STRING, &scope, "作用域 URL 前缀（默认：起始 URL 的源）", "URL" },
+        { "theme-color", 0, 0, G_OPTION_ARG_STRING, &theme_color, "manifest 的主题色（页面没有主题色时用）", "#RRGGBB" },
+        { "background-color", 0, 0, G_OPTION_ARG_STRING, &background, "manifest 的背景色（页面绘制前的底色）", "#RRGGBB" },
         { "bridge", 0, 0, G_OPTION_ARG_STRING, &bridge,
           "提供系统接口 window.loong（只能是 system；起始页须位于 " LOONG_WEB_ROOT " 下）", "system" },
         { G_OPTION_REMAINING, 0, 0, G_OPTION_ARG_STRING_ARRAY, &rest, NULL, "URL" },
@@ -314,9 +346,15 @@ main(G_GNUC_UNUSED int argc, char **argv)
         return 2;
     }
     if (!valid_app_id(wa.id) || !rest || !rest[0]) {
-        fprintf(stderr, "用法: loong-webapp --id <应用id> [--name 名称] [--scope URL] [--bridge=system] <起始 URL>\n");
+        fprintf(stderr, "用法: loong-webapp --id <应用id> [--name 名称] [--scope URL] [--theme-color #RRGGBB] "
+                        "[--background-color #RRGGBB] [--bridge=system] <起始 URL>\n");
         return 2;
     }
+    /* 颜色写错只忽略（不影响启动）。 */
+    if (theme_color && !(wa.has_theme_color = webkit_color_parse(&wa.theme_color, theme_color)))
+        g_warning("--theme-color 不是颜色：%s", theme_color);
+    if (background && !(wa.has_background = webkit_color_parse(&wa.background, background)))
+        g_warning("--background-color 不是颜色：%s", background);
     wa.start_url = rest[0];
     if (bridge) {
         /* bridge 只给只读根分区上的系统应用：参数不对、起始页不在受信任目录内时拒绝启动，
@@ -338,9 +376,12 @@ main(G_GNUC_UNUSED int argc, char **argv)
     if (!wa.name)
         wa.name = g_strdup(wa.id);
 
-    /* app_id 形如 loong.webapp.<id>（GApplication id 不允许 '-'，替换为 '_'）。 */
+    /* app_id 形如 loong.webapp.<id>，也是 Wayland 的 app_id（WebKit 取 GApplication 的 id）。
+     * GApplication id 的每一节不能以数字开头、最好不用 '-'：'-' 换成 '_'，以数字开头的 id（例如按 IP
+     * 地址生成的 127-0-0-1-8765-app）前面再加一个 '_'。id 不以 '-' 开头，所以这样不会有歧义；
+     * loong-shell 按同样的规则还原（shell/apps.rs）。 */
     g_autofree char *safe_id = g_strdelimit(g_strdup(wa.id), "-", '_');
-    g_autofree char *app_id = g_strconcat("loong.webapp.", safe_id, NULL);
+    g_autofree char *app_id = g_strconcat("loong.webapp.", g_ascii_isdigit(wa.id[0]) ? "_" : "", safe_id, NULL);
     g_set_prgname(app_id);
     g_set_application_name(wa.name);
 

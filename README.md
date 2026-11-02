@@ -50,6 +50,10 @@ Loong OS 是一款基于 Linux 的平板操作系统。它的目标是尽可能�
 |---|---|---|
 | ![QEMU 中的浏览器](docs/images/qemu-browser-dark.png) | ![QEMU 中的候选栏](docs/images/qemu-keyboard-candidates.png) | ![QEMU 中上屏](docs/images/qemu-keyboard-committed.png) |
 
+| 状态栏随应用切换墨色：浅色浏览器上用浓墨 | 系统切到夜墨，浏览器与状态栏一起换成月白 | 网页音视频（WebM、Ogg、MP3、Web Audio） |
+|---|---|---|
+| ![QEMU 状态栏浅色](docs/images/qemu-statusbar-light.png) | ![QEMU 状态栏深色](docs/images/qemu-statusbar-dark.png) | ![QEMU 媒体播放](docs/images/qemu-media-b.png) |
+
 ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-shell 为交叉编译）：
 
 ![QEMU aarch64 中的 Loong OS](docs/images/qemu-aarch64-home.png)

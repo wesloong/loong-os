@@ -56,7 +56,7 @@ Loong OS 不建设原生应用生态，所有应用都是 PWA，浏览器要基�
 - **编译成本高**：4 核约需 3–6 小时。GitHub 托管 runner 单个任务最长 6 小时（`wpewebkit.yml` 超时设为 355 分钟）；ARM runner 只对公开仓库免费，私有仓库的 runner 只有 2 核。应对办法：使用 ccache；必要时在开发机或自托管 runner 上构建，再把 APK 发布到 Release。
 - **打包与升级由我们维护**：每次升级 WPE 都要重新验证 musl 兼容性和编译选项。
 - **自写 WPEPlatform 后端是 M2 的关键风险**：如果首选方案受阻，就退回到由 shell 绘制浏览器工具栏。
-- **体积与内存**：WebKit 是系统中最大的组件。M6 计划做 ICU 裁剪（只保留中英文）、设置 WebKit 内存上限、字体子集化。
+- **体积与内存**：WebKit 是系统中最大的组件。M6 计划做 ICU 裁剪（只保留中英文）、设置 WebKit 内存上限、字体子集化。ICU 数据（`icu-data-loong`，中英文 7 MiB）与字体子集已完成，见[体积预算](../体积预算.md)。
 - **许可证**：WPE WebKit 采用 LGPL-2.0-or-later AND BSD-2-Clause。我们的组件以动态链接方式使用它，保持 MIT/Apache；如果修改 WebKit 本身，需要按 LGPL 提供修改后的源码。
 - **架构**：loongarch64 上的 WebKit 没有 JIT，性能需要单独评估。
 

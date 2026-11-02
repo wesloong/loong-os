@@ -1,0 +1,50 @@
+# Loong OS: 思源黑体（Noto Sans CJK SC）子集，替代镜像里 88 MB 的 font-noto-cjk
+# 构建: tools/build-pkg.sh font-noto-sans-sc-loong
+#
+# 来源是上游 noto-cjk 仓库 Sans2.004 标签里的简体中文可变字体（CFF2，字重 100–900），
+# 由 build-font.py 裁剪：GB2312 ∪《通用规范汉字表》8105 字 ∪ 拉丁、标点与常用符号，
+# 字重轴 400–700，约 4.2 MiB（Regular + Bold 两个静态子集是 4.5 MiB）。
+# 字体族名改为 “Noto Sans CJK SC”，与 font-noto-cjk 一致，loong-ui 与 LoongKit 都不用改。
+# 繁体、日文汉字等不在子集里的字：fontconfig 回退到霞鹜文楷（收录约 1.2 万汉字），再没有就显示豆腐块。
+pkgname=font-noto-sans-sc-loong
+pkgver=2.004
+_unihan=17.0.0
+pkgrel=0
+pkgdesc="Noto Sans CJK SC variable font, subset to GB2312 + Table of General Standard Chinese Characters"
+url="https://github.com/notofonts/noto-cjk"
+arch="noarch"
+license="OFL-1.1"
+depends="fontconfig"
+makedepends="python3 py3-fonttools"
+source="NotoSansSC-VF-$pkgver.otf::https://raw.githubusercontent.com/notofonts/noto-cjk/Sans$pkgver/Sans/Variable/OTF/Subset/NotoSansSC-VF.otf
+	noto-cjk-LICENSE-$pkgver::https://raw.githubusercontent.com/notofonts/noto-cjk/Sans$pkgver/LICENSE
+	Unihan-$_unihan.zip::https://www.unicode.org/Public/$_unihan/ucd/Unihan.zip
+	build-font.py
+	65-loong-noto-sans-sc.conf
+	"
+builddir="$srcdir"
+# 纯数据包，没有可运行的测试；构建脚本会打印覆盖率并检查汉字齐全。
+options="!check"
+
+build() {
+	python3 -I "$srcdir"/build-font.py "$srcdir"/NotoSansSC-VF-$pkgver.otf \
+		"$srcdir"/Unihan_OtherMappings.txt "$srcdir"/NotoSansCJKSC-Loong.otf
+}
+
+package() {
+	install -Dm644 "$srcdir"/NotoSansCJKSC-Loong.otf "$pkgdir"/usr/share/fonts/noto/NotoSansCJKSC-Loong.otf
+	install -Dm644 "$srcdir"/noto-cjk-LICENSE-$pkgver "$pkgdir"/usr/share/licenses/$pkgname/LICENSE
+	# 思源黑体的其他名字（Noto Sans SC、Source Han Sans SC、思源黑体）强别名到这个字体
+	install -Dm644 "$srcdir"/65-loong-noto-sans-sc.conf \
+		"$pkgdir"/usr/share/fontconfig/conf.avail/65-loong-noto-sans-sc.conf
+	mkdir -p "$pkgdir"/etc/fonts/conf.d
+	ln -s /usr/share/fontconfig/conf.avail/65-loong-noto-sans-sc.conf "$pkgdir"/etc/fonts/conf.d/
+}
+
+sha512sums="
+8d57be82a559029fbbfc614003a3c1effeaf469ad214c6a03731e1697492f72d9b2d55bc73f97e06c40bfdb784620d673cf2ec3e02ec293a97b4552f9e194a18  NotoSansSC-VF-2.004.otf
+53cf33ddac5d44b9f622a041f267bcf53ca704555f0481ee3e89eeba505019c8d1d504a6ffe7ebd6a7d1d5d7d26cf3da052cc63b3540eb4260ce74a93cf35841  noto-cjk-LICENSE-2.004
+8b0d117fed39600c62864dd0c955b2fe0a52cfc975288fcf58cb770aaf476355f52b2a603e11330184a07d89c705c0fea55eeb9a044c8f1ba3ba79f5f32d0b33  Unihan-17.0.0.zip
+c53f8680240eb9a1c8cc372d269a9c041ecc1e2addbeffa2cccfb31b9049d1171b35a0f62e71aa1075eaa49869dab949ecca068b00ab26a63c806239a3a7149f  build-font.py
+aa4943e3cf63471c15b63b2629a7f9df376aa29ca356601034ca862c52b2c9e56acac9a58eaf3641b79d5ee127eb91f84c17f04d02428d2790bdeb4006d01c43  65-loong-noto-sans-sc.conf
+"

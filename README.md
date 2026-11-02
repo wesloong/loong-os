@@ -56,7 +56,9 @@ ARM64（aarch64）镜像在 QEMU virt 虚拟机中启动后的画面（loong-she
 
 ## 当前状态：M0–M5 主体完成，等待上真机
 
-M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏览器）、M4（键盘、设置）、M5（OTA）的主体都已完成，并在 QEMU 或无屏幕模式下验证；M3（小米平板 5 适配）的镜像可以构建，还没有上真机。下一步主要是真机验证（触摸、GPU、Wi‑Fi、电池、120Hz、休眠）和瘦身（M6）。
+M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏览器）、M4（键盘、设置）、M5（OTA）的主体都已完成，并在 QEMU 或无屏幕模式下验证；M3（小米平板 5 适配）的镜像可以构建，还没有上真机。下一步主要是真机验证（触摸、GPU、Wi‑Fi、电池、120Hz、休眠）和继续瘦身（M6）。
+
+**体积**（M6，见[体积预算](docs/体积预算.md)）：按真机的配置（自编的 `mesa-loong`，不依赖 LLVM），带 WebKit 的完整镜像只读根从 327.7 MiB 降到 **124.8 MiB**，已低于 150 MiB 的目标。其中 rootfs 瘦身这一轮：思源黑体子集（88 MB → 4 MiB，可变字重）、内核模块与固件白名单、开发工具改为可选、清理文档等，以及 erofs 改用 64 KiB 物理簇；同时补上了中文 ICU 数据（`Intl` 中文格式、拼音排序、中文分词）。QEMU 机型默认用带 llvmpipe 的 Alpine mesa（TCG 下快得多），只读根 217.0 MiB。nabu 镜像（mesa-loong，暂不含 WebKit）68 MiB。剩下的大头是 WebKit 及其依赖（压缩后约 85 MiB）。
 
 | 模块 | 状态 |
 |---|---|
@@ -68,6 +70,7 @@ M0（基础设施）、M1（系统界面与手势）、M2（Web 运行时与浏�
 | `crates/loong-ui`：「墨韵」设计令牌（宣纸/夜墨）、连续圆角、文字（中文，霞鹜文楷）、水墨绘画工具（宣纸、毛笔笔触、山水长卷、宣纸小笺图标、印章） | ✅ 已完成 |
 | `crates/loong-shell`：headless 后端、主屏（分页）、打开应用 / 回主屏手势动画、多任务（上滑停顿进入、横向滚动吸附、点按打开、上滑关闭）、真实 Wayland 客户端（xdg-shell、子表面、linux-dmabuf v4、viewporter、分数缩放）、「墨韵」水墨动效（点墨、晕染、笔迹、展卷、墨散）、跟随系统外观、真机后端（DRM/KMS + libinput + seatd） | ✅ 已可用（在 QEMU 中验证）；WebKit 走 GPU（dmabuf）要在有 GPU 的真机上验证 |
 | QEMU 镜像：`system/mkimage`、`tools/qemu.py`、initramfs、erofs 只读根、A/B 启动与启动计数 | ✅ 可启动到主屏，触摸与回主屏手势可用 |
+| 瘦身（M6）：`tools/image-size.sh`（体积报告）、`tools/qemu-bench.py`（开机与启动应用计时）、思源黑体子集（`font-noto-sans-sc-loong`）、`font-inter-loong`、中英文 ICU 数据（`icu-data-loong`）、内核模块与固件白名单 | 🚧 真机配置的只读根 327.7 → 124.8 MiB（连同 mesa-loong），见[体积预算](docs/体积预算.md)；WebKit 待重编 |
 | aarch64：qemu-user binfmt（`tools/setup-binfmt.sh`）、交叉编译（`tools/build-aarch64.sh`）、`qemu-aarch64` 镜像 | ✅ 在 QEMU virt（TCG）中启动到锁屏 |
 | 小米平板 5：`android-abl` 启动后端（boot.img、super 动态分区 A/B、userdata、qbootctl 回滚），见[适配说明](docs/devices/xiaomi-nabu.md) | 🚧 镜像可构建并通过离线自检，尚未上真机 |
 | `crates/loong-update` + `org.loong.Update1`：签名 OTA 更新包、写入非活动 slot、启动确认与自动回滚，见 [loong-update](docs/api/loong-update.md) | ✅ 在 QEMU 中验证（0.1.0 → 0.1.1 升级；系统界面起不来的更新 3 次后自动回滚；坏签名/坏哈希在写入前被拒绝）；`android-abl` 只有单元测试，未上真机；dm-verity 待做 |
@@ -160,6 +163,9 @@ sudo tools/dev-chroot.sh run sh webrt/browser/tests/sway-run.sh 场景.txt out/b
 #    场景文件每行一条命令（click / type / key / wheel / shot …，见脚本开头）；同时提供 webrt/browser/tests/pages/
 #    在 loong-shell 里点 Dock 图标启动、回放触摸：webrt/browser/tests/shell-run.sh 脚本.json out/shell [网址]
 #    镜像：WITH_WPE=1 system/mkimage/mkimage.sh qemu-x86_64（安装 loong-webapp、loong-browser 与界面）
+#    瘦身用的本地包（字体子集、中英文 ICU 数据，几分钟）：构建后 mkimage 自动使用；WITH_DEVTOOLS=1 再装 foot 等开发工具
+sudo sh -c 'for p in font-noto-sans-sc-loong font-inter-loong icu-data-loong; do tools/build-pkg.sh $p; done'
+sudo tools/dev-chroot.sh run tools/image-size.sh qemu-x86_64      # 体积报告：按包、按目录、最大的文件
 
 # 其他命令
 sudo tools/dev-chroot.sh shell     # 进入 chroot

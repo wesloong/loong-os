@@ -57,6 +57,14 @@ pmOS 的 sm8150 内核配置（pmaports `config-postmarketos-qcom-sm8150.aarch64
 
 要回到 ADR 0004 的 erofs + dm-verity，需要一个开启 `CONFIG_EROFS_FS=y`（M5 还要 `CONFIG_DM_VERITY=y`）的内核：向 pmaports 提交配置修改，或者基于它的 APKBUILD 打包我们自己的 `linux-loong-sm8150`。届时把 `ROOT_FS` 改回 `erofs` 即可。
 
+压缩先保持 lz4hc：这个内核的 squashfs 解压器是单实例（`CONFIG_SQUASHFS_DECOMP_SINGLE=y`），xz 虽然能把根再缩小约 30%，但多核不能并行解压，冷启动 WebKit 会明显变慢。各种参数的大小见 [体积预算](../体积预算.md#压缩参数)。
+
+### 内核模块与固件
+
+还没上真机，`xiaomi-nabu.conf` 只排除肯定用不上的：`KERNEL_MODULES` 去掉别家 SoC 的 GPU/显示/视频编解码、Freescale 音频、Intel/Marvell/RSI 网卡和红外遥控键位表（828 个里去掉 156 个，约 4 MB）；`FIRMWARE` 去掉 `linux-firmware-qcom` 里其他芯片的子目录、ath11k，以及 WCN3990 以外的 ath10k 固件（237 MB → 41 MB）。nabu 自己的固件（ADSP/CDSP/modem、GPU zap、venus、WLAN）都在 `qcom/sm8150/xiaomi/nabu/`，Adreno 640 还要 `qcom/` 顶层的 `a630_sqe.fw` 与 `a640_gmu.bin`，蓝牙在 `qca/`，功放在 `cirrus/`，触摸在 `novatek/`，都保留。
+
+上机后用 `lsmod` 和内核日志里的固件请求（`dmesg | grep -i firmware`）把两者改成白名单。
+
 ### 为什么根放在 super
 
 为什么根放在 `super` 而不是像 pmOS 那样整盘写进 `userdata`：`super` 是现成的、与用户数据分开的系统区，大小足够放两个 slot（每个 slot 是根文件系统镜像大小的 1.5 倍 + 16 MiB）；`userdata` 只放可写数据，这样 OTA 写入非活动 slot 时不会碰到用户数据，也与 ADR 0004 的布局一致。代价是刷入 `super.img` 后 Android 无法再启动（见“风险”）。

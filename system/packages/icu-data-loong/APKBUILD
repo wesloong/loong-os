@@ -1,0 +1,44 @@
+# Loong OS: 只含中文与英文的 ICU 数据，替代 Alpine 的 icu-data-en（只有英文）或 icu-data-full（31 MiB）
+# 构建: tools/build-pkg.sh icu-data-loong
+#
+# icu-data-en 没有中文：WebKit 里 Intl.DateTimeFormat('zh-CN') 输出英文格式，localeCompare
+# 不按拼音排序，中文分词没有词典（整串汉字算一个词）。这个包从上游的完整数据
+# （icu4c-<版本>-data-bin-l.zip，与 icu-data-full 相同）里用 icupkg 裁出 en + zh，
+# 约 7 MiB，规则见 build-icu-data.py。
+#
+# icu-libs 依赖 icu-data=<版本>-r<修订号>（精确版本），这里用 provides 提供它：
+# Alpine 的 icu 包升级（版本号或修订号变化）时要同步改 pkgver / _icurel。
+pkgname=icu-data-loong
+pkgver=78.1
+_icurel=0
+_icumaj=${pkgver%%.*}
+pkgrel=0
+pkgdesc="ICU data with only the Chinese (zh) and English (en) locales"
+url="https://icu.unicode.org/"
+# 数据是小端格式（icudt*l.dat）：Loong OS 支持的 x86_64 与 aarch64 都是小端
+arch="noarch"
+license="Unicode-3.0"
+provides="icu-data=$pkgver-r$_icurel"
+replaces="icu-data-en icu-data-full"
+makedepends="icu python3"
+source="https://github.com/unicode-org/icu/releases/download/release-$pkgver/icu4c-$pkgver-data-bin-l.zip
+	build-icu-data.py
+	"
+builddir="$srcdir"
+# 构建脚本会检查被引用的数据是否齐全；运行时的检查见 docs/体积预算.md
+options="!check"
+
+build() {
+	mkdir -p "$srcdir"/out
+	python3 -I "$srcdir"/build-icu-data.py "$srcdir"/icudt${_icumaj}l.dat "$srcdir"/out/icudt${_icumaj}l.dat
+}
+
+package() {
+	install -Dm644 "$srcdir"/out/icudt${_icumaj}l.dat "$pkgdir"/usr/share/icu/$pkgver/icudt${_icumaj}l.dat
+	install -Dm644 "$srcdir"/LICENSE "$pkgdir"/usr/share/licenses/$pkgname/LICENSE
+}
+
+sha512sums="
+bac376c4f3f3d9a2cdf05ec8ae6b95697bf00f86bd41b652258f088503a239bc458a4e3fd5e0eed0dfc449de83266c610c5057e300c924ba54f8b23befa514fb  icu4c-78.1-data-bin-l.zip
+f8f982c2af4757845b2ba1f055f7ddb0f0ad48e037a577e5cb713ddb770ed6d0e98d436ea5779c21a2deb006c1aef208aecdfdf51db318d1193dce54d21d20bb  build-icu-data.py
+"

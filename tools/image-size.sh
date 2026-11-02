@@ -10,6 +10,8 @@
 #   --compressed N   为最大的 N 个包各生成一个只读根（参数与 mkimage 相同），估算压缩后的大小。
 #                    单独压缩没有跨包去重，估算值略偏大；所有包加起来也不等于镜像大小。
 #   --root DIR       直接分析一个 rootfs 目录（默认 build/image/<机型>/rootfs）
+#   --opts="参数"    估算压缩后大小时改用这组 mkfs 参数（默认用镜像自己的，见 work/rootfs.env）
+#   --only 包,包     只估算这些包（与 --compressed 一起用）
 #
 # 读取的文件：build/image/<机型>/rootfs（含 /lib/apk/db/installed）、work/root.<fs>，
 # 以及 mkimage 记下的压缩参数 work/rootfs.env。大小一律按文件内容的字节数（硬链接只算一次），
@@ -34,6 +36,8 @@ ap = argparse.ArgumentParser(prog="image-size.sh")
 ap.add_argument("--top", type=int, default=25)
 ap.add_argument("--compressed", type=int, default=0)
 ap.add_argument("--root")
+ap.add_argument("--opts")
+ap.add_argument("--only", default="")
 args = ap.parse_args(sys.argv[3:])
 
 out = os.path.join(src, "build", "image", profile)
@@ -160,12 +164,13 @@ for r, s in sorted(files.items(), key=lambda kv: -kv[1])[: args.top]:
 
 # ── 每个包单独压缩的估算 ──
 if args.compressed:
-    opts = env.get("ROOT_FS_OPTS", "-zlz4hc,12" if fs == "erofs" else "-comp lz4 -Xhc")
+    opts = args.opts or env.get("ROOT_FS_OPTS", "-zlz4hc,12" if fs == "erofs" else "-comp lz4 -Xhc")
     print(f"\n## 压缩后估算（每个包单独生成 {fs} {opts}，前 {args.compressed} 个）")
     print(f"{'原MiB':>8} {'压缩MiB':>8} {'比例':>6}  包")
     tmp = tempfile.mkdtemp(prefix="size-", dir=out)
     try:
-        for p in ranked[: args.compressed]:
+        only = [n for n in args.only.split(",") if n]
+        for p in [q for q in ranked if q["name"] in only] if only else ranked[: args.compressed]:
             stage = os.path.join(tmp, "stage")
             for r in p["files"]:
                 if owner.get(r) != p["name"] or r not in files:

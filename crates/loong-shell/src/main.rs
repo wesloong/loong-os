@@ -21,6 +21,7 @@ mod script;
 mod shell;
 mod state;
 mod status_sample;
+mod sysd_client;
 
 use std::path::PathBuf;
 

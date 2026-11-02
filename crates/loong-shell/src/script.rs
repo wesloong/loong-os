@@ -32,6 +32,17 @@
 //!   每次按住 `hold` 毫秒（默认 60；超过 500 即长按，弹出备选条）；
 //! - `candidate`：点按候选栏本页第 i 个候选；
 //! - `key`：点按功能键：`shift` / `lang` / `123` / `symbols` / `abc` / `hide` / `space` / `return` / `backspace`。
+//!
+//! 状态栏与控制中心的数据（loong-sysd）：默认不连接（状态栏右侧只有时间以外的空白，截图可复现）。
+//! `status` 给出固定的演示数据；设置环境变量 `LOONG_SYSD_BUS` 时连接真正的 loong-sysd（配合
+//! `--realtime`，见 `tests/control-center-headless.sh`）：
+//!
+//! ```json
+//! "status": { "battery": 57, "charging": false, "wifi": 80, "ssid": "听雨轩", "brightness": 0.3 }
+//! ```
+//!
+//! `"follow_appearance": true`：读并监视外观文件（`$XDG_CONFIG_HOME/loong/appearance.toml`），
+//! 与真机相同——控制中心的「夜墨」写入它之后，整个系统界面随之切换。
 
 use loong_ime::{
     ContentPurpose,
@@ -39,7 +50,12 @@ use loong_ime::{
 };
 use serde::Deserialize;
 
-use crate::shell::keyboard::ScreenKeyboard;
+use crate::shell::{
+    keyboard::ScreenKeyboard,
+    system::{
+        BacklightStatus, PowerState, PowerStatus, Service, SystemStatus, WifiState, WifiStatus,
+    },
+};
 
 fn default_fps() -> u32 {
     60
@@ -69,12 +85,71 @@ pub struct Script {
     /// 外观（`"light"` / `"dark"`），覆盖设备描述与环境变量，保证截图可复现。
     #[serde(default)]
     pub theme: Option<String>,
+    /// 读并监视外观文件（默认不读）。
+    #[serde(default)]
+    pub follow_appearance: bool,
+    /// 状态栏与控制中心的演示数据（不连接 loong-sysd 时使用）。
+    #[serde(default)]
+    pub status: Option<DemoStatus>,
     #[serde(default)]
     pub events: Vec<Event>,
     #[serde(default)]
     pub screenshots: Vec<u64>,
     #[serde(default)]
     pub record: Option<Record>,
+}
+
+/// 演示用的系统状态。
+#[derive(Debug, Deserialize)]
+pub struct DemoStatus {
+    /// 电量 0–100；不写表示没有电池。
+    #[serde(default)]
+    pub battery: Option<f64>,
+    #[serde(default)]
+    pub charging: bool,
+    /// 已连接网络的信号强度 0–100；不写表示 Wi‑Fi 已关闭。
+    #[serde(default)]
+    pub wifi: Option<u32>,
+    #[serde(default)]
+    pub ssid: Option<String>,
+    /// 亮度 0–1；不写表示没有背光。
+    #[serde(default)]
+    pub brightness: Option<f64>,
+}
+
+impl DemoStatus {
+    pub fn to_status(&self) -> SystemStatus {
+        SystemStatus {
+            service: Service::Demo,
+            power: Some(PowerStatus {
+                has_battery: self.battery.is_some(),
+                percentage: self.battery.unwrap_or(0.0),
+                state: if self.charging {
+                    PowerState::Charging
+                } else {
+                    PowerState::Discharging
+                },
+                time_to_empty: 0,
+                time_to_full: 0,
+                ac_online: self.charging,
+            }),
+            wifi: Some(WifiStatus {
+                available: true,
+                enabled: self.wifi.is_some(),
+                state: if self.wifi.is_some() {
+                    WifiState::Connected
+                } else {
+                    WifiState::Off
+                },
+                ssid: self.wifi.and(self.ssid.clone()).unwrap_or_default(),
+                strength: self.wifi.unwrap_or(0),
+            }),
+            backlight: Some(BacklightStatus {
+                available: self.brightness.is_some(),
+                brightness: self.brightness.unwrap_or(1.0),
+            }),
+        }
+    }
 }
 
 /// 一个操作。
@@ -224,6 +299,8 @@ impl Script {
             date: None,
             locked: false,
             theme: None,
+            follow_appearance: false,
+            status: None,
             events: vec![],
             screenshots: vec![0],
             record: None,

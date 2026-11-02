@@ -263,6 +263,12 @@ pub fn run(device: &DeviceConfig, opts: UdevOptions) -> anyhow::Result<()> {
     let handle = event_loop.handle();
     data.state
         .register_sources(&handle, |d: &mut Data| &mut d.state)?;
+    // loong-sysd（系统总线）：状态栏电量与 Wi‑Fi、控制中心。
+    data.state.start_sysd(
+        &handle,
+        |d: &mut Data| &mut d.state,
+        Some(crate::sysd_client::BusTarget::System),
+    );
     // 拼音引擎在后台线程启动，就绪前键盘只能输入英文。
     crate::ime::spawn_engine(&handle, |d: &mut Data| &mut d.state)?;
 

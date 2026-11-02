@@ -587,7 +587,7 @@ fn label_text(label: &KeyLabel) -> String {
 }
 
 /// 一张纸笺：`base` 色宣纸 + 连续圆角 + 毛边（`deckle` 像素）。
-fn paper_tile(
+pub(super) fn paper_tile(
     theme: Theme,
     w: u32,
     h: u32,

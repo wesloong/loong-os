@@ -163,6 +163,7 @@ mod driver {
   "fps": 30,
   "duration_ms": 17000,
   "clock": "9:41",
+  "status": {{ "battery": 76, "wifi": 80, "ssid": "听雨轩" }},
   "theme": "dark",
   "events": [
     {apps},
@@ -255,6 +256,7 @@ mod driver {
   "fps": 30,
   "duration_ms": 12900,
   "clock": "9:41",
+  "status": {{ "battery": 76, "wifi": 80, "ssid": "听雨轩" }},
   "theme": "light",
   "events": [
     {apps}

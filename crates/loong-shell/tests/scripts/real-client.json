@@ -2,6 +2,7 @@
   "fps": 30,
   "duration_ms": 4000,
   "clock": "9:41",
+  "status": { "battery": 100, "wifi": 80, "ssid": "Loong" },
   "events": [
     { "at": 300, "tap": [441, 733] },
     { "at": 3000, "swipe": { "from": [640, 795], "to": [640, 500], "duration": 150 } }

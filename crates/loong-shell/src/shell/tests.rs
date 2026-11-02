@@ -765,3 +765,135 @@ fn status_bar_follows_the_system_appearance_and_crossfades() {
     s.enter_switcher();
     assert_eq!(s.shell.status_ink(s.now), Some(StatusInk::Light));
 }
+
+// ───────────────────────── 控制中心 ─────────────────────────
+
+type ActionLog = std::rc::Rc<std::cell::RefCell<Vec<system::SystemAction>>>;
+
+/// 记录交给系统的操作；系统状态里只有可调的背光。
+fn record_actions(s: &mut Sim) -> ActionLog {
+    let log = ActionLog::default();
+    let sink = log.clone();
+    s.shell
+        .set_action_sink(Box::new(move |a| sink.borrow_mut().push(a)));
+    s.shell.set_system_status(system::SystemStatus {
+        service: system::Service::Running,
+        backlight: Some(system::BacklightStatus {
+            available: true,
+            brightness: 0.5,
+        }),
+        ..system::SystemStatus::default()
+    });
+    log
+}
+
+/// 场景中纹理的顺序（从下到上）。
+fn scene_keys(s: &Sim) -> Vec<TexKey> {
+    s.shell
+        .scene(s.now)
+        .iter()
+        .filter_map(|item| match item {
+            DrawItem::Texture { key, .. } | DrawItem::Natural { key, .. } => Some(*key),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn control_center_opens_from_the_top_right_only() {
+    use control_center::Part;
+    let mut s = Sim::new();
+    let log = record_actions(&mut s);
+    // 左上角下滑（留给通知中心）：什么也不发生。
+    s.swipe((200.0, 5.0), (200.0, 300.0), 0.25, 0.0);
+    assert!(!s.shell.control_center.is_visible(s.now));
+    s.wait(1.0);
+    // 右上角下滑：打开；状态栏画在控制中心之上。
+    s.swipe((1100.0, 5.0), (1100.0, 300.0), 0.25, 0.0);
+    assert!(s.shell.control_center.is_open());
+    s.wait(1.2);
+    assert!(s.shell.is_idle(s.now));
+    let keys = scene_keys(&s);
+    let pos = |k: TexKey| keys.iter().position(|&x| x == k);
+    let backdrop = pos(TexKey::ControlCenter(Part::Backdrop)).expect("绢底");
+    let panel = pos(TexKey::ControlCenter(Part::Panel)).expect("面板");
+    let status = pos(TexKey::StatusIcons(StatusInk::Dark)).expect("状态栏");
+    assert!(backdrop < panel && panel < status, "{keys:?}");
+    // 模态：点按面板外的图标位置不会打开应用，只收起控制中心。
+    let icon = s.shell.layout.icons[6];
+    s.tap(icon.x + 10.0, icon.y + 10.0);
+    assert!(!s.shell.app_in_front());
+    assert!(!s.shell.control_center.is_open());
+    s.wait(1.2);
+    assert!(!s.shell.control_center.is_visible(s.now) && s.shell.is_idle(s.now));
+    assert!(log.borrow().is_empty());
+    // 收起后主屏照常：点按图标打开应用。
+    s.tap(icon.x + 10.0, icon.y + 10.0);
+    assert!(s.shell.app_in_front());
+}
+
+#[test]
+fn control_center_over_an_app_and_actions_reach_the_sink() {
+    use control_center::Tile;
+    let mut s = Sim::new();
+    let log = record_actions(&mut s);
+    s.launch("photos");
+    s.swipe((1200.0, 3.0), (1200.0, 380.0), 0.3, 0.0);
+    s.wait(1.2);
+    assert!(s.shell.control_center.is_open());
+    assert!(s.shell.app_in_front(), "应用留在原处");
+    // 夜墨：交给 LoongState 写外观文件；Wi‑Fi 不可用时不发请求。
+    let p = s.shell.control_center.panel_rect(s.now);
+    let appearance = s.shell.control_center.layout.tile(Tile::Appearance);
+    s.tap(p.x + appearance.x + 40.0, p.y + appearance.y + 40.0);
+    let wifi = s.shell.control_center.layout.tile(Tile::Wifi);
+    s.tap(p.x + wifi.x + 40.0, p.y + wifi.y + 40.0);
+    assert_eq!(
+        *log.borrow(),
+        vec![system::SystemAction::Theme(Theme::Dark)]
+    );
+    // 上甩收起，回到应用。
+    s.swipe((1000.0, 300.0), (1000.0, 150.0), 0.08, 0.0);
+    s.wait(1.2);
+    assert!(!s.shell.control_center.is_visible(s.now));
+    assert!(s.shell.app_in_front());
+}
+
+#[test]
+fn no_control_center_on_the_lock_screen() {
+    let mut s = Sim::new();
+    s.shell.set_locked(true);
+    s.swipe((1100.0, 5.0), (1100.0, 300.0), 0.25, 0.0);
+    s.wait(1.0);
+    assert!(!s.shell.control_center.is_visible(s.now));
+    // 打开后锁屏：立即收起。
+    let mut s = Sim::new();
+    s.swipe((1100.0, 5.0), (1100.0, 300.0), 0.25, 0.0);
+    s.wait(1.2);
+    assert!(s.shell.control_center.is_open());
+    s.shell.lock_now(s.now);
+    s.wait(FRAME);
+    assert!(!s.shell.control_center.is_visible(s.now));
+}
+
+#[test]
+fn status_glyphs_follow_the_system_status() {
+    let mut s = Sim::new();
+    assert!(s.shell.status_glyphs().is_empty(), "没有 loong-sysd：不画");
+    s.shell.set_system_status(system::SystemStatus {
+        service: system::Service::Running,
+        power: Some(system::PowerStatus {
+            has_battery: true,
+            percentage: 57.0,
+            state: system::PowerState::Discharging,
+            ..system::PowerStatus::default()
+        }),
+        ..system::SystemStatus::default()
+    });
+    let g = s.shell.status_glyphs();
+    assert_eq!(
+        g.battery.map(|b| (b.percent, b.charging)),
+        Some((57, false))
+    );
+    assert_eq!(g.wifi, None);
+}
